@@ -62,6 +62,9 @@ if [ "$host" = macos ]; then
         -e "s/SHORT_VERSION/$short_version/g" \
         -e "s/BUILD_ID/$build_id/g" \
         resources/Info.plist.template >"$app/Contents/Info.plist"
-    codesign --force --deep --sign - --entitlements resources/Neru.entitlements --options runtime "$app"
+    # A stable identity keeps macOS privacy grants across rebuilds; ad-hoc
+    # changes the signature every build. NERU_SIGN_IDENTITY overrides.
+    identity="${NERU_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development/{print $2; exit}')}"
+    codesign --force --deep --sign "${identity:--}" --entitlements resources/Neru.entitlements --options runtime "$app"
 fi
 echo "✓ Release layout assembled in $out"
