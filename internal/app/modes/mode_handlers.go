@@ -336,13 +336,8 @@ func (h *handlerState) handleSearchInputKey(key string) {
 		return
 	}
 
-	// Matches are numbered while a query is typed; a digit picks one.
-	if ctx.SearchQuery() != "" && key >= "1" && key <= "9" {
-		if visible := ctx.Hints(); visible != nil && visible.FindByLabel(key) != nil {
-			h.selectSearchMatch(int(key[0] - '1'))
-
-			return
-		}
+	if h.pickSearchMatchByDigit(key) {
+		return
 	}
 
 	ctx.SetSearchQuery(ctx.SearchQuery() + key)
@@ -402,6 +397,23 @@ func (h *handlerState) confirmHintSearch() {
 	h.selectSearchMatch(max(h.cycleHintIndex, 0))
 }
 
+// pickSearchMatchByDigit acts on the match labeled digit, if a query is typed
+// and such a match is shown; matches are numbered only while there is a query.
+func (h *handlerState) pickSearchMatchByDigit(digit string) bool {
+	ctx := h.hints.Context
+	if ctx.SearchQuery() == "" || len(digit) != 1 || digit < "1" || digit > "9" {
+		return false
+	}
+
+	if visible := ctx.Hints(); visible == nil || visible.FindByLabel(digit) == nil {
+		return false
+	}
+
+	h.selectSearchMatch(int(digit[0] - '1'))
+
+	return true
+}
+
 // searchMatchLimit is how many search matches get a digit label.
 const searchMatchLimit = 9
 
@@ -424,6 +436,15 @@ func (h *handlerState) selectSearchMatch(index int) {
 
 func (h *handlerState) cancelHintSearch() {
 	if h.hints == nil || h.hints.Context == nil {
+		return
+	}
+
+	// Hints opened straight into search have nothing to fall back to:
+	// Escape leaves hints mode rather than revealing every hint.
+	if h.hints.Context.StartWithSearch() {
+		h.stopHintSearchTextInput(false)
+		h.exitMode()
+
 		return
 	}
 

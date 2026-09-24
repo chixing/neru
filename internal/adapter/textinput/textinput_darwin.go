@@ -10,6 +10,8 @@ package textinput
 extern void textInputQueryBridge(char* query, void* userData);
 extern void textInputConfirmBridge(void* userData);
 extern void textInputCancelBridge(void* userData);
+extern void textInputCycleNextBridge(void* userData);
+extern void textInputCyclePreviousBridge(void* userData);
 */
 import "C"
 
@@ -53,6 +55,11 @@ func NewTextInput(logger *zap.Logger) *TextInput {
 	globalTextInputMu.Lock()
 	globalTextInput = textInput
 	globalTextInputMu.Unlock()
+
+	C.NeruSetHintSearchCycleCallbacks(
+		C.TextInputControlCallback(C.textInputCycleNextBridge),
+		C.TextInputControlCallback(C.textInputCyclePreviousBridge),
+	)
 
 	return textInput
 }
@@ -183,5 +190,36 @@ func textInputCancelBridge(_ unsafe.Pointer) {
 		defer textInput.callbackMu.Unlock()
 
 		callback()
+	}()
+}
+
+//export textInputCycleNextBridge
+func textInputCycleNextBridge(_ unsafe.Pointer) { dispatchCycle(false) }
+
+//export textInputCyclePreviousBridge
+func textInputCyclePreviousBridge(_ unsafe.Pointer) { dispatchCycle(true) }
+
+func dispatchCycle(backward bool) {
+	globalTextInputMu.RLock()
+	textInput := globalTextInput
+	globalTextInputMu.RUnlock()
+
+	if textInput == nil {
+		return
+	}
+
+	textInput.mu.RLock()
+	callback := textInput.callbacks.OnCycle
+	textInput.mu.RUnlock()
+
+	if callback == nil {
+		return
+	}
+
+	go func() {
+		textInput.callbackMu.Lock()
+		defer textInput.callbackMu.Unlock()
+
+		callback(backward)
 	}()
 }

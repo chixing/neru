@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -285,8 +286,18 @@ func (h *handlerState) startHintSearch() error {
 					return
 				}
 
+				// A digit typed after the query picks that numbered match.
+				if previous := h.hints.Context.SearchQuery(); strings.HasPrefix(query, previous) &&
+					h.pickSearchMatchByDigit(query[len(previous):]) {
+					return
+				}
+
 				h.hints.Context.SetSearchQuery(query)
 				h.applyHintSearchFilter()
+			},
+			OnCycle: func(backward bool) {
+				// CycleHint takes h.mu itself and checks the mode.
+				_ = h.outer.CycleHint(h.ctx, backward, false)
 			},
 			OnConfirm: func() {
 				h.outer.mu.Lock()
