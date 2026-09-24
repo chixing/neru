@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"image"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -212,6 +213,31 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 		h.hints.Context.SetActiveScan(strategy, captureScope)
 	}
 
+	// A search opens its input before the scan, so typing can start at once;
+	// the query waits on h.mu and is applied once the hints exist.
+	earlySearch := !isRefresh && activation.Search != nil && *activation.Search
+
+	if earlySearch && h.system != nil {
+		// The search input takes focus from the window the scan is about.
+		if bounds, found, err := h.system.FocusedWindowBounds(ctx); err == nil && found {
+			ctx = ports.WithDetectionWindow(ctx, bounds)
+		}
+	}
+
+	earlySearch = earlySearch && h.openSearchBeforeScan()
+
+	abandon := func() {
+		if earlySearch {
+			h.stopHintSearchTextInput(false)
+			h.exitMode()
+
+			return
+		}
+
+		h.abandonHintActivation(isRefresh)
+	}
+
+	atomic.StoreInt32(&h.hintScanRunning, boolToInt32(earlySearch))
 	domainHints, domainHintsErr := h.hintService.GenerateHints(
 		ctx,
 		activation.FilterRoles,
@@ -222,6 +248,8 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 		overrides.labelDirection,
 		overrides.splitWord,
 	)
+	atomic.StoreInt32(&h.hintScanRunning, 0)
+
 	if domainHintsErr != nil {
 		h.logger.Error(
 			"Failed to show hints",
@@ -229,7 +257,7 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 			zap.String("action", actionString),
 		)
 
-		h.abandonHintActivation(isRefresh)
+		abandon()
 
 		return
 	}
@@ -253,13 +281,28 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 	if len(domainHints) == 0 {
 		h.logger.Warn("No hints generated for action", zap.String("action", actionString))
 
-		h.abandonHintActivation(isRefresh)
+		abandon()
 
 		return
 	}
 
 	// Create domain hint collection from generated hints
 	hintCollection := domainHint.NewCollection(domainHints)
+
+	if earlySearch {
+		// Mode, overlay and input are already up; the hints go behind the
+		// search, which picks what is shown.
+		h.hints.Context.SetSourceHints(hintCollection)
+		h.applyHintSearchFilter()
+		h.logger.Info("Hints mode activated",
+			zap.Duration("elapsed", time.Since(activationStart)),
+			zap.Int("hint_count", len(domainHints)),
+			zap.String("strategy", strategy),
+			zap.Bool("search_opened_before_scan", true))
+		h.startIndicatorPolling(domain.ModeHints)
+
+		return
+	}
 
 	// Initialize hint manager and router if not already set up
 	// Note: Manager is created once and reused across activations (holds mutable state).
@@ -328,6 +371,51 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 	}
 
 	h.startIndicatorPolling(domain.ModeHints)
+}
+
+// openSearchBeforeScan enters hints mode with no hints and opens the search
+// input, so a search activation can take typing while its scan runs. It
+// reports false, leaving the mode as it was, when the input could not open.
+func (h *handlerState) openSearchBeforeScan() bool {
+	if h.hints == nil || h.hints.Context == nil {
+		return false
+	}
+
+	if h.hints.Context.Manager() == nil {
+		manager := domainHint.NewManager(h.logger, &h.outer.mu)
+		manager.SetUpdateCallback(h.drawHints)
+		h.hints.Context.SetManager(manager)
+	}
+
+	h.enterMode(domain.ModeHints)
+	h.hints.Context.SetRouter(domainHint.NewRouter(h.hints.Context.Manager(), h.logger))
+
+	// Same ordering rule as the regular path: clear the flag right before
+	// SetHints so the first draw shows the overlay.
+	h.hintsFrameOnScreen = false
+
+	err := h.hints.Context.SetHints(domainHint.NewCollection(nil))
+	if err == nil {
+		err = h.startHintSearch()
+	}
+
+	if err != nil {
+		h.logger.Warn("Could not open hint search before the scan", zap.Error(err))
+		h.stopHintSearchTextInput(false)
+		h.exitMode()
+
+		return false
+	}
+
+	return true
+}
+
+func boolToInt32(b bool) int32 {
+	if b {
+		return 1
+	}
+
+	return 0
 }
 
 // needsScreenCapturePermission reports whether a screen-capture strategy is

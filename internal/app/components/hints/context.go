@@ -238,6 +238,12 @@ func (c *Context) SetHints(hints *domainHint.Collection) error {
 	return nil
 }
 
+// SetSourceHints replaces the collection search filters without drawing it;
+// the caller re-applies the search to choose what is visible.
+func (c *Context) SetSourceHints(hints *domainHint.Collection) {
+	c.sourceHints = hints
+}
+
 // SetVisibleHints sets the currently selectable hint collection without
 // replacing the original source collection used by search cancellation.
 func (c *Context) SetVisibleHints(hints *domainHint.Collection) error {

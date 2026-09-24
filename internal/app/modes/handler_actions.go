@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 
 	"go.uber.org/zap"
 
@@ -270,10 +271,18 @@ func (h *handlerState) startHintSearch() error {
 		Height: bounds.Dy(),
 	}
 
+	echoScreen := h.screenBounds
+
 	started, _ := h.textInput.StartHintSearchSession(
 		h.ctx,
 		ports.TextInputCallbacks{
 			OnQueryChanged: func(query string) {
+				// While the scan holds h.mu, show the typing so the input
+				// feels live; the query is applied once the scan releases it.
+				if atomic.LoadInt32(&h.hintScanRunning) == 1 && h.overlayPort != nil {
+					_ = h.overlayPort.DrawHintSearch(ports.HintSearch{Screen: echoScreen, Query: query})
+				}
+
 				h.outer.mu.Lock()
 				defer h.outer.mu.Unlock()
 

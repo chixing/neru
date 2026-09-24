@@ -22,6 +22,7 @@ import (
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain/element"
+	"github.com/y3owk1n/neru/internal/ports"
 )
 
 const bytesPerPixel = 4
@@ -281,7 +282,10 @@ func (a *Adapter) DetectContours(
 		}
 	}()
 
-	rects, err := contour.Detect(ctx, img, scale, contour.ParamsFromConfig(cfg))
+	var rects []image.Rectangle
+	if !ports.TextOnlyDetection(ctx) {
+		rects, err = contour.Detect(ctx, img, scale, contour.ParamsFromConfig(cfg))
+	}
 	<-done
 
 	if err != nil {
