@@ -4,6 +4,7 @@ import (
 	"context"
 	"image"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -277,14 +278,23 @@ func (c *Collection) FilterByPrefix(prefix string) []*Interface {
 	return c.trie.FindByPrefix(prefix)
 }
 
-// FilterByText returns hints whose element text contains query.
+// fuzzyMinQueryLen is the shortest query that also matches as a subsequence.
+// Shorter ones would match nearly every element.
+const fuzzyMinQueryLen = 3
+
+// FilterByText returns hints whose element text contains query, followed by
+// hints whose text holds the query's characters in order ("bmode" finds
+// "BatchMode"), which tolerates OCR slips and partial words.
 func (c *Collection) FilterByText(query string) *Collection {
 	if query == "" {
 		return c
 	}
 
 	normalizedQuery := normalizeForSearch(query)
-	filtered := make([]*Interface, 0, len(c.hints))
+	compactQuery := strings.ReplaceAll(normalizedQuery, " ", "")
+	fuzzy := len([]rune(compactQuery)) >= fuzzyMinQueryLen
+
+	var contains, subsequence []*Interface
 
 	for _, hint := range c.hints {
 		elem := hint.Element()
@@ -292,15 +302,67 @@ func (c *Collection) FilterByText(query string) *Collection {
 			continue
 		}
 
-		if strings.Contains(normalizeForSearch(elem.Title()), normalizedQuery) ||
-			strings.Contains(normalizeForSearch(elem.Description()), normalizedQuery) ||
-			strings.Contains(normalizeForSearch(elem.Value()), normalizedQuery) ||
-			strings.Contains(normalizeForSearch(elem.SearchText()), normalizedQuery) {
-			filtered = append(filtered, hint)
+		texts := [...]string{
+			normalizeForSearch(elem.Title()),
+			normalizeForSearch(elem.Description()),
+			normalizeForSearch(elem.Value()),
+			normalizeForSearch(elem.SearchText()),
+		}
+
+		switch {
+		case anyText(texts[:], func(t string) bool { return strings.Contains(t, normalizedQuery) }):
+			contains = append(contains, hint)
+		case fuzzy && anyText(texts[:], func(t string) bool { return isSubsequence(compactQuery, t) }):
+			subsequence = append(subsequence, hint)
 		}
 	}
 
-	return NewCollection(filtered)
+	return NewCollection(append(contains, subsequence...))
+}
+
+// Numbered relabels the first limit hints "1", "2", ... in collection order
+// and drops the rest, so search matches are picked with one digit.
+func (c *Collection) Numbered(limit int) *Collection {
+	numbered := make([]*Interface, 0, min(limit, len(c.hints)))
+
+	for i, hint := range c.hints {
+		if i == limit {
+			break
+		}
+
+		relabeled, err := NewHint(strconv.Itoa(i+1), hint.Element(), hint.Position())
+		if err != nil {
+			continue
+		}
+
+		numbered = append(numbered, relabeled)
+	}
+
+	return NewCollection(numbered)
+}
+
+func anyText(texts []string, match func(string) bool) bool {
+	for _, t := range texts {
+		if t != "" && match(t) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isSubsequence reports whether every rune of query appears in text in order.
+func isSubsequence(query, text string) bool {
+	q := []rune(query)
+	i := 0
+
+	for _, r := range text {
+		if i < len(q) && r == q[i] {
+			i++
+		}
+	}
+
+	return i == len(q)
 }
 
 func normalizeForSearch(text string) string {

@@ -321,10 +321,28 @@ func (h *handlerState) handleSearchInputKey(key string) {
 		h.applyHintSearchFilter()
 
 		return
+	case configpkg.KeyNameTab, "shift+" + configpkg.KeyNameTab:
+		backward := normalizedKey != configpkg.KeyNameTab
+
+		// CycleHint takes h.mu, which this key handler already holds.
+		go func() {
+			_ = h.outer.CycleHint(h.ctx, backward, false)
+		}()
+
+		return
 	}
 
 	if utf8.RuneCountInString(key) != 1 {
 		return
+	}
+
+	// Matches are numbered while a query is typed; a digit picks one.
+	if ctx.SearchQuery() != "" && key >= "1" && key <= "9" {
+		if visible := ctx.Hints(); visible != nil && visible.FindByLabel(key) != nil {
+			h.selectSearchMatch(int(key[0] - '1'))
+
+			return
+		}
 	}
 
 	ctx.SetSearchQuery(ctx.SearchQuery() + key)
@@ -354,6 +372,10 @@ func (h *handlerState) applyHintSearchFilter() {
 	}
 
 	filteredHints := sourceHints.FilterByText(ctx.SearchQuery())
+	if ctx.SearchQuery() != "" {
+		// ponytail: only the best 9 matches get a digit; refine the query for more.
+		filteredHints = filteredHints.Numbered(searchMatchLimit)
+	}
 
 	setHintsErr := ctx.SetVisibleHints(filteredHints)
 	if setHintsErr != nil {
@@ -369,32 +391,35 @@ func (h *handlerState) confirmHintSearch() {
 		return
 	}
 
-	h.stopHintSearchTextInput(false)
-
-	ctx := h.hints.Context
-	ctx.SetSearchActive(false)
-	h.hideHintSearchInput()
-
-	visibleHints := ctx.Hints()
-	if visibleHints != nil && visibleHints.Count() >= 1 {
-		// When a pending action is configured and more than one hint matches
-		// the search query, just close the search overlay without executing
-		// the action. This lets the user type the exact hint label to select
-		// an element instead of blindly acting on the first match.
-		if ctx.PendingAction() != nil && visibleHints.Count() > 1 {
-			h.cycleHintIndex = -1
-
-			return
-		}
-
-		go func() {
-			_ = h.outer.CycleHint(h.ctx, false, true)
-		}()
-	} else {
+	visibleHints := h.hints.Context.Hints()
+	if visibleHints == nil || visibleHints.Count() == 0 {
 		h.cancelHintSearch()
+
+		return
 	}
 
-	h.cycleHintIndex = -1
+	// Return acts on the match Tab moved to, or the first one.
+	h.selectSearchMatch(max(h.cycleHintIndex, 0))
+}
+
+// searchMatchLimit is how many search matches get a digit label.
+const searchMatchLimit = 9
+
+// selectSearchMatch closes the search input and acts on the index-th
+// visible match through CycleHint, which moves there and runs the pending
+// action.
+func (h *handlerState) selectSearchMatch(index int) {
+	h.stopHintSearchTextInput(false)
+
+	h.hints.Context.SetSearchActive(false)
+	h.hideHintSearchInput()
+
+	// CycleHint steps forward from cycleHintIndex, landing on index.
+	h.cycleHintIndex = index - 1
+
+	go func() {
+		_ = h.outer.CycleHint(h.ctx, false, true)
+	}()
 }
 
 func (h *handlerState) cancelHintSearch() {

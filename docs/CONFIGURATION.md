@@ -846,7 +846,7 @@ Labels clickable UI elements with short overlay labels. By default uses the plat
 
 Pick `vision` when you want to type what you see, or the app is text-heavy. Pick `contour` when latency matters, the targets are icons rather than words, or OCR is not installed. Both are overridable per-app.
 
-Press `/` to text-search elements. `Space` for multi-word queries. `Return` confirms filtered hints (first is auto-selected). `Escape` cancels search.
+Press `/` to text-search elements. `Space` for multi-word queries. The best nine matches are numbered: press a digit to pick one, `Tab`/`Shift+Tab` to move between them, `Return` to act on the current one (the first by default). Queries of three or more characters also match their letters in order (`bmode` finds "BatchMode"), after exact matches. `Escape` cancels search.
 
 Start with search visible: `neru hints --search` (see [CLI.md](CLI.md#neru-hints))
 
