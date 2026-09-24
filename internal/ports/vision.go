@@ -55,3 +55,35 @@ type VisionPort interface {
 	// the detection that asked for it.
 	CaptureScreen(ctx context.Context) (*image.RGBA, error)
 }
+
+type textOnlyDetectionKey struct{}
+
+// WithTextOnlyDetection marks a DetectContours call whose caller wants
+// recognized words only; an adapter that recognizes text skips the contour
+// pass for it.
+func WithTextOnlyDetection(ctx context.Context) context.Context {
+	return context.WithValue(ctx, textOnlyDetectionKey{}, true)
+}
+
+// TextOnlyDetection reports whether ctx was marked by WithTextOnlyDetection.
+func TextOnlyDetection(ctx context.Context) bool {
+	textOnly, _ := ctx.Value(textOnlyDetectionKey{}).(bool)
+
+	return textOnly
+}
+
+type detectionWindowKey struct{}
+
+// WithDetectionWindow pins the window a capture strategy scans when its scope
+// is the focused window, for a caller that read it before taking focus itself
+// (the search input does, so it can take typing while the scan runs).
+func WithDetectionWindow(ctx context.Context, bounds image.Rectangle) context.Context {
+	return context.WithValue(ctx, detectionWindowKey{}, bounds)
+}
+
+// DetectionWindow returns the window pinned by WithDetectionWindow.
+func DetectionWindow(ctx context.Context) (image.Rectangle, bool) {
+	bounds, ok := ctx.Value(detectionWindowKey{}).(image.Rectangle)
+
+	return bounds, ok
+}

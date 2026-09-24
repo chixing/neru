@@ -171,6 +171,9 @@ type handlerState struct {
 	textInput                  ports.TextInputPort
 	hintSearchTextInputActive  bool
 	hintSearchEventTapDisabled bool
+	// hintScanRunning is set while a search activation scans with its input
+	// already open; the input echoes typing without h.mu, which the scan holds.
+	hintScanRunning int32
 
 	// Pending modifier taps waiting to be committed after a short "no follow-up"
 	// window. A regular key press cancels all pending taps.

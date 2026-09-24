@@ -145,7 +145,13 @@ func (s *HintService) GenerateHints(
 	case domain.StrategyContour:
 		contourCfg := cfg.Contour
 		contourCfg.DetectText = contourCfg.DetectText || splitWord
-		elements = s.generateHintsContour(ctx, filter, captureScope, contourCfg)
+		contourCtx := ctx
+		if splitWord {
+			// A search is shown text matches only, so skip the contour pass.
+			contourCtx = ports.WithTextOnlyDetection(ctx)
+		}
+
+		elements = s.generateHintsContour(contourCtx, filter, captureScope, contourCfg)
 	default:
 		elements, genErr = s.generateHintsAX(ctx, filter)
 	}
@@ -431,6 +437,10 @@ func (s *HintService) resolveDetectionBounds(
 	captureScope string,
 ) (image.Rectangle, bool) {
 	if captureScope != domain.CaptureScopeScreen {
+		if pinned, ok := ports.DetectionWindow(ctx); ok {
+			return pinned, true
+		}
+
 		windowBounds, found, boundsErr := s.system.FocusedWindowBounds(ctx)
 
 		switch {

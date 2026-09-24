@@ -83,7 +83,17 @@ static CGImageRef captureDisplayImageWithScreenCaptureKit(CGDirectDisplayID disp
 				return;
 			}
 
-			SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
+			// Neru's own overlays (the search input, hint labels) are not part of
+			// what is being read.
+			NSMutableArray<SCRunningApplication *> *own = [NSMutableArray array];
+			for (SCRunningApplication *app in content.applications) {
+				if (app.processID == getpid()) {
+					[own addObject:app];
+				}
+			}
+			SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display
+			                                             excludingApplications:own
+			                                                  exceptingWindows:@[]];
 			SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
 			config.width = CGDisplayPixelsWide(display.displayID);
 			config.height = CGDisplayPixelsHigh(display.displayID);
@@ -335,65 +345,112 @@ VisionResult *NeruDetectElements(CGRect screenBounds, NeruVisionConfig config) {
 	}
 }
 
+// Vision scales a large image down before reading it, so small UI text on a
+// big capture is lost. Reading tiles no larger than this keeps it legible.
+static const CGFloat kTextTileMax = 1920;
+// Tiles overlap by this much so a word on a seam is read whole by one of them.
+static const CGFloat kTextTileOverlap = 48;
+
 VisionResult *NeruRecognizeTextInImage(CGImageRef image, CGRect cropPx, int accurate, int timeoutMS) {
 	@autoreleasepool {
-		CGImageRef crop = CGImageCreateWithImageInRect(image, cropPx);
-		if (!crop) {
+		CGRect crop = CGRectIntersection(
+		    CGRectIntegral(cropPx), CGRectMake(0, 0, CGImageGetWidth(image), CGImageGetHeight(image)));
+		if (CGRectIsEmpty(crop)) {
 			return emptyVisionResult();
 		}
-		// CGImageCreateWithImageInRect clips to the image; use what it kept.
-		CGFloat cropW = (CGFloat)CGImageGetWidth(crop);
-		CGFloat cropH = (CGFloat)CGImageGetHeight(crop);
-		CGRect cropRect = CGRectMake(0, 0, cropW, cropH);
-		CGFloat offX = MAX(cropPx.origin.x, 0);
-		CGFloat offY = MAX(cropPx.origin.y, 0);
 
-		VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
-		request.recognitionLevel =
-		    accurate ? VNRequestTextRecognitionLevelAccurate : VNRequestTextRecognitionLevelFast;
-		request.usesLanguageCorrection = NO;
-
-		dispatch_group_t group = dispatch_group_create();
-		dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-			VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:crop options:@{}];
-			[handler performRequests:@[ request ] error:nil];
-			CGImageRelease(crop);
-		});
-		if (dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeoutMS * 1000000LL)) != 0) {
-			[request cancel];
-			return emptyVisionResult();
-		}
+		int cols = (int)ceil(crop.size.width / kTextTileMax);
+		int rows = (int)ceil(crop.size.height / kTextTileMax);
+		CGFloat tileW = ceil(crop.size.width / cols);
+		CGFloat tileH = ceil(crop.size.height / rows);
 
 		NSMutableArray *regionList = [NSMutableArray array];
-		for (VNRecognizedTextObservation *obs in request.results) {
-			VNRecognizedText *top = [[obs topCandidates:1] firstObject];
-			if (!top || top.string.length == 0) {
-				continue;
+		NSMutableArray<VNRecognizeTextRequest *> *requests = [NSMutableArray array];
+		NSLock *lock = [[NSLock alloc] init];
+		dispatch_group_t group = dispatch_group_create();
+
+		CFRetain(image);
+		for (int r = 0; r < rows; r++) {
+			for (int c = 0; c < cols; c++) {
+				// core is the tile's own area; a word counts for this tile only
+				// when its center lies in core, so the overlap never doubles it.
+				CGRect core = CGRectIntersection(
+				    CGRectMake(crop.origin.x + c * tileW, crop.origin.y + r * tileH, tileW, tileH), crop);
+				CGRect read = CGRectIntersection(CGRectInset(core, -kTextTileOverlap, -kTextTileOverlap), crop);
+
+				VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
+				request.recognitionLevel =
+				    accurate ? VNRequestTextRecognitionLevelAccurate : VNRequestTextRecognitionLevelFast;
+				request.usesLanguageCorrection = NO;
+				[requests addObject:request];
+
+				dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+					CGImageRef tile = CGImageCreateWithImageInRect(image, read);
+					if (!tile) {
+						return;
+					}
+					VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:tile options:@{}];
+					[handler performRequests:@[ request ] error:nil];
+					CGRect tileRect = CGRectMake(0, 0, CGImageGetWidth(tile), CGImageGetHeight(tile));
+					CGImageRelease(tile);
+
+					NSMutableArray *found = [NSMutableArray array];
+					for (VNRecognizedTextObservation *obs in request.results) {
+						VNRecognizedText *top = [[obs topCandidates:1] firstObject];
+						if (!top || top.string.length == 0) {
+							continue;
+						}
+						NSString *text = top.string;
+						[text enumerateSubstringsInRange:NSMakeRange(0, text.length)
+						                         options:NSStringEnumerationByWords
+						                      usingBlock:^(NSString *word, NSRange wordRange, NSRange enclosing, BOOL *stop) {
+							                      VNRectangleObservation *wordObs = [top boundingBoxForRange:wordRange
+							                                                                           error:nil];
+							                      if (wordObs == nil || CGRectIsEmpty(wordObs.boundingBox)) {
+								                      return;
+							                      }
+							                      CGRect w = visionRectToCGRect(tileRect, wordObs.boundingBox);
+							                      w.origin.x += read.origin.x;
+							                      w.origin.y += read.origin.y;
+							                      if (!CGRectContainsPoint(core, CGPointMake(CGRectGetMidX(w), CGRectGetMidY(w)))) {
+								                      return;
+							                      }
+							                      [found addObject:@{
+								                      @"x" : @(w.origin.x),
+								                      @"y" : @(w.origin.y),
+								                      @"w" : @(w.size.width),
+								                      @"h" : @(w.size.height),
+								                      @"label" : word
+							                      }];
+						                      }];
+					}
+					[lock lock];
+					[regionList addObjectsFromArray:found];
+					[lock unlock];
+				});
 			}
-			NSString *text = top.string;
-			[text enumerateSubstringsInRange:NSMakeRange(0, text.length)
-			                         options:NSStringEnumerationByWords
-			                      usingBlock:^(NSString *word, NSRange wordRange, NSRange enclosing, BOOL *stop) {
-				                      VNRectangleObservation *wordObs = [top boundingBoxForRange:wordRange error:nil];
-				                      if (wordObs == nil || CGRectIsEmpty(wordObs.boundingBox)) {
-					                      return;
-				                      }
-				                      CGRect r = visionRectToCGRect(cropRect, wordObs.boundingBox);
-				                      [regionList addObject:@{
-					                      @"x" : @(offX + r.origin.x),
-					                      @"y" : @(offY + r.origin.y),
-					                      @"w" : @(r.size.width),
-					                      @"h" : @(r.size.height),
-					                      @"label" : word
-				                      }];
-			                      }];
 		}
 
+		long timedOut = dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeoutMS * 1000000LL));
+		dispatch_group_notify(group, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+			CFRelease(image);
+		});
+		if (timedOut != 0) {
+			for (VNRecognizeTextRequest *request in requests) {
+				[request cancel];
+			}
+			return emptyVisionResult();
+		}
+
+		[lock lock];
+		NSArray *regions = [regionList copy];
+		[lock unlock];
+
 		VisionResult *result = malloc(sizeof(VisionResult));
-		result->count = (int)[regionList count];
+		result->count = (int)[regions count];
 		result->regions = malloc(sizeof(VisionRegion) * MAX(result->count, 1));
 		for (int i = 0; i < result->count; i++) {
-			NSDictionary *dict = regionList[i];
+			NSDictionary *dict = regions[i];
 			result->regions[i].x = [dict[@"x"] doubleValue];
 			result->regions[i].y = [dict[@"y"] doubleValue];
 			result->regions[i].width = [dict[@"w"] doubleValue];
