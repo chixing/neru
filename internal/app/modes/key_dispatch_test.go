@@ -437,3 +437,62 @@ func mustNewModeHint(label string, elem *element.Element) *domainhint.Interface 
 
 	return hint
 }
+
+func TestHintSearchLabelsMatchesWithKeysThatMatchNothing(t *testing.T) {
+	t.Parallel()
+
+	appState := state.NewAppState()
+	appState.SetMode(domain.ModeHints)
+
+	handler := newHandlerWithState(handlerState{
+		ctx:           context.Background(),
+		config:        &configpkg.Config{Hints: configpkg.HintsConfig{HintCharacters: "asdfl"}},
+		logger:        zap.NewNop(),
+		appState:      appState,
+		modifierState: state.NewModifierState(),
+		hints:         &components.HintsComponent{Context: &hintscomponent.Context{}},
+		modes:         map[domain.Mode]Mode{},
+	})
+
+	var hints []*domainhint.Interface
+
+	for i, title := range []string{"Save file", "Save all"} {
+		elem, _ := element.NewElement(
+			element.ID(title),
+			image.Rect(0, i*30, 20, i*30+20),
+			element.RoleButton,
+			element.WithTitle(title),
+		)
+		hints = append(hints, mustNewModeHint(strings.Repeat("A", i+1), elem))
+	}
+
+	handler.mu.Lock()
+	handler.hints.Context.SetManager(domainhint.NewManager(handler.logger, &handler.mu))
+	_ = handler.hints.Context.SetHints(domainhint.NewCollection(hints))
+	handler.hints.Context.SetSearchActive(true)
+	handler.mu.Unlock()
+
+	for _, key := range []string{"s", "a", "v", "e"} {
+		handler.HandleKeyPress(key)
+	}
+
+	// a, f and l still extend "save" into a match; s and d match nothing.
+	if handler.searchLabelChars != "sd" {
+		t.Fatalf("label keys = %q, want %q", handler.searchLabelChars, "sd")
+	}
+
+	labels := []string{}
+	for _, match := range handler.hints.Context.Hints().All() {
+		labels = append(labels, match.Label())
+	}
+
+	if strings.Join(labels, ",") != "S,D" {
+		t.Fatalf("labels = %v, want S,D", labels)
+	}
+
+	handler.HandleKeyPress("f")
+
+	if got := handler.hints.Context.SearchQuery(); got != "savef" {
+		t.Fatalf("query = %q, want savef", got)
+	}
+}
