@@ -842,7 +842,7 @@ Explicit component colors override theme derivation. Omitted colors inherit from
 Labels clickable UI elements with short overlay labels. By default uses the platform accessibility tree (`axtree` strategy). Two screen-capture strategies exist for apps whose accessibility tree is too thin to hint from; both scan the focused window by default (`capture_scope` widens that to the whole screen), and both add the system surfaces the `include_*` options ask for from the accessibility tree:
 
 - `vision`: on-screen recognition. The Vision framework on macOS (text plus rectangles), tesseract OCR on Linux and `Windows.Media.Ocr` on Windows (text only). Detected text becomes the element's title, so hint search (`--search`) and `--split-word` work. Costs an ML or OCR pass per activation; Linux needs tesseract installed and Windows an OCR language pack.
-- `contour`: edge and contour analysis of the window pixels, an algorithm ported from [wl-kbptr](https://github.com/moverest/wl-kbptr). Finds anything with a visible outline (buttons, icons, toolbar items, text runs) in a few milliseconds with no external dependency. Elements carry no text, so search and word splitting do not apply, and `hints.vision.*` is not read. The detector's own numbers are under [`[hints.contour]`](#contour-options).
+- `contour`: edge and contour analysis of the window pixels, an algorithm ported from [wl-kbptr](https://github.com/moverest/wl-kbptr). Finds anything with a visible outline (buttons, icons, toolbar items, text runs) in a few milliseconds with no external dependency. Elements carry no text unless the activation asks for search (`--search` or `--split-word`) or `hints.contour.detect_text` is on; on macOS those runs also recognize the words on screen and attach each to the target around it, so search matches them. `hints.vision.*` is not read. The detector's own numbers are under [`[hints.contour]`](#contour-options).
 
 Pick `vision` when you want to type what you see, or the app is text-heavy. Pick `contour` when latency matters, the targets are icons rather than words, or OCR is not installed. Both are overridable per-app.
 
@@ -1106,6 +1106,7 @@ them.
 | `same_center_slack`   | float | `8.0`   | A nested blob whose centre is within this many pixels of its parent's is a duplicate of the parent.          |
 | `square_icon_size`    | float | `40.0`  | A roughly square parent smaller than this keeps its box, and its inner detail (the icon artwork) is dropped. |
 | `square_icon_slack`   | float | `5.0`   | How far from square, as width minus height, that parent may be.                                              |
+| `detect_text`         | bool  | `false` | macOS only. Recognize the words on screen on every activation and attach them to the targets, so `/` search matches them. When off, words are recognized only for `neru hints --search` or `--split-word`. Roughly doubles the pass time. |
 
 ```toml
 [hints.contour]
@@ -1121,6 +1122,7 @@ container_height = 50.0
 same_center_slack = 8.0
 square_icon_size = 40.0
 square_icon_slack = 5.0
+detect_text = false
 ```
 
 ### Choosing a label direction

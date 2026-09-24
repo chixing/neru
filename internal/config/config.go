@@ -437,6 +437,7 @@ type HintsContourConfig struct {
 	SameCenterSlack   float64 `json:"sameCenterSlack"   toml:"same_center_slack"`
 	SquareIconSize    float64 `json:"squareIconSize"    toml:"square_icon_size"`
 	SquareIconSlack   float64 `json:"squareIconSlack"   toml:"square_icon_slack"`
+	DetectText        bool    `json:"detectText"        toml:"detect_text"`
 }
 
 // HintsConfig defines the visual and behavioral settings for hints mode.

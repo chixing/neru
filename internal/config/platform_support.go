@@ -23,6 +23,7 @@ const (
 	noteKeyboardLayout = "the keyboard layout is detected rather than chosen outside macOS"
 	noteMacOSSurfaces  = "the menu bar, the Dock, Notification Center, Stage Manager, " +
 		"picture-in-picture and the screen-capture chrome are macOS surfaces with no counterpart"
+	noteContourText    = "only the macOS capture path runs text recognition beside contour"
 	noteMissionControl = "Mission Control is a macOS concept, so the detection never fires " +
 		"and the hooks never run"
 	noteTreeDepth = "only the AX walk takes a depth limit; the AT-SPI walk uses a fixed one " +
@@ -95,6 +96,10 @@ func PlatformSupport() parity.Declaration {
 		),
 		parity.On(parity.KindOption, darwinOnly, noteKeyboardLayout,
 			"general.kb_layout_to_use",
+		),
+
+		parity.On(parity.KindOption, darwinOnly, noteContourText,
+			"hints.contour.detect_text",
 		),
 
 		parity.On(parity.KindOption, darwinOnly, noteMacOSSurfaces,

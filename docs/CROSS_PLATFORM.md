@@ -720,6 +720,7 @@ works; this says whether a word a person wrote does anything.
 | ---- | ---- | --- | --- | --- | --- |
 | `general.hide_overlay_in_screen_share` | option | ✅ | ❌ | ❌ | hiding the overlay from a screen share is an NSWindow sharing level, a Quartz concept with no X11, Wayland or Win32 counterpart |
 | `general.kb_layout_to_use` | option | ✅ | ❌ | ❌ | the keyboard layout is detected rather than chosen outside macOS |
+| `hints.contour.detect_text` | option | ✅ | ❌ | ❌ | only the macOS capture path runs text recognition beside contour |
 | `hints.include_menubar_hints` | option | ✅ | ❌ | ❌ | the menu bar, the Dock, Notification Center, Stage Manager, picture-in-picture and the screen-capture chrome are macOS surfaces with no counterpart |
 | `hints.additional_menubar_hints_targets` | option | ✅ | ❌ | ❌ | the menu bar, the Dock, Notification Center, Stage Manager, picture-in-picture and the screen-capture chrome are macOS surfaces with no counterpart |
 | `hints.include_dock_hints` | option | ✅ | ❌ | ❌ | the menu bar, the Dock, Notification Center, Stage Manager, picture-in-picture and the screen-capture chrome are macOS surfaces with no counterpart |

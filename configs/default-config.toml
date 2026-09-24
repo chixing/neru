@@ -207,6 +207,7 @@ container_height = 50.0                      # Height from which a blob counts a
 same_center_slack = 8.0                      # Nested blob within this many px of its parent's centre duplicates it
 square_icon_size = 40.0                      # Square parents smaller than this keep their box and drop their inner detail
 square_icon_slack = 5.0                      # How far from square (|w-h|) that parent may be
+detect_text = false                          # macOS: always recognize words so search works. Off: only on `hints --search` / `--split-word`
 
 # Grid mode
 # See https://github.com/y3owk1n/neru/blob/main/docs/CONFIGURATION.md#grid

@@ -187,7 +187,7 @@ func (a *Adapter) DetectContours(
 		return nil, err
 	}
 
-	return contour.Elements(region.Min, region, rects), nil
+	return contour.Elements(region.Min, region, rects, nil), nil
 }
 
 // Health reports whether the vision strategy can run on this machine.

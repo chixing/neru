@@ -182,6 +182,17 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 		strategy = overrides.strategy
 	}
 
+	// Contour elements carry no text, so a search activation asks the
+	// contour pass to recognize words too. Kept on the context so a
+	// screen-change refresh regenerates with text as well.
+	if strategy == domain.StrategyContour && activation.Search != nil && *activation.Search {
+		overrides.splitWord = true
+
+		if h.hints != nil && h.hints.Context != nil {
+			h.hints.Context.SetSplitWord(true)
+		}
+	}
+
 	if h.needsScreenCapturePermission(strategy) {
 		// The permission request blocks on a modal dialog and h.mu must not be
 		// held across it (see the SystemPort contract). The activation is

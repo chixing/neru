@@ -127,10 +127,10 @@ func (s *HintService) GenerateHints(
 		labelDirection = labelDirectionOverride
 	}
 
-	if splitWord && strategy != domain.StrategyVision {
+	if splitWord && strategy != domain.StrategyVision && strategy != domain.StrategyContour {
 		return nil, derrors.New(
 			derrors.CodeInvalidInput,
-			"--split-word is only supported when resolved strategy is 'vision'",
+			"--split-word is only supported when resolved strategy is 'vision' or 'contour'",
 		)
 	}
 
@@ -143,7 +143,9 @@ func (s *HintService) GenerateHints(
 	case domain.StrategyVision:
 		elements = s.generateHintsVision(ctx, filter, captureScope, splitWord)
 	case domain.StrategyContour:
-		elements = s.generateHintsContour(ctx, filter, captureScope, cfg.Contour)
+		contourCfg := cfg.Contour
+		contourCfg.DetectText = contourCfg.DetectText || splitWord
+		elements = s.generateHintsContour(ctx, filter, captureScope, contourCfg)
 	default:
 		elements, genErr = s.generateHintsAX(ctx, filter)
 	}
