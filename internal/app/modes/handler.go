@@ -174,6 +174,9 @@ type handlerState struct {
 	// hintScanRunning is set while a search activation scans with its input
 	// already open; the input echoes typing without h.mu, which the scan holds.
 	hintScanRunning int32
+	// searchLabelChars are the keys labeling search matches: typing one
+	// would leave no match, so it picks a label instead of extending the query.
+	searchLabelChars string
 
 	// Pending modifier taps waiting to be committed after a short "no follow-up"
 	// window. A regular key press cancels all pending taps.
