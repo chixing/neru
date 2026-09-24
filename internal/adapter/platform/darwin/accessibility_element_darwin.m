@@ -290,7 +290,9 @@ ElementInfo *NeruGetElementInfo(void *element) {
 		AXError error = AXUIElementCopyMultipleAttributeValues(axElement, attributes, 0, &values);
 		CFRelease(attributes);
 
-		if (error != kAXErrorSuccess || !values) {
+		// Some apps answer with fewer entries than requested; indexing past
+		// them throws NSRangeException and kills the daemon.
+		if (error != kAXErrorSuccess || !values || CFArrayGetCount(values) < 13) {
 			if (values)
 				CFRelease(values);
 			pid_t pid;
@@ -300,7 +302,7 @@ ElementInfo *NeruGetElementInfo(void *element) {
 			return info;
 		}
 
-		// With option=0, values always has exactly 13 entries (one per requested attribute).
+		// With option=0, values normally has 13 entries (one per requested attribute).
 		// Slots for unsupported/errored attributes hold an AX error placeholder (CFNumber),
 		// which the CFGetTypeID checks below will correctly reject.
 		CFTypeRef positionValue = (CFTypeRef)CFArrayGetValueAtIndex(values, 0);
