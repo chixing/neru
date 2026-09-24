@@ -366,7 +366,9 @@ func (h *handlerState) applyHintSearchFilter() {
 
 	filteredHints := sourceHints.FilterByText(ctx.SearchQuery())
 	if ctx.SearchQuery() != "" {
-		filteredHints = h.relabelSearchMatches(filteredHints)
+		// Letters go to the query while typing, so matches wear a marker no
+		// key can type; Return swaps it for real labels.
+		filteredHints = markSearchMatches(filteredHints)
 	}
 
 	setHintsErr := ctx.SetVisibleHints(filteredHints)
@@ -401,6 +403,27 @@ func (h *handlerState) confirmHintSearch() {
 	h.stopHintSearchTextInput(false)
 	h.hints.Context.SetSearchActive(false)
 	h.hideHintSearchInput()
+
+	setHintsErr := h.hints.Context.SetVisibleHints(h.relabelSearchMatches(visibleHints))
+	if setHintsErr != nil {
+		h.logger.Error("Failed to label search matches", zap.Error(setHintsErr))
+	}
+}
+
+// searchMatchMarker labels matches while the query is being typed.
+const searchMatchMarker = "•"
+
+func markSearchMatches(matches *domainHint.Collection) *domainHint.Collection {
+	marked := make([]*domainHint.Interface, 0, matches.Count())
+
+	for _, match := range matches.All() {
+		hint, err := domainHint.NewHint(searchMatchMarker, match.Element(), match.Position())
+		if err == nil {
+			marked = append(marked, hint)
+		}
+	}
+
+	return domainHint.NewCollection(marked)
 }
 
 // relabelSearchMatches gives matches the shortest labels hint_characters
