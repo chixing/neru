@@ -95,6 +95,11 @@ void *NeruGetApplicationByBundleId(const char *bundle_id) {
 
 		NSRunningApplication *app = apps.firstObject;
 		pid_t pid = app.processIdentifier;
+		// Neru answers AX queries about itself in-process, where AppKit
+		// asserts the main thread; callers here run on other threads.
+		if (pid == getpid()) {
+			return NULL;
+		}
 		AXUIElementRef axApp = AXUIElementCreateApplication(pid);
 		return (void *)axApp;
 	}
