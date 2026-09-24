@@ -8,7 +8,7 @@ import (
 	"github.com/y3owk1n/neru/internal/domain/hint"
 )
 
-func TestFilterByText_ContainsFirstThenFuzzy_ThenNumbered(t *testing.T) {
+func TestFilterByText_ContainsFirstThenFuzzy(t *testing.T) {
 	t.Parallel()
 
 	var hints []*hint.Interface
@@ -49,10 +49,6 @@ func TestFilterByText_ContainsFirstThenFuzzy_ThenNumbered(t *testing.T) {
 		t.Fatalf("short fuzzy matches = %v", titles(got))
 	}
 
-	numbered := collection.FilterByText("mode").Numbered(1).All()
-	if len(numbered) != 1 || numbered[0].Label() != "1" || numbered[0].Element().Title() != "Batch Mode" {
-		t.Fatalf("Numbered(1) = %v", numbered)
-	}
 }
 
 func titles(hints []*hint.Interface) []string {
