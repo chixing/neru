@@ -12,4 +12,8 @@ int NeruStartHintSearchTextInput(
 
 void NeruStopHintSearchTextInput(void);
 
+// Registers what Tab (next) and Shift+Tab (previous) do in the search field
+// instead of inserting a tab. Either may be NULL.
+void NeruSetHintSearchCycleCallbacks(TextInputControlCallback next, TextInputControlCallback previous);
+
 #endif

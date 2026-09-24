@@ -17,6 +17,14 @@
 
 @end
 
+static TextInputControlCallback gCycleNext = NULL;
+static TextInputControlCallback gCyclePrevious = NULL;
+
+void NeruSetHintSearchCycleCallbacks(TextInputControlCallback next, TextInputControlCallback previous) {
+	gCycleNext = next;
+	gCyclePrevious = previous;
+}
+
 @interface NeruTextInputView : NSTextView
 @property(nonatomic, assign) TextInputQueryCallback queryCallback;
 @property(nonatomic, assign) TextInputControlCallback confirmCallback;
@@ -65,6 +73,15 @@
 
 		if (self.cancelCallback) {
 			self.cancelCallback(self.userData);
+		}
+		return;
+	}
+
+	if (keyCode == 48 && ![self hasMarkedText]) {
+		TextInputControlCallback cycle =
+		    (event.modifierFlags & NSEventModifierFlagShift) ? gCyclePrevious : gCycleNext;
+		if (cycle) {
+			cycle(self.userData);
 		}
 		return;
 	}

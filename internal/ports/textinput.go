@@ -7,6 +7,8 @@ type TextInputCallbacks struct {
 	OnQueryChanged func(query string)
 	OnConfirm      func()
 	OnCancel       func()
+	// OnCycle moves between matches (Tab, or Shift+Tab when backward).
+	OnCycle func(backward bool)
 }
 
 // TextInputFrame defines the bounding box for the text input.
