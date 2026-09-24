@@ -2,7 +2,6 @@ package modes
 
 import (
 	"context"
-	"strings"
 	"sync/atomic"
 
 	"go.uber.org/zap"
@@ -292,12 +291,6 @@ func (h *handlerState) startHintSearch() error {
 				}
 
 				if !h.hints.Context.SearchActive() {
-					return
-				}
-
-				// A digit typed after the query picks that numbered match.
-				if previous := h.hints.Context.SearchQuery(); strings.HasPrefix(query, previous) &&
-					h.pickSearchMatchByDigit(query[len(previous):]) {
 					return
 				}
 

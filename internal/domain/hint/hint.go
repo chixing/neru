@@ -4,7 +4,6 @@ import (
 	"context"
 	"image"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -318,27 +317,6 @@ func (c *Collection) FilterByText(query string) *Collection {
 	}
 
 	return NewCollection(append(contains, subsequence...))
-}
-
-// Numbered relabels the first limit hints "1", "2", ... in collection order
-// and drops the rest, so search matches are picked with one digit.
-func (c *Collection) Numbered(limit int) *Collection {
-	numbered := make([]*Interface, 0, min(limit, len(c.hints)))
-
-	for i, hint := range c.hints {
-		if i == limit {
-			break
-		}
-
-		relabeled, err := NewHint(strconv.Itoa(i+1), hint.Element(), hint.Position())
-		if err != nil {
-			continue
-		}
-
-		numbered = append(numbered, relabeled)
-	}
-
-	return NewCollection(numbered)
 }
 
 func anyText(texts []string, match func(string) bool) bool {

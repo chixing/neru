@@ -12,7 +12,9 @@ import (
 	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/domain/action"
+	"github.com/y3owk1n/neru/internal/domain/element"
 	"github.com/y3owk1n/neru/internal/domain/geometry"
+	domainHint "github.com/y3owk1n/neru/internal/domain/hint"
 	"github.com/y3owk1n/neru/internal/domain/modecmd"
 	"github.com/y3owk1n/neru/internal/domain/state"
 	"github.com/y3owk1n/neru/internal/ports"
@@ -336,10 +338,6 @@ func (h *handlerState) handleSearchInputKey(key string) {
 		return
 	}
 
-	if h.pickSearchMatchByDigit(key) {
-		return
-	}
-
 	ctx.SetSearchQuery(ctx.SearchQuery() + key)
 	h.applyHintSearchFilter()
 }
@@ -368,8 +366,7 @@ func (h *handlerState) applyHintSearchFilter() {
 
 	filteredHints := sourceHints.FilterByText(ctx.SearchQuery())
 	if ctx.SearchQuery() != "" {
-		// ponytail: only the best 9 matches get a digit; refine the query for more.
-		filteredHints = filteredHints.Numbered(searchMatchLimit)
+		filteredHints = h.relabelSearchMatches(filteredHints)
 	}
 
 	setHintsErr := ctx.SetVisibleHints(filteredHints)
@@ -393,29 +390,45 @@ func (h *handlerState) confirmHintSearch() {
 		return
 	}
 
-	// Return acts on the match Tab moved to, or the first one.
-	h.selectSearchMatch(max(h.cycleHintIndex, 0))
-}
+	// Return acts on the match Tab moved to, or the only match. With several
+	// matches it closes the input so their labels can be typed.
+	if h.cycleHintIndex >= 0 || visibleHints.Count() == 1 {
+		h.selectSearchMatch(max(h.cycleHintIndex, 0))
 
-// pickSearchMatchByDigit acts on the match labeled digit, if a query is typed
-// and such a match is shown; matches are numbered only while there is a query.
-func (h *handlerState) pickSearchMatchByDigit(digit string) bool {
-	ctx := h.hints.Context
-	if ctx.SearchQuery() == "" || len(digit) != 1 || digit < "1" || digit > "9" {
-		return false
+		return
 	}
 
-	if visible := ctx.Hints(); visible == nil || visible.FindByLabel(digit) == nil {
-		return false
-	}
-
-	h.selectSearchMatch(int(digit[0] - '1'))
-
-	return true
+	h.stopHintSearchTextInput(false)
+	h.hints.Context.SetSearchActive(false)
+	h.hideHintSearchInput()
 }
 
-// searchMatchLimit is how many search matches get a digit label.
-const searchMatchLimit = 9
+// relabelSearchMatches gives matches the shortest labels hint_characters
+// allows, so a handful of matches take one keystroke to pick.
+func (h *handlerState) relabelSearchMatches(matches *domainHint.Collection) *domainHint.Collection {
+	if h.hintService == nil || matches.Count() == 0 {
+		return matches
+	}
+
+	gen := h.hintService.Generator(h.hints.Context.LabelDirectionOverride())
+	if gen == nil {
+		return matches
+	}
+
+	elements := make([]*element.Element, 0, matches.Count())
+	for _, match := range matches.All() {
+		elements = append(elements, match.Element())
+	}
+
+	relabeled, err := gen.Generate(h.ctx, elements)
+	if err != nil {
+		h.logger.Error("Failed to relabel search matches", zap.Error(err))
+
+		return matches
+	}
+
+	return domainHint.NewCollection(relabeled)
+}
 
 // selectSearchMatch closes the search input and acts on the index-th
 // visible match through CycleHint, which moves there and runs the pending
