@@ -22,6 +22,7 @@ const (
 		"even where the vision strategy lands; that half is text-only"
 	noteMacOSSurfaces = "the menu bar, the Dock, Notification Center, Stage Manager, " +
 		"picture-in-picture and the screen-capture chrome are macOS surfaces with no counterpart"
+	noteContourText    = "only the macOS capture path runs text recognition beside contour"
 	noteMissionControl = "Mission Control is a macOS concept, so the detection never fires " +
 		"and the hooks never run"
 	noteTreeDepth = "only the AX walk takes a depth limit; the AT-SPI walk uses a fixed one " +
@@ -91,6 +92,10 @@ func PlatformSupport() parity.Declaration {
 	return parity.Join(
 		parity.On(parity.KindOption, darwinOnly, noteScreenShareHide,
 			"general.hide_overlay_in_screen_share",
+		),
+
+		parity.On(parity.KindOption, darwinOnly, noteContourText,
+			"hints.contour.detect_text",
 		),
 
 		parity.On(parity.KindOption, darwinOnly, noteMacOSSurfaces,

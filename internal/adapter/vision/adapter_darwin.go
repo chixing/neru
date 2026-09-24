@@ -267,10 +267,77 @@ func (a *Adapter) DetectContours(
 
 	origin := image.Pt(int(displayBounds.origin.x), int(displayBounds.origin.y))
 
+	// Text recognition reads the same frame, cropped to the region, while the
+	// contour pass runs.
+	var words []contour.Word
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		if cfg.DetectText {
+			words = recognizeWords(cgImage, region.Sub(origin), scale, cfg.RequestTimeoutMS)
+		}
+	}()
+
 	rects, err := contour.Detect(ctx, img, scale, contour.ParamsFromConfig(cfg))
+	<-done
+
 	if err != nil {
 		return nil, err
 	}
 
-	return contour.Elements(origin, region, rects), nil
+	var texts []string
+	if cfg.DetectText {
+		rects, texts = contour.Label(rects, words)
+	}
+
+	a.logger.Debug("Contour detection complete",
+		zap.Int("rects", len(rects)),
+		zap.Int("words", len(words)),
+	)
+
+	return contour.Elements(origin, region, rects, texts), nil
+}
+
+// recognizeWords runs word-level text recognition over crop (logical pixels
+// relative to the frame) and returns the words in the same logical space.
+func recognizeWords(
+	cgImage C.CGImageRef,
+	crop image.Rectangle,
+	scale float64,
+	timeoutMS int,
+) []contour.Word {
+	cropPx := C.CGRect{
+		origin: C.CGPoint{x: C.double(float64(crop.Min.X) * scale), y: C.double(float64(crop.Min.Y) * scale)},
+		size:   C.CGSize{width: C.double(float64(crop.Dx()) * scale), height: C.double(float64(crop.Dy()) * scale)},
+	}
+
+	result := C.NeruRecognizeTextInImage(cgImage, cropPx, 1, C.int(timeoutMS))
+	if result == nil {
+		return nil
+	}
+
+	defer C.NeruFreeVisionResult(result)
+
+	count := int(result.count)
+	if count == 0 {
+		return nil
+	}
+
+	words := make([]contour.Word, 0, count)
+	for _, r := range (*[1 << 30]C.VisionRegion)(unsafe.Pointer(result.regions))[:count:count] {
+		words = append(words, contour.Word{
+			Rect: image.Rect(
+				int(float64(r.x)/scale),
+				int(float64(r.y)/scale),
+				int(float64(r.x+r.width)/scale),
+				int(float64(r.y+r.height)/scale),
+			),
+			Text: C.GoString(r.label),
+		})
+	}
+
+	return words
 }

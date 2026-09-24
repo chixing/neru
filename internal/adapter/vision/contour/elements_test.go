@@ -18,7 +18,7 @@ func TestElements_ClipsToRegionAndDropsOutside(t *testing.T) {
 		image.Rect(40, 300, 120, 340),  // straddles the region's left edge
 	}
 
-	got := contour.Elements(origin, region, rects)
+	got := contour.Elements(origin, region, rects, nil)
 	if len(got) != 2 {
 		t.Fatalf("len(Elements) = %d, want 2", len(got))
 	}

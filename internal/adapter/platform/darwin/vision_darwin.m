@@ -335,6 +335,77 @@ VisionResult *NeruDetectElements(CGRect screenBounds, NeruVisionConfig config) {
 	}
 }
 
+VisionResult *NeruRecognizeTextInImage(CGImageRef image, CGRect cropPx, int accurate, int timeoutMS) {
+	@autoreleasepool {
+		CGImageRef crop = CGImageCreateWithImageInRect(image, cropPx);
+		if (!crop) {
+			return emptyVisionResult();
+		}
+		// CGImageCreateWithImageInRect clips to the image; use what it kept.
+		CGFloat cropW = (CGFloat)CGImageGetWidth(crop);
+		CGFloat cropH = (CGFloat)CGImageGetHeight(crop);
+		CGRect cropRect = CGRectMake(0, 0, cropW, cropH);
+		CGFloat offX = MAX(cropPx.origin.x, 0);
+		CGFloat offY = MAX(cropPx.origin.y, 0);
+
+		VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
+		request.recognitionLevel =
+		    accurate ? VNRequestTextRecognitionLevelAccurate : VNRequestTextRecognitionLevelFast;
+		request.usesLanguageCorrection = NO;
+
+		dispatch_group_t group = dispatch_group_create();
+		dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+			VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:crop options:@{}];
+			[handler performRequests:@[ request ] error:nil];
+			CGImageRelease(crop);
+		});
+		if (dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeoutMS * 1000000LL)) != 0) {
+			[request cancel];
+			return emptyVisionResult();
+		}
+
+		NSMutableArray *regionList = [NSMutableArray array];
+		for (VNRecognizedTextObservation *obs in request.results) {
+			VNRecognizedText *top = [[obs topCandidates:1] firstObject];
+			if (!top || top.string.length == 0) {
+				continue;
+			}
+			NSString *text = top.string;
+			[text enumerateSubstringsInRange:NSMakeRange(0, text.length)
+			                         options:NSStringEnumerationByWords
+			                      usingBlock:^(NSString *word, NSRange wordRange, NSRange enclosing, BOOL *stop) {
+				                      VNRectangleObservation *wordObs = [top boundingBoxForRange:wordRange error:nil];
+				                      if (wordObs == nil || CGRectIsEmpty(wordObs.boundingBox)) {
+					                      return;
+				                      }
+				                      CGRect r = visionRectToCGRect(cropRect, wordObs.boundingBox);
+				                      [regionList addObject:@{
+					                      @"x" : @(offX + r.origin.x),
+					                      @"y" : @(offY + r.origin.y),
+					                      @"w" : @(r.size.width),
+					                      @"h" : @(r.size.height),
+					                      @"label" : word
+				                      }];
+			                      }];
+		}
+
+		VisionResult *result = malloc(sizeof(VisionResult));
+		result->count = (int)[regionList count];
+		result->regions = malloc(sizeof(VisionRegion) * MAX(result->count, 1));
+		for (int i = 0; i < result->count; i++) {
+			NSDictionary *dict = regionList[i];
+			result->regions[i].x = [dict[@"x"] doubleValue];
+			result->regions[i].y = [dict[@"y"] doubleValue];
+			result->regions[i].width = [dict[@"w"] doubleValue];
+			result->regions[i].height = [dict[@"h"] doubleValue];
+			result->regions[i].score = 1;
+			result->regions[i].isText = 1;
+			result->regions[i].label = strdup([dict[@"label"] UTF8String]);
+		}
+		return result;
+	}
+}
+
 CGImageRef NeruCaptureScreen(void) { return captureDisplayImage(CGMainDisplayID()); }
 
 void NeruFreeVisionResult(VisionResult *result) {

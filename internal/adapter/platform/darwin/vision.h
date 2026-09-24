@@ -42,5 +42,12 @@ CGImageRef NeruCaptureScreen(void);
 // Returns a CGImageRef (caller must CFRelease), or NULL when capture fails.
 CGImageRef NeruCaptureDisplayContaining(CGRect rect, CGRect *outBounds);
 
-// Frees a VisionResult previously returned by NeruDetectElements.
+// Runs word-level text recognition over cropPx (pixels, top-left origin) of
+// image. Regions come back in the same pixel space as image. accurate picks
+// the accurate recognizer over the fast one. A pass over timeoutMS returns
+// no regions. Caller must call NeruFreeVisionResult() on the result.
+VisionResult *NeruRecognizeTextInImage(CGImageRef image, CGRect cropPx, int accurate, int timeoutMS);
+
+// Frees a VisionResult previously returned by NeruDetectElements or
+// NeruRecognizeTextInImage.
 void NeruFreeVisionResult(VisionResult *result);

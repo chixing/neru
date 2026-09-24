@@ -535,6 +535,7 @@ func defaultHints() HintsConfig {
 			SameCenterSlack:   DefaultContourSameCenterSlack,
 			SquareIconSize:    DefaultContourSquareIconSize,
 			SquareIconSlack:   DefaultContourSquareIconSlack,
+			DetectText:        false,
 		},
 
 		IncludeMenubarHints:           false,

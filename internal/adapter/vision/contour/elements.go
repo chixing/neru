@@ -13,14 +13,17 @@ import (
 // Rectangles are clipped to region, so a frame wider than the region asked
 // for (macOS captures the whole display) yields nothing outside it, and a
 // target straddling the edge cannot put its hint, and its click, outside.
+// texts, when not nil, runs parallel to rects and becomes each element's
+// title and search text.
 func Elements(
 	origin image.Point,
 	region image.Rectangle,
 	rects []image.Rectangle,
+	texts []string,
 ) []*element.Element {
 	elements := make([]*element.Element, 0, len(rects))
 
-	for _, rect := range rects {
+	for i, rect := range rects {
 		bounds := rect.Add(origin).Intersect(region)
 		if bounds.Empty() {
 			continue
@@ -36,13 +39,12 @@ func Elements(
 			),
 		)
 
-		elem, err := element.NewElement(
-			elementID,
-			bounds,
-			element.RoleButton,
-			element.WithClickable(true),
-			element.WithVisionOnly(),
-		)
+		opts := []element.Option{element.WithClickable(true), element.WithVisionOnly()}
+		if i < len(texts) && texts[i] != "" {
+			opts = append(opts, element.WithTitle(texts[i]), element.WithSearchText(texts[i]))
+		}
+
+		elem, err := element.NewElement(elementID, bounds, element.RoleButton, opts...)
 		if err != nil {
 			continue
 		}
