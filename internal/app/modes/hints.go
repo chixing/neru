@@ -87,6 +87,10 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 	// where the OS moves focus to the frontmost app.
 	if isRefresh && h.hints != nil && h.hints.Context != nil && h.hints.Context.SearchActive() {
 		h.cancelHintSearch()
+
+		// Cancelling a search the mode opened with leaves hints mode, so
+		// this is a fresh activation now, not a refresh.
+		isRefresh = h.appState.CurrentMode() == domain.ModeHints
 	}
 
 	// Defer bundle ID fetch until after validation (secure input check) to avoid

@@ -3437,3 +3437,25 @@ func TestSimulation_StopPausesEverything(t *testing.T) {
 	sim.press("Escape")
 	sim.waitMode(domain.ModeIdle)
 }
+
+// TestSimulation_SearchHotkeyPressedAgainStaysUsable covers pressing a
+// search-only hints hotkey while its search is open. Cancelling that search
+// leaves hints mode, and the activation that followed still took itself for a
+// refresh: it drew hints without entering the mode, so no key reached the
+// search and Escape could not close them.
+func TestSimulation_SearchHotkeyPressedAgainStaysUsable(t *testing.T) {
+	cfg := simConfig()
+	cfg.Hotkeys.Bindings[hintsHotkey] = []string{"hints --search"}
+
+	sim := newSimHarness(t, cfg, threeButtons(t))
+
+	sim.pressHotkey(hintsHotkey)
+	sim.waitMode(domain.ModeHints)
+
+	sim.pressHotkey(hintsHotkey)
+	sim.waitMode(domain.ModeHints)
+	sim.neverMode(domain.ModeIdle, 250*time.Millisecond)
+
+	sim.press("Escape")
+	sim.waitMode(domain.ModeIdle)
+}
