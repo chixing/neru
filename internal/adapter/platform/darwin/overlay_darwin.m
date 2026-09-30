@@ -1134,6 +1134,18 @@ typedef NS_ENUM(NSInteger, HintPlacement) {
 	[self.cursorIndicatorLabel drawAtPoint:textOrigin withAttributes:attrs];
 }
 
+/// Hints labeled with the search marker (searchMatchMarker in
+/// internal/app/modes/mode_handlers.go) are search matches still being typed
+/// for: they are underlined in place rather than badged. Returns NSZeroRect for
+/// any other hint, or one whose element has no size to underline.
+- (NSRect)searchMatchUnderlineRectForHint:(HintItem *)hint {
+	if (![hint.label isEqualToString:@"\u2022"] || hint.size.width <= 0.0 || hint.size.height <= 0.0)
+		return NSZeroRect;
+
+	CGFloat bottom = self.bounds.size.height - hint.position.y - hint.size.height / 2.0;
+	return NSMakeRect(hint.position.x - hint.size.width / 2.0, bottom - 3.0, hint.size.width, 2.5);
+}
+
 /// Compute the screen-space bounding rect for a hint item (view coordinates, bottom-left origin).
 /// Mirrors the geometry logic in drawHintsInRect: so callers can determine dirty rects without drawing.
 /// Uses cachedHintMeasureString (a dedicated buffer separate from cachedHintAttributedString)
@@ -1144,6 +1156,10 @@ typedef NS_ENUM(NSInteger, HintPlacement) {
 	NSString *label = hint.label;
 	if (!label || [label length] == 0)
 		return NSZeroRect;
+
+	NSRect underline = [self searchMatchUnderlineRectForHint:hint];
+	if (!NSIsEmptyRect(underline))
+		return NSInsetRect(underline, -1.0, -1.0);
 
 	// Reuse cachedHintMeasureString for text measurement.
 	// This is a separate buffer from cachedHintAttributedString (used by drawHintsInRect:)
@@ -1321,6 +1337,15 @@ typedef NS_ENUM(NSInteger, HintPlacement) {
 		NSString *label = hint.label;
 		if (!label || [label length] == 0)
 			continue;
+
+		NSRect underline = [self searchMatchUnderlineRectForHint:hint];
+		if (!NSIsEmptyRect(underline)) {
+			if (!filterByRect || NSIntersectsRect(NSInsetRect(underline, -1.0, -1.0), dirtyRect)) {
+				[self.hintMatchedTextColor setFill];
+				[[NSBezierPath bezierPathWithRoundedRect:underline xRadius:1.25 yRadius:1.25] fill];
+			}
+			continue;
+		}
 
 		NSPoint position = hint.position;
 		int matchedPrefixLength = hint.matchedPrefixLength;
