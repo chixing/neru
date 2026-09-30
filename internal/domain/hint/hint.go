@@ -5,6 +5,7 @@ import (
 	"image"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 
 	"golang.org/x/text/cases"
@@ -238,6 +239,11 @@ type Collection struct {
 	hints   []*Interface
 	byLabel map[string]*Interface
 	trie    *Trie
+
+	// searchTexts holds each hint's normalized texts, built on first search:
+	// normalizing is the bulk of a search, and one runs per keystroke.
+	searchOnce  sync.Once
+	searchTexts [][4]string
 }
 
 // NewCollection creates a new hint collection with indexed lookups.
@@ -295,28 +301,35 @@ func (c *Collection) FilterByText(query string) *Collection {
 
 	var contains, subsequence []*Interface
 
-	for _, hint := range c.hints {
-		elem := hint.Element()
-		if elem == nil {
-			continue
-		}
-
-		texts := [...]string{
-			normalizeForSearch(elem.Title()),
-			normalizeForSearch(elem.Description()),
-			normalizeForSearch(elem.Value()),
-			normalizeForSearch(elem.SearchText()),
-		}
-
+	for i, texts := range c.normalizedTexts() {
 		switch {
 		case anyText(texts[:], func(t string) bool { return strings.Contains(t, normalizedQuery) }):
-			contains = append(contains, hint)
+			contains = append(contains, c.hints[i])
 		case fuzzy && anyText(texts[:], func(t string) bool { return isSubsequence(compactQuery, t) }):
-			subsequence = append(subsequence, hint)
+			subsequence = append(subsequence, c.hints[i])
 		}
 	}
 
 	return NewCollection(append(contains, subsequence...))
+}
+
+func (c *Collection) normalizedTexts() [][4]string {
+	c.searchOnce.Do(func() {
+		c.searchTexts = make([][4]string, len(c.hints))
+
+		for i, hint := range c.hints {
+			if elem := hint.Element(); elem != nil {
+				c.searchTexts[i] = [4]string{
+					normalizeForSearch(elem.Title()),
+					normalizeForSearch(elem.Description()),
+					normalizeForSearch(elem.Value()),
+					normalizeForSearch(elem.SearchText()),
+				}
+			}
+		}
+	})
+
+	return c.searchTexts
 }
 
 func anyText(texts []string, match func(string) bool) bool {

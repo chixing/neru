@@ -48,7 +48,6 @@ func TestFilterByText_ContainsFirstThenFuzzy(t *testing.T) {
 	if got = collection.FilterByText("bo").All(); len(got) != 0 {
 		t.Fatalf("short fuzzy matches = %v", titles(got))
 	}
-
 }
 
 func titles(hints []*hint.Interface) []string {
