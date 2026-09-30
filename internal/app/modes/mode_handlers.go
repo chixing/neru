@@ -344,7 +344,7 @@ func (h *handlerState) handleSearchInputKey(key string) {
 		return
 	}
 
-	if utf8.RuneCountInString(key) != 1 || h.pickSearchLabel(key) {
+	if utf8.RuneCountInString(key) != 1 {
 		return
 	}
 
@@ -375,10 +375,10 @@ func (h *handlerState) applyHintSearchFilter() {
 	}
 
 	filteredHints := sourceHints.FilterByText(ctx.SearchQuery())
-	h.searchLabelChars = ""
-
-	if query := ctx.SearchQuery(); query != "" {
-		filteredHints = h.labelSearchMatches(sourceHints, query, filteredHints)
+	if ctx.SearchQuery() != "" {
+		// Letters go to the query while typing, so matches wear a marker no
+		// key can type; Return swaps it for real labels.
+		filteredHints = markSearchMatches(filteredHints)
 	}
 
 	setHintsErr := ctx.SetVisibleHints(filteredHints)
@@ -414,7 +414,6 @@ func (h *handlerState) confirmHintSearch() {
 	h.hints.Context.SetSearchActive(false)
 	h.hideHintSearchInput()
 
-	// Matches still wearing the marker get labels from every hint key.
 	if first := visibleHints.All()[0]; first.Label() == searchMatchMarker {
 		labeled, err := h.labelMatchesWith(visibleHints, h.config.Hints.HintCharacters)
 		if err == nil {
@@ -427,61 +426,9 @@ func (h *handlerState) confirmHintSearch() {
 	}
 }
 
-// searchMatchMarker labels matches when too few keys are free to label them;
-// Return then assigns real labels.
+// searchMatchMarker labels matches while the query is being typed; Return
+// then assigns real labels.
 const searchMatchMarker = "•"
-
-// labelSearchMatches labels matches with the hint keys that, typed next,
-// would match nothing, so those keys can pick a match mid-query.
-func (h *handlerState) labelSearchMatches(
-	source *domainHint.Collection,
-	query string,
-	matches *domainHint.Collection,
-) *domainHint.Collection {
-	var free strings.Builder
-
-	for _, key := range strings.ToLower(h.config.Hints.HintCharacters) {
-		if !strings.ContainsRune(free.String(), key) &&
-			source.FilterByText(query+string(key)).Count() == 0 {
-			free.WriteRune(key)
-		}
-	}
-
-	labeled, err := h.labelMatchesWith(matches, free.String())
-	if err != nil || labeled.Count() < matches.Count() {
-		return markSearchMatches(matches)
-	}
-
-	h.searchLabelChars = free.String()
-
-	return labeled
-}
-
-// pickSearchLabel treats typed as label keys when every one is free,
-// acting on the match once the label is complete.
-func (h *handlerState) pickSearchLabel(typed string) bool {
-	if h.searchLabelChars == "" || typed == "" {
-		return false
-	}
-
-	for _, key := range strings.ToLower(typed) {
-		if !strings.ContainsRune(h.searchLabelChars, key) {
-			return false
-		}
-	}
-
-	label := strings.ToUpper(typed)
-	for index, match := range h.hints.Context.Hints().All() {
-		if strings.ToUpper(match.Label()) == label {
-			h.selectSearchMatch(index)
-
-			break
-		}
-	}
-
-	// A partial or unknown label is swallowed rather than searched for.
-	return true
-}
 
 func markSearchMatches(matches *domainHint.Collection) *domainHint.Collection {
 	marked := make([]*domainHint.Interface, 0, matches.Count())

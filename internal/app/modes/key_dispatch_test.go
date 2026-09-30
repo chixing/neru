@@ -522,7 +522,7 @@ func mustNewModeHint(label string, elem *element.Element) *domainhint.Interface 
 	return hint
 }
 
-func TestHintSearchLabelsMatchesWithKeysThatMatchNothing(t *testing.T) {
+func TestHintSearch_KeepsTypingPastTheLastMatch(t *testing.T) {
 	t.Parallel()
 
 	appState := state.NewAppState()
@@ -556,27 +556,21 @@ func TestHintSearchLabelsMatchesWithKeysThatMatchNothing(t *testing.T) {
 	handler.hints.Context.SetSearchActive(true)
 	handler.mu.Unlock()
 
-	for _, key := range []string{"s", "a", "v", "e"} {
+	// "z" matches nothing; it still extends the query and the search stays
+	// open, showing no matches, rather than picking one and closing.
+	for _, key := range []string{"s", "a", "v", "e", "z"} {
 		handler.HandleKeyPress(key)
 	}
 
-	// a, f and l still extend "save" into a match; s and d match nothing.
-	if handler.searchLabelChars != "sd" {
-		t.Fatalf("label keys = %q, want %q", handler.searchLabelChars, "sd")
+	if got := handler.hints.Context.SearchQuery(); got != "savez" {
+		t.Fatalf("query = %q, want savez", got)
 	}
 
-	labels := []string{}
-	for _, match := range handler.hints.Context.Hints().All() {
-		labels = append(labels, match.Label())
+	if !handler.hints.Context.SearchActive() {
+		t.Fatal("search closed on a query with no match")
 	}
 
-	if strings.Join(labels, ",") != "S,D" {
-		t.Fatalf("labels = %v, want S,D", labels)
-	}
-
-	handler.HandleKeyPress("f")
-
-	if got := handler.hints.Context.SearchQuery(); got != "savef" {
-		t.Fatalf("query = %q, want savef", got)
+	if got := handler.hints.Context.Hints().Count(); got != 0 {
+		t.Fatalf("visible hints = %d, want 0", got)
 	}
 }
