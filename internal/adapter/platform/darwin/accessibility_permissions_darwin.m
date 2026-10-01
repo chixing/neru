@@ -53,6 +53,14 @@ int NeruCheckAccessibilityPermissions(void) {
 /// @return 1 if permissions are granted after the request, 0 otherwise
 int NeruRequestAccessibilityPermissions(void) {
 	@autoreleasepool {
+		// The alert that leads here can be raised by a "not trusted" that was only
+		// momentary (seen at login). Ask again now, so a grant that is working is
+		// never reset.
+		if (AXIsProcessTrusted()) {
+			NSLog(@"Neru: Accessibility is granted; skipping tccutil reset");
+			return 1;
+		}
+
 		if (!resetAccessibilityPermissionDecision()) {
 			NSLog(@"Neru: continuing with Accessibility permission request after reset failure");
 		}
