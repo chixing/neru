@@ -247,3 +247,62 @@ func countLogged(logs *observer.ObservedLogs, text string) int {
 
 	return count
 }
+
+// TestLoadWithValidation_ReportsADisabledKeyWithNoDefault pins that a
+// __disabled__ entry with nothing to disable is reported on the result, where
+// `neru config validate` prints it, for the global table and a mode's alike.
+func TestLoadWithValidation_ReportsADisabledKeyWithNoDefault(t *testing.T) {
+	result, _ := loadWithObservedLogger(t, `
+[hotkeys]
+"Primary+Shift+F12" = "__disabled__"
+
+[hints.hotkeys]
+"F12" = "__disabled__"
+`, "")
+
+	if result.ValidationError != nil {
+		t.Fatalf("a __disabled__ entry was refused: %v", result.ValidationError)
+	}
+
+	for _, want := range []string{
+		"hotkeys.Primary+Shift+F12: __disabled__ has no default binding to disable",
+		"hints.hotkeys.F12: __disabled__ has no default binding to disable",
+	} {
+		if !slices.Contains(result.Warnings, want) {
+			t.Errorf("result.Warnings = %q, want it to contain %q", result.Warnings, want)
+		}
+	}
+}
+
+// TestLoadWithValidation_AcceptsDisablingARelocatedLauncher pins that moving a
+// mode launcher to a new chord and disabling its old one does not warn: the
+// old chord was a default, even though the move already dropped it.
+func TestLoadWithValidation_AcceptsDisablingARelocatedLauncher(t *testing.T) {
+	var defaultChord string
+
+	for chord, actions := range config.DefaultConfig().Hotkeys.Bindings {
+		if len(actions) == 1 && actions[0] == config.ModeNameHints {
+			defaultChord = chord
+		}
+	}
+
+	if defaultChord == "" {
+		t.Skip("this platform ships no default hints launcher")
+	}
+
+	result, _ := loadWithObservedLogger(t, `
+[hotkeys]
+"Primary+Shift+F11" = "hints"
+"`+defaultChord+`" = "__disabled__"
+`, "")
+
+	if result.ValidationError != nil {
+		t.Fatalf("the config was refused: %v", result.ValidationError)
+	}
+
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, defaultChord) {
+			t.Errorf("result.Warnings contains %q, want no warning about the old chord", warning)
+		}
+	}
+}

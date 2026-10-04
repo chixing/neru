@@ -33,6 +33,9 @@
 //     the darwin bridge defines is declared in its own subsystem's header.
 //   - dependency_boundary_test.go — the darwin One Rule: only darwin-tagged
 //     code reaches internal/adapter/platform/darwin.
+//   - doc_anchors_test.go: every link between docs, every doc URL to main in
+//     the example configs, install scripts, issue forms and skills, and every
+//     doc path the binary opens reaches a file and a heading that exist.
 //   - doc_inventory_test.go — this list, against the directory.
 //   - doc_links_test.go — no contributor doc names a path that does not exist.
 //   - foundation_slice_test.go — the test-foundation recipe holds every
@@ -57,7 +60,7 @@
 //   - mode_extension_switch_test.go — behavior only some modes have is an
 //     optional extension, never an arm of a switch over domain.Mode.
 //   - mode_flag_contract_test.go — mode commands register exactly what the
-//     grammar declares, and docs/CLI.md is generated from the descriptor table.
+//     grammar declares, and docs/reference/cli.md is generated from the descriptor table.
 //   - mode_lock_registry_test.go — every mutex the mode handler declares has a
 //     stated position in the lock order that package's guide gives.
 //   - mode_lock_release_test.go — the mode handler releases every lock via
@@ -76,7 +79,7 @@
 //   - platform_slots_test.go — platform files use the documented file slots,
 //     tagged packages tag every file, package comments reach every target.
 //   - platform_support_test.go — every option, mode flag and action declares
-//     the platforms it does something on, and docs/CROSS_PLATFORM.md publishes
+//     the platforms it does something on, and docs/reference/platform-support.md publishes
 //     that declaration rather than a copy of it.
 //   - ports_test.go — every port has a mock, and every mock asserts that it
 //     satisfies the interface.

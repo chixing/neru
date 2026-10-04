@@ -110,6 +110,9 @@ type EventTap struct {
 	// overlayPassiveOnce gates the one call that tells the Wayland overlay to
 	// stop asking for keyboard focus once the evdev proxy owns the keys.
 	overlayPassiveOnce sync.Once
+
+	// dropWarned limits a full dispatch channel to one warning until it drains.
+	dropWarned atomic.Bool
 }
 
 // NewEventTap creates a new EventTap.
@@ -488,8 +491,8 @@ func (et *EventTap) dispatchKey(key string) {
 	select {
 	case et.dispatchCh <- key:
 	default:
-		if et.logger != nil {
-			et.logger.Warn("Dispatch channel full, dropping key", zap.String("key", key))
+		if et.logger != nil && et.dropWarned.CompareAndSwap(false, true) {
+			et.logger.Warn("Dispatch channel full, dropping keys")
 		}
 	}
 }
@@ -509,6 +512,11 @@ func (et *EventTap) dispatchLoop() {
 
 		if cb != nil && et.dispatchEpoch.Load() == epoch {
 			cb(key)
+		}
+
+		// A drained channel re-arms the warning for the next overflow.
+		if len(et.dispatchCh) == 0 && et.dropWarned.Load() {
+			et.dropWarned.Store(false)
 		}
 	}
 }
