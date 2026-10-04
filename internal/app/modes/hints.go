@@ -88,7 +88,7 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 	if isRefresh && h.hints != nil && h.hints.Context != nil && h.hints.Context.SearchActive() {
 		h.cancelHintSearch()
 
-		// Cancelling a search the mode opened with leaves hints mode, so
+		// Canceling a search the mode opened with leaves hints mode, so
 		// this is a fresh activation now, not a refresh.
 		isRefresh = h.appState.CurrentMode() == domain.ModeHints
 	}
@@ -223,7 +223,8 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 
 	if earlySearch && h.system != nil {
 		// The search input takes focus from the window the scan is about.
-		if bounds, found, err := h.system.FocusedWindowBounds(ctx); err == nil && found {
+		bounds, found, err := h.system.FocusedWindowBounds(ctx)
+		if err == nil && found {
 			ctx = ports.WithDetectionWindow(ctx, bounds)
 		}
 	}

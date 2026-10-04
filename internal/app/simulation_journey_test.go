@@ -3439,7 +3439,7 @@ func TestSimulation_StopPausesEverything(t *testing.T) {
 }
 
 // TestSimulation_SearchHotkeyPressedAgainStaysUsable covers pressing a
-// search-only hints hotkey while its search is open. Cancelling that search
+// search-only hints hotkey while its search is open. Canceling that search
 // leaves hints mode, and the activation that followed still took itself for a
 // refresh: it drew hints without entering the mode, so no key reached the
 // search and Escape could not close them.

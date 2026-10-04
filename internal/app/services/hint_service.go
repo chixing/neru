@@ -145,6 +145,7 @@ func (s *HintService) GenerateHints(
 	case domain.StrategyContour:
 		contourCfg := cfg.Contour
 		contourCfg.DetectText = contourCfg.DetectText || splitWord
+
 		contourCtx := ctx
 		if splitWord {
 			// A search is shown text matches only, so skip the contour pass.

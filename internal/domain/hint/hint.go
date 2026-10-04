@@ -313,6 +313,16 @@ func (c *Collection) FilterByText(query string) *Collection {
 	return NewCollection(append(contains, subsequence...))
 }
 
+// Count returns the number of hints in the collection.
+func (c *Collection) Count() int {
+	return len(c.hints)
+}
+
+// Empty returns true if the collection has no hints.
+func (c *Collection) Empty() bool {
+	return len(c.hints) == 0
+}
+
 func (c *Collection) normalizedTexts() [][4]string {
 	c.searchOnce.Do(func() {
 		c.searchTexts = make([][4]string, len(c.hints))
@@ -344,16 +354,16 @@ func anyText(texts []string, match func(string) bool) bool {
 
 // isSubsequence reports whether every rune of query appears in text in order.
 func isSubsequence(query, text string) bool {
-	q := []rune(query)
-	i := 0
+	queryRunes := []rune(query)
+	matched := 0
 
 	for _, r := range text {
-		if i < len(q) && r == q[i] {
-			i++
+		if matched < len(queryRunes) && r == queryRunes[matched] {
+			matched++
 		}
 	}
 
-	return i == len(q)
+	return matched == len(queryRunes)
 }
 
 func normalizeForSearch(text string) string {
@@ -372,14 +382,4 @@ func normalizeForSearch(text string) string {
 	}
 
 	return normalized
-}
-
-// Count returns the number of hints in the collection.
-func (c *Collection) Count() int {
-	return len(c.hints)
-}
-
-// Empty returns true if the collection has no hints.
-func (c *Collection) Empty() bool {
-	return len(c.hints) == 0
 }

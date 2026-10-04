@@ -11,12 +11,14 @@ import (
 func TestFilterByText_ContainsFirstThenFuzzy(t *testing.T) {
 	t.Parallel()
 
-	var hints []*hint.Interface
+	const batchTitle = "Batch Mode"
 
-	for i, title := range []string{"Batch Mode", "Mode", "Other", "bm"} {
+	hints := make([]*hint.Interface, 0, 4)
+
+	for index, title := range []string{batchTitle, "Mode", "Other", "bm"} {
 		elem, err := element.NewElement(
 			element.ID(title),
-			image.Rect(0, i*20, 50, i*20+10),
+			image.Rect(0, index*20, 50, index*20+10),
 			element.RoleButton,
 			element.WithTitle(title),
 		)
@@ -24,7 +26,7 @@ func TestFilterByText_ContainsFirstThenFuzzy(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		h, err := hint.NewHint("aa"+string(rune('a'+i)), elem, image.Pt(0, i*20))
+		h, err := hint.NewHint("aa"+string(rune('a'+index)), elem, image.Pt(0, index*20))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -35,12 +37,13 @@ func TestFilterByText_ContainsFirstThenFuzzy(t *testing.T) {
 	collection := hint.NewCollection(hints)
 
 	got := collection.FilterByText("mode").All()
-	if len(got) != 2 || got[0].Element().Title() != "Batch Mode" || got[1].Element().Title() != "Mode" {
+	if len(got) != 2 || got[0].Element().Title() != batchTitle ||
+		got[1].Element().Title() != "Mode" {
 		t.Fatalf("contains matches = %v", titles(got))
 	}
 
 	got = collection.FilterByText("bmode").All()
-	if len(got) != 1 || got[0].Element().Title() != "Batch Mode" {
+	if len(got) != 1 || got[0].Element().Title() != batchTitle {
 		t.Fatalf("fuzzy matches = %v", titles(got))
 	}
 

@@ -538,16 +538,16 @@ func TestHintSearch_KeepsTypingPastTheLastMatch(t *testing.T) {
 		modes:         map[domain.Mode]Mode{},
 	})
 
-	var hints []*domainhint.Interface
+	hints := make([]*domainhint.Interface, 0, 2)
 
-	for i, title := range []string{"Save file", "Save all"} {
+	for index, title := range []string{"Save file", "Save all"} {
 		elem, _ := element.NewElement(
 			element.ID(title),
-			image.Rect(0, i*30, 20, i*30+20),
+			image.Rect(0, index*30, 20, index*30+20),
 			element.RoleButton,
 			element.WithTitle(title),
 		)
-		hints = append(hints, mustNewModeHint(strings.Repeat("A", i+1), elem))
+		hints = append(hints, mustNewModeHint(strings.Repeat("A", index+1), elem))
 	}
 
 	handler.mu.Lock()
