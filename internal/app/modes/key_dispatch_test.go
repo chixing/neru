@@ -574,3 +574,70 @@ func TestHintSearch_KeepsTypingPastTheLastMatch(t *testing.T) {
 		t.Fatalf("visible hints = %d, want 0", got)
 	}
 }
+
+func TestHintSearch_ReturnLabelsMultipleMatchesWithoutSelecting(t *testing.T) {
+	t.Parallel()
+
+	appState := state.NewAppState()
+	appState.SetMode(domain.ModeHints)
+	handler := newHandlerWithState(handlerState{
+		ctx:            context.Background(),
+		config:         &configpkg.Config{Hints: configpkg.HintsConfig{HintCharacters: "asdfl"}},
+		logger:         zap.NewNop(),
+		appState:       appState,
+		modifierState:  state.NewModifierState(),
+		hints:          &components.HintsComponent{Context: &hintscomponent.Context{}},
+		modes:          map[domain.Mode]Mode{},
+		cycleHintIndex: -1,
+	})
+
+	matches := make([]*domainhint.Interface, 0, 2)
+	for index, title := range []string{"Save file", "Save all"} {
+		elem, err := element.NewElement(
+			element.ID(title), image.Rect(0, index*30, 20, index*30+20),
+			element.RoleButton, element.WithTitle(title),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		matches = append(matches, mustNewModeHint(strings.Repeat("A", index+1), elem))
+	}
+
+	handler.mu.Lock()
+	handler.hints.Context.SetManager(domainhint.NewManager(handler.logger, &handler.mu))
+
+	setErr := handler.hints.Context.SetHints(domainhint.NewCollection(matches))
+	if setErr != nil {
+		t.Fatal(setErr)
+	}
+
+	handler.hints.Context.SetSearchActive(true)
+	handler.mu.Unlock()
+
+	handler.HandleKeyPress("s")
+
+	for _, match := range handler.hints.Context.Hints().All() {
+		if match.Label() != searchMatchMarker {
+			t.Fatalf("typing produced label %q, want search marker", match.Label())
+		}
+	}
+
+	handler.HandleKeyPress(configpkg.KeyNameReturn)
+
+	if handler.hints.Context.SearchActive() {
+		t.Fatal("Return did not close the search input")
+	}
+
+	if appState.CurrentMode() != domain.ModeHints {
+		t.Fatal("Return selected a match instead of leaving labels available")
+	}
+
+	for _, match := range handler.hints.Context.Hints().All() {
+		switch strings.ToLower(match.Label()) {
+		case "a", "s", "d", "f", "l":
+		default:
+			t.Fatalf("Return produced label %q, want shortest selectable label", match.Label())
+		}
+	}
+}

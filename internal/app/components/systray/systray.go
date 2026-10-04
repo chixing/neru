@@ -310,7 +310,7 @@ func (c *Component) handleEvents() {
 			go func() {
 				err := platform.OpenExternal(
 					c.ctx,
-					buildinfo.DocsURL("docs/CONFIGURATION.md", buildinfo.Version),
+					buildinfo.DocsURL("docs/reference/configuration.md", buildinfo.Version),
 				)
 				if err != nil {
 					c.logger.Error("Failed to open configuration docs", zap.Error(err))
@@ -320,7 +320,7 @@ func (c *Component) handleEvents() {
 			go func() {
 				err := platform.OpenExternal(
 					c.ctx,
-					buildinfo.DocsURL("docs/CLI.md", buildinfo.Version),
+					buildinfo.DocsURL("docs/reference/cli.md", buildinfo.Version),
 				)
 				if err != nil {
 					c.logger.Error("Failed to open CLI docs", zap.Error(err))
@@ -375,7 +375,7 @@ func (c *Component) handleEvents() {
 func (c *Component) handleVersionCopy() {
 	writeToClipboardErr := clipboard.WriteAll(buildinfo.Version)
 	if writeToClipboardErr != nil {
-		c.logger.Error("Error copying version to clipboard", zap.Error(writeToClipboardErr))
+		c.logger.Error("Failed to copy version to clipboard", zap.Error(writeToClipboardErr))
 	} else {
 		c.notify("Version copied to clipboard")
 	}
@@ -431,9 +431,7 @@ func (c *Component) handleReloadConfig() {
 
 	reloadConfigErr := c.app.ReloadConfig(c.ctx, configPath)
 	if reloadConfigErr != nil {
-		c.logger.Error("Failed to reload config from systray", zap.Error(reloadConfigErr))
-	} else {
-		c.logger.Info("Configuration reloaded successfully from systray")
+		c.logger.Warn("Failed to reload config from systray", zap.Error(reloadConfigErr))
 	}
 }
 

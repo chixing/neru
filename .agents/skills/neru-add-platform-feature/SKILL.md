@@ -37,10 +37,12 @@ unimplemented, and reports itself honestly in the capability matrix.
 
 ## Docs (same change, not a follow-up)
 
-`docs/CROSS_PLATFORM.md` has the ownership table ("Documentation Checklist") —
+`docs/contributing/porting.md` has the ownership table ("Documentation Checklist") —
 each fact has exactly one home. Capability status goes in
-`docs/CROSS_PLATFORM.md`, never in `docs/ARCHITECTURE.md` (shape, not status).
-Linux setup specifics go in `docs/LINUX_SETUP.md` / `docs/LINUX_DESKTOPS.md`.
+`docs/reference/platform-support.md`, the API or protocol behind it in
+`docs/contributing/platform-internals.md`, and never either in
+`docs/contributing/architecture.md` (shape only).
+Linux setup specifics go in `docs/guide/linux.md` / `docs/guide/linux-desktops.md`.
 
 ## Verify
 
