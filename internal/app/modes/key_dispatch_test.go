@@ -606,6 +606,7 @@ func TestHintSearch_ReturnLabelsMultipleMatchesWithoutSelecting(t *testing.T) {
 
 	handler.mu.Lock()
 	handler.hints.Context.SetManager(domainhint.NewManager(handler.logger, &handler.mu))
+
 	setErr := handler.hints.Context.SetHints(domainhint.NewCollection(matches))
 	if setErr != nil {
 		t.Fatal(setErr)
