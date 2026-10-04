@@ -15,10 +15,10 @@ func TestFilterByText_ContainsFirstThenFuzzy(t *testing.T) {
 
 	hints := make([]*hint.Interface, 0, 4)
 
-	for i, title := range []string{batchTitle, "Mode", "Other", "bm"} {
+	for index, title := range []string{batchTitle, "Mode", "Other", "bm"} {
 		elem, err := element.NewElement(
 			element.ID(title),
-			image.Rect(0, i*20, 50, i*20+10),
+			image.Rect(0, index*20, 50, index*20+10),
 			element.RoleButton,
 			element.WithTitle(title),
 		)
@@ -26,7 +26,7 @@ func TestFilterByText_ContainsFirstThenFuzzy(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		h, err := hint.NewHint("aa"+string(rune('a'+i)), elem, image.Pt(0, i*20))
+		h, err := hint.NewHint("aa"+string(rune('a'+index)), elem, image.Pt(0, index*20))
 		if err != nil {
 			t.Fatal(err)
 		}

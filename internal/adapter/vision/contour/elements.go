@@ -41,7 +41,11 @@ func Elements(
 
 		opts := []element.Option{element.WithClickable(true), element.WithVisionOnly()}
 		if index < len(texts) && texts[index] != "" {
-			opts = append(opts, element.WithTitle(texts[index]), element.WithSearchText(texts[index]))
+			opts = append(
+				opts,
+				element.WithTitle(texts[index]),
+				element.WithSearchText(texts[index]),
+			)
 		}
 
 		elem, err := element.NewElement(elementID, bounds, element.RoleButton, opts...)
