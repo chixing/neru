@@ -521,7 +521,6 @@ notification cards and toasts.
 | `same_center_slack`   | float | `8.0`   | A nested blob whose center is this close to its parent's duplicates the parent          |
 | `square_icon_size`    | float | `40.0`  | A roughly square parent smaller than this keeps its box and drops its inner detail      |
 | `square_icon_slack`   | float | `5.0`   | How far from square (width minus height) that parent may be                             |
-
 | `detect_text` | bool | `false` | macOS: recognize words on every contour activation; otherwise only with `--search` or `--split-word` |
 
 ### Choosing a label direction
