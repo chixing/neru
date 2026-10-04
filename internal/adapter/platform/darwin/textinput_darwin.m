@@ -78,8 +78,7 @@ void NeruSetHintSearchCycleCallbacks(TextInputControlCallback next, TextInputCon
 	}
 
 	if (keyCode == 48 && ![self hasMarkedText]) {
-		TextInputControlCallback cycle =
-		    (event.modifierFlags & NSEventModifierFlagShift) ? gCyclePrevious : gCycleNext;
+		TextInputControlCallback cycle = (event.modifierFlags & NSEventModifierFlagShift) ? gCyclePrevious : gCycleNext;
 		if (cycle) {
 			cycle(self.userData);
 		}

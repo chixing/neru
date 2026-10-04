@@ -23,7 +23,7 @@ func Elements(
 ) []*element.Element {
 	elements := make([]*element.Element, 0, len(rects))
 
-	for i, rect := range rects {
+	for index, rect := range rects {
 		bounds := rect.Add(origin).Intersect(region)
 		if bounds.Empty() {
 			continue
@@ -40,8 +40,8 @@ func Elements(
 		)
 
 		opts := []element.Option{element.WithClickable(true), element.WithVisionOnly()}
-		if i < len(texts) && texts[i] != "" {
-			opts = append(opts, element.WithTitle(texts[i]), element.WithSearchText(texts[i]))
+		if index < len(texts) && texts[index] != "" {
+			opts = append(opts, element.WithTitle(texts[index]), element.WithSearchText(texts[index]))
 		}
 
 		elem, err := element.NewElement(elementID, bounds, element.RoleButton, opts...)

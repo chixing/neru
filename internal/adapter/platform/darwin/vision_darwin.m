@@ -403,7 +403,8 @@ VisionResult *NeruRecognizeTextInImage(CGImageRef image, CGRect cropPx, int accu
 						NSString *text = top.string;
 						[text enumerateSubstringsInRange:NSMakeRange(0, text.length)
 						                         options:NSStringEnumerationByWords
-						                      usingBlock:^(NSString *word, NSRange wordRange, NSRange enclosing, BOOL *stop) {
+						                      usingBlock:^(
+						                          NSString *word, NSRange wordRange, NSRange enclosing, BOOL *stop) {
 							                      VNRectangleObservation *wordObs = [top boundingBoxForRange:wordRange
 							                                                                           error:nil];
 							                      if (wordObs == nil || CGRectIsEmpty(wordObs.boundingBox)) {
@@ -412,7 +413,8 @@ VisionResult *NeruRecognizeTextInImage(CGImageRef image, CGRect cropPx, int accu
 							                      CGRect w = visionRectToCGRect(tileRect, wordObs.boundingBox);
 							                      w.origin.x += read.origin.x;
 							                      w.origin.y += read.origin.y;
-							                      if (!CGRectContainsPoint(core, CGPointMake(CGRectGetMidX(w), CGRectGetMidY(w)))) {
+							                      if (!CGRectContainsPoint(
+							                              core, CGPointMake(CGRectGetMidX(w), CGRectGetMidY(w)))) {
 								                      return;
 							                      }
 							                      [found addObject:@{

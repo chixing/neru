@@ -19,13 +19,15 @@ type Word struct {
 // missed is still a target. The returned texts run parallel to the returned
 // rectangles.
 func Label(rects []image.Rectangle, words []Word) ([]image.Rectangle, []string) {
+	const midpointDivisor = 2
+
 	out := append([]image.Rectangle(nil), rects...)
 	parts := make([][]string, len(out))
 
 	// ponytail: O(words × rects) scan; a few hundred thousand checks on a
 	// busy 4K window, index by row if it ever shows up in the timing log.
 	for _, word := range words {
-		center := word.Rect.Min.Add(word.Rect.Max).Div(2)
+		center := word.Rect.Min.Add(word.Rect.Max).Div(midpointDivisor)
 		best := -1
 
 		for i, rect := range rects {
@@ -36,6 +38,7 @@ func Label(rects []image.Rectangle, words []Word) ([]image.Rectangle, []string) 
 
 		if best < 0 {
 			out = append(out, word.Rect)
+			//nolint:makezero // Existing groups stay index-aligned with rects; append adds the unmatched word's group.
 			parts = append(parts, []string{word.Text})
 
 			continue

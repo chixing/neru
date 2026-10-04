@@ -282,7 +282,9 @@ func (h *handlerState) startHintSearch() error {
 				// While the scan holds h.mu, show the typing so the input
 				// feels live; the query is applied once the scan releases it.
 				if atomic.LoadInt32(&h.hintScanRunning) == 1 && h.overlayPort != nil {
-					_ = h.overlayPort.DrawHintSearch(ports.HintSearch{Screen: echoScreen, Query: query})
+					_ = h.overlayPort.DrawHintSearch(
+						ports.HintSearch{Screen: echoScreen, Query: query},
+					)
 				}
 
 				h.outer.mu.Lock()

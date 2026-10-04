@@ -314,8 +314,14 @@ func recognizeWords(
 	timeoutMS int,
 ) []contour.Word {
 	cropPx := C.CGRect{
-		origin: C.CGPoint{x: C.double(float64(crop.Min.X) * scale), y: C.double(float64(crop.Min.Y) * scale)},
-		size:   C.CGSize{width: C.double(float64(crop.Dx()) * scale), height: C.double(float64(crop.Dy()) * scale)},
+		origin: C.CGPoint{
+			x: C.double(float64(crop.Min.X) * scale),
+			y: C.double(float64(crop.Min.Y) * scale),
+		},
+		size: C.CGSize{
+			width:  C.double(float64(crop.Dx()) * scale),
+			height: C.double(float64(crop.Dy()) * scale),
+		},
 	}
 
 	result := C.NeruRecognizeTextInImage(cgImage, cropPx, 1, C.int(timeoutMS))
@@ -330,16 +336,18 @@ func recognizeWords(
 		return nil
 	}
 
+	regions := (*[1 << 30]C.VisionRegion)(unsafe.Pointer(result.regions))[:count:count]
 	words := make([]contour.Word, 0, count)
-	for _, r := range (*[1 << 30]C.VisionRegion)(unsafe.Pointer(result.regions))[:count:count] {
+
+	for _, region := range regions {
 		words = append(words, contour.Word{
 			Rect: image.Rect(
-				int(float64(r.x)/scale),
-				int(float64(r.y)/scale),
-				int(float64(r.x+r.width)/scale),
-				int(float64(r.y+r.height)/scale),
+				int(float64(region.x)/scale),
+				int(float64(region.y)/scale),
+				int(float64(region.x+region.width)/scale),
+				int(float64(region.y+region.height)/scale),
 			),
-			Text: C.GoString(r.label),
+			Text: C.GoString(region.label),
 		})
 	}
 
