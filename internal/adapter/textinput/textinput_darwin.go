@@ -35,6 +35,7 @@ import (
 // TextInput manages the macOS native text input session.
 type TextInput struct {
 	logger    *zap.Logger
+	query     string
 	callbacks ports.TextInputCallbacks
 	mu        sync.RWMutex
 
@@ -72,6 +73,7 @@ func (t *TextInput) StartHintSearchSession(
 ) (bool, error) {
 	t.mu.Lock()
 	t.callbacks = callbacks
+	t.query = ""
 	t.mu.Unlock()
 
 	started := C.NeruStartHintSearchTextInput(
@@ -120,9 +122,10 @@ func textInputQueryBridge(query *C.char, _ unsafe.Pointer) {
 		queryStr = C.GoString(query)
 	}
 
-	textInput.mu.RLock()
+	textInput.mu.Lock()
+	textInput.query = queryStr
 	callback := textInput.callbacks.OnQueryChanged
-	textInput.mu.RUnlock()
+	textInput.mu.Unlock()
 
 	if callback == nil {
 		return
@@ -153,6 +156,8 @@ func textInputConfirmBridge(_ unsafe.Pointer) {
 
 	textInput.mu.RLock()
 	callback := textInput.callbacks.OnConfirm
+	queryCallback, query := textInput.callbacks.OnQueryChanged, textInput.query
+	seq := atomic.LoadUint64(&textInput.querySeq)
 	textInput.mu.RUnlock()
 
 	if callback == nil {
@@ -162,6 +167,15 @@ func textInputConfirmBridge(_ unsafe.Pointer) {
 	go func() {
 		textInput.callbackMu.Lock()
 		defer textInput.callbackMu.Unlock()
+
+		// The main thread has already published the full query. Deliver it
+		// before the control even if its query goroutine has not run yet.
+		if seq >= textInput.lastExecutedSeq {
+			textInput.lastExecutedSeq = seq
+			if queryCallback != nil {
+				queryCallback(query)
+			}
+		}
 
 		callback()
 	}()
@@ -210,6 +224,8 @@ func dispatchCycle(backward bool) {
 
 	textInput.mu.RLock()
 	callback := textInput.callbacks.OnCycle
+	queryCallback, query := textInput.callbacks.OnQueryChanged, textInput.query
+	seq := atomic.LoadUint64(&textInput.querySeq)
 	textInput.mu.RUnlock()
 
 	if callback == nil {
@@ -219,6 +235,15 @@ func dispatchCycle(backward bool) {
 	go func() {
 		textInput.callbackMu.Lock()
 		defer textInput.callbackMu.Unlock()
+
+		// The main thread has already published the full query. Deliver it
+		// before the control even if its query goroutine has not run yet.
+		if seq >= textInput.lastExecutedSeq {
+			textInput.lastExecutedSeq = seq
+			if queryCallback != nil {
+				queryCallback(query)
+			}
+		}
 
 		callback(backward)
 	}()

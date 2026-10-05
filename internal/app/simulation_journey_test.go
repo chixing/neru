@@ -3475,3 +3475,44 @@ func TestSimulation_SearchHotkeyPressedAgainStaysUsable(t *testing.T) {
 	sim.press("Escape")
 	sim.waitMode(domain.ModeIdle)
 }
+
+func TestSimulation_SearchAcceptsTypingAndReturnDuringScan(t *testing.T) {
+	cfg := simConfig()
+	cfg.Hotkeys.Bindings[hintsHotkey] = []string{
+		"hints --search --hide-on-empty-search --action left_click",
+	}
+	sim := newSimHarness(t, cfg, threeButtons(t))
+	started, release := make(chan struct{}, 1), make(chan struct{})
+
+	sim.ax.mu.Lock()
+	sim.ax.scanStarted, sim.ax.scanRelease = started, release
+	sim.ax.mu.Unlock()
+
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	sim.pressHotkey(hintsHotkey)
+	sim.waitMode(domain.ModeHints)
+
+	select {
+	case <-started:
+	case <-time.After(simWaitHeadroom):
+		t.Fatal("background scan never started")
+	}
+
+	for _, key := range []string{"s", "a", "v", "e", "Return"} {
+		sim.press(key)
+	}
+
+	close(release)
+	sim.waitMode(domain.ModeIdle)
+
+	if clicks := sim.ax.recordedClicks(); len(clicks) != 1 {
+		t.Fatalf("Return during the scan produced %d clicks, want 1", len(clicks))
+	}
+}

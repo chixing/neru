@@ -23,6 +23,8 @@ import (
 // Handler.RefreshActiveModeForScreenChange), so the mode this belongs to is
 // still the active one and there is nothing here to re-check (ADR 0004).
 func (h *handlerState) refreshHintsForScreenChange(ctx context.Context) bool {
+	h.cancelHintScan()
+
 	// Re-read screen bounds under the lock so the onUpdate callback
 	// uses coordinates that match the resized overlay.
 	if h.system != nil {
@@ -32,6 +34,10 @@ func (h *handlerState) refreshHintsForScreenChange(ctx context.Context) bool {
 		} else if !derrors.IsNotSupported(err) {
 			h.logger.Warn("Failed to refresh screen bounds after screen change", zap.Error(err))
 		}
+	}
+
+	if h.restartHintSearch(ctx, h.screenBounds) {
+		return true
 	}
 
 	// Escape any active IME search session before refreshing hints on the new

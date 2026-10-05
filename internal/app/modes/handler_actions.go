@@ -2,7 +2,6 @@ package modes
 
 import (
 	"context"
-	"sync/atomic"
 
 	"go.uber.org/zap"
 
@@ -92,6 +91,14 @@ func (h *Handler) CycleHint(ctx context.Context, backward bool, executeAction bo
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if h.hints != nil && h.hints.Context != nil && h.hints.Context.SearchActive() {
+		h.flushHintSearchFilter()
+	}
+
+	return h.cycleHint(ctx, backward, executeAction)
+}
+
+func (h *handlerState) cycleHint(ctx context.Context, backward bool, executeAction bool) error {
 	if h.appState.CurrentMode() != domain.ModeHints {
 		return derrors.New(derrors.CodeInvalidInput, "cycle_hint requires hints mode")
 	}
@@ -275,20 +282,12 @@ func (h *handlerState) startHintSearch() error {
 		Height: bounds.Dy(),
 	}
 
-	echoScreen := h.screenBounds
+	searchSession := h.hintSearchSession
 
 	started, _ := h.textInput.StartHintSearchSession(
 		h.ctx,
 		ports.TextInputCallbacks{
 			OnQueryChanged: func(query string) {
-				// While the scan holds h.mu, show the typing so the input
-				// feels live; the query is applied once the scan releases it.
-				if atomic.LoadInt32(&h.hintScanRunning) == 1 && h.overlayPort != nil {
-					_ = h.overlayPort.DrawHintSearch(
-						ports.HintSearch{Screen: echoScreen, Query: query},
-					)
-				}
-
 				h.outer.mu.Lock()
 				defer h.outer.mu.Unlock()
 
@@ -297,22 +296,26 @@ func (h *handlerState) startHintSearch() error {
 					return
 				}
 
-				if !h.hints.Context.SearchActive() {
+				if h.hintSearchSession != searchSession || !h.hints.Context.SearchActive() {
+					return
+				}
+
+				if h.hints.Context.SearchQuery() == query {
 					return
 				}
 
 				h.hints.Context.SetSearchQuery(query)
-				h.applyHintSearchFilter()
+				h.scheduleHintSearchFilter()
 			},
 			OnCycle: func(backward bool) {
-				// CycleHint takes h.mu itself and checks the mode.
-				_ = h.outer.CycleHint(h.ctx, backward, false)
+				_ = h.outer.cycleHintSearch(h.ctx, backward, searchSession)
 			},
 			OnConfirm: func() {
 				h.outer.mu.Lock()
 				defer h.outer.mu.Unlock()
 
-				if h.appState.CurrentMode() != domain.ModeHints {
+				if h.appState.CurrentMode() != domain.ModeHints ||
+					h.hintSearchSession != searchSession {
 					return
 				}
 
@@ -322,7 +325,8 @@ func (h *handlerState) startHintSearch() error {
 				h.outer.mu.Lock()
 				defer h.outer.mu.Unlock()
 
-				if h.appState.CurrentMode() != domain.ModeHints {
+				if h.appState.CurrentMode() != domain.ModeHints ||
+					h.hintSearchSession != searchSession {
 					return
 				}
 
@@ -345,6 +349,10 @@ func (h *handlerState) startHintSearch() error {
 }
 
 func (h *handlerState) stopHintSearchTextInput(keepEventTapDisabled bool) {
+	h.hintSearchSession++
+	h.cancelHintSearchFilter()
+	h.hintSearchConfirmPending = false
+
 	if h.hintSearchTextInputActive && h.textInput != nil {
 		// Use Background context since this may be called during cleanup,
 		// after h.ctx has already been canceled.

@@ -353,6 +353,12 @@ func (h *handlerState) refreshHintsForMonitorMove(
 	ctx context.Context,
 	targetBounds image.Rectangle,
 ) {
+	if h.restartHintSearch(ctx, targetBounds) {
+		return
+	}
+
+	h.cancelHintScan()
+
 	if h.hintService == nil {
 		h.logger.Warn("Hint service unavailable after monitor move; exiting hints mode")
 		h.exitMode()

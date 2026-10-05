@@ -3,7 +3,6 @@ package modes
 import (
 	"context"
 	"image"
-	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -74,6 +73,8 @@ func (h *handlerState) activateHintModeWithAction(activation modecmd.Activation)
 // It handles mode validation, overlay positioning, element collection, hint
 // generation, and UI setup for hint-based navigation.
 func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
+	h.cancelHintScan()
+
 	// Detect refresh before validation so we can clean up on failure
 	isRefresh := h.appState.CurrentMode() == domain.ModeHints
 
@@ -82,15 +83,11 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 		h.cycleHintIndex = -1
 	}
 
-	// On refresh, properly escape the active IME and clear search state first.
-	// Otherwise the IME is left orphaned during screen or space transitions,
-	// where the OS moves focus to the frontmost app.
+	// Replace the native input on explicit reactivation without returning the
+	// keyboard to the focused app between searches.
 	if isRefresh && h.hints != nil && h.hints.Context != nil && h.hints.Context.SearchActive() {
-		h.cancelHintSearch()
-
-		// Canceling a search the mode opened with leaves hints mode, so
-		// this is a fresh activation now, not a refresh.
-		isRefresh = h.appState.CurrentMode() == domain.ModeHints
+		h.stopHintSearchTextInput(true)
+		h.hints.Context.SetSearchActive(false)
 	}
 
 	// Defer bundle ID fetch until after validation (secure input check) to avoid
@@ -217,11 +214,12 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 		h.hints.Context.SetActiveScan(strategy, captureScope)
 	}
 
-	// A search opens its input before the scan, so typing can start at once;
-	// the query waits on h.mu and is applied once the hints exist.
-	earlySearch := !isRefresh && activation.Search != nil && *activation.Search
+	// A search opens its input before its background scan, so editing and
+	// Escape remain responsive while capture and recognition run.
+	earlySearch := h.hints != nil && h.hints.Context != nil && h.hints.Context.StartWithSearch()
 
-	if earlySearch && h.system != nil {
+	if earlySearch && h.system != nil &&
+		h.hints.Context.ActiveCaptureScope() != domain.CaptureScopeScreen {
 		// The search input takes focus from the window the scan is about.
 		bounds, found, err := h.system.FocusedWindowBounds(ctx)
 		if err == nil && found {
@@ -229,20 +227,12 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 		}
 	}
 
-	earlySearch = earlySearch && h.openSearchBeforeScan()
+	if earlySearch && h.openSearchBeforeScan() {
+		h.startHintSearchScan(ctx, activation, bundleID, overrides, activeScreenBounds)
 
-	abandon := func() {
-		if earlySearch {
-			h.stopHintSearchTextInput(false)
-			h.exitMode()
-
-			return
-		}
-
-		h.abandonHintActivation(isRefresh)
+		return
 	}
 
-	atomic.StoreInt32(&h.hintScanRunning, boolToInt32(earlySearch))
 	domainHints, domainHintsErr := h.hintService.GenerateHints(
 		ctx,
 		activation.FilterRoles,
@@ -253,8 +243,6 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 		overrides.labelDirection,
 		overrides.splitWord,
 	)
-	atomic.StoreInt32(&h.hintScanRunning, 0)
-
 	if domainHintsErr != nil {
 		h.logger.Error(
 			"Failed to show hints",
@@ -262,7 +250,7 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 			zap.String("action", actionString),
 		)
 
-		abandon()
+		h.abandonHintActivation(isRefresh)
 
 		return
 	}
@@ -282,28 +270,13 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 	if len(domainHints) == 0 {
 		h.logger.Warn("No hints generated for action", zap.String("action", actionString))
 
-		abandon()
+		h.abandonHintActivation(isRefresh)
 
 		return
 	}
 
 	// Create domain hint collection from generated hints
 	hintCollection := domainHint.NewCollection(domainHints)
-
-	if earlySearch {
-		// Mode, overlay and input are already up; the hints go behind the
-		// search, which picks what is shown.
-		h.hints.Context.SetSourceHints(hintCollection)
-		h.applyHintSearchFilter()
-		h.logger.Info("Hints mode activated",
-			zap.Duration("elapsed", time.Since(activationStart)),
-			zap.Int("hint_count", len(domainHints)),
-			zap.String("strategy", strategy),
-			zap.Bool("search_opened_before_scan", true))
-		h.startIndicatorPolling(domain.ModeHints)
-
-		return
-	}
 
 	// Initialize hint manager and router if not already set up
 	// Note: Manager is created once and reused across activations (holds mutable state).
@@ -407,14 +380,6 @@ func (h *handlerState) openSearchBeforeScan() bool {
 	}
 
 	return true
-}
-
-func boolToInt32(b bool) int32 {
-	if b {
-		return 1
-	}
-
-	return 0
 }
 
 // needsScreenCapturePermission reports whether a screen-capture strategy is

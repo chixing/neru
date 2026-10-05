@@ -562,6 +562,11 @@ func TestHintSearch_KeepsTypingPastTheLastMatch(t *testing.T) {
 		handler.HandleKeyPress(key)
 	}
 
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+
+	handler.flushHintSearchFilter()
+
 	if got := handler.hints.Context.SearchQuery(); got != "savez" {
 		t.Fatalf("query = %q, want savez", got)
 	}
@@ -616,6 +621,9 @@ func TestHintSearch_ReturnLabelsMultipleMatchesWithoutSelecting(t *testing.T) {
 	handler.mu.Unlock()
 
 	handler.HandleKeyPress("s")
+	handler.mu.Lock()
+	handler.flushHintSearchFilter()
+	handler.mu.Unlock()
 
 	for _, match := range handler.hints.Context.Hints().All() {
 		if match.Label() != searchMatchMarker {

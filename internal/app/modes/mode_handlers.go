@@ -324,13 +324,13 @@ func (h *handlerState) handleSearchInputKey(key string) {
 		if query != "" {
 			_, size := utf8.DecodeLastRuneInString(query)
 			ctx.SetSearchQuery(query[:len(query)-size])
-			h.applyHintSearchFilter()
+			h.scheduleHintSearchFilter()
 		}
 
 		return
 	case configpkg.KeyNameSpace:
 		ctx.SetSearchQuery(ctx.SearchQuery() + " ")
-		h.applyHintSearchFilter()
+		h.scheduleHintSearchFilter()
 
 		return
 	case configpkg.KeyNameTab, "shift+" + configpkg.KeyNameTab:
@@ -349,7 +349,7 @@ func (h *handlerState) handleSearchInputKey(key string) {
 	}
 
 	ctx.SetSearchQuery(ctx.SearchQuery() + key)
-	h.applyHintSearchFilter()
+	h.scheduleHintSearchFilter()
 }
 
 func (h *handlerState) applyHintSearchFilter() {
@@ -395,10 +395,16 @@ func (h *handlerState) confirmHintSearch() {
 		return
 	}
 
+	if h.hintScanCancel != nil {
+		h.hintSearchConfirmPending = true
+
+		return
+	}
+
+	h.flushHintSearchFilter()
+
 	visibleHints := h.hints.Context.Hints()
 	if visibleHints == nil || visibleHints.Count() == 0 {
-		h.cancelHintSearch()
-
 		return
 	}
 

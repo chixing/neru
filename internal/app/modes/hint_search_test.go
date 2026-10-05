@@ -4,14 +4,19 @@ import (
 	"context"
 	"image"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/y3owk1n/neru/internal/app/components"
 	hintscomponent "github.com/y3owk1n/neru/internal/app/components/hints"
+	scrollcomponent "github.com/y3owk1n/neru/internal/app/components/scroll"
+	"github.com/y3owk1n/neru/internal/app/services"
+	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/domain/element"
 	domainhint "github.com/y3owk1n/neru/internal/domain/hint"
+	"github.com/y3owk1n/neru/internal/domain/modecmd"
 	"github.com/y3owk1n/neru/internal/domain/state"
 	"github.com/y3owk1n/neru/internal/ports"
 	portmocks "github.com/y3owk1n/neru/internal/ports/mocks"
@@ -31,9 +36,11 @@ func newHintSearchTestHandler(
 	appState.SetMode(domain.ModeHints)
 
 	handler := newHandlerWithState(handlerState{
-		ctx:      context.Background(),
-		logger:   zap.NewNop(),
-		appState: appState,
+		ctx:         context.Background(),
+		logger:      zap.NewNop(),
+		appState:    appState,
+		cursorState: state.NewCursorState(),
+		scroll:      &components.ScrollComponent{Context: &scrollcomponent.Context{}},
 		hints: &components.HintsComponent{
 			Context: &hintscomponent.Context{},
 		},
@@ -236,5 +243,215 @@ func TestHintsModeRefreshForThemeChange_RedrawsAnOpenSearchBox(t *testing.T) {
 				"the label redraw cleared it",
 			searchDraws,
 		)
+	}
+}
+
+func TestStartHintSearchScan_EditingAndCancelDoNotWaitForScan(t *testing.T) {
+	t.Parallel()
+
+	started, canceled := make(chan struct{}), make(chan struct{})
+	textInput := &portmocks.MockTextInputPort{Started: true}
+	handler := newHintSearchTestHandler(t, &portmocks.MockOverlayPort{
+		HintSearchBoundsFunc: func(image.Rectangle) image.Rectangle { return image.Rect(0, 0, 200, 30) },
+	}, textInput)
+	cfg := config.DefaultConfig()
+
+	gen, err := domainhint.NewAlphabetGenerator("asdf", domainhint.LabelDirectionNormal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler.hintService = services.NewHintService(&portmocks.MockAccessibilityPort{
+		ClickableElementsFunc: func(ctx context.Context, _ ports.ElementFilter) ([]*element.Element, error) {
+			close(started)
+			<-ctx.Done()
+			close(canceled)
+
+			return nil, ctx.Err()
+		},
+	}, nil, nil, gen, cfg.Hints, nil, nil)
+	handler.modes[domain.ModeHints] = NewHintsMode(&handler.handlerState)
+
+	handler.mu.Lock()
+	handler.hints.Context.SetStartWithSearch(true)
+
+	err = handler.startHintSearch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler.startHintSearchScan(
+		context.Background(),
+		modecmd.Activation{},
+		"test.app",
+		hintOverrides{},
+		image.Rect(0, 0, 1000, 1000),
+	)
+	handler.mu.Unlock()
+
+	awaitHintSearchSignal(t, started)
+
+	done := make(chan struct{})
+	go func() {
+		textInput.EmitQueryChanged("typed during scan")
+		textInput.EmitCancel()
+		close(done)
+	}()
+
+	awaitHintSearchSignal(t, done)
+	awaitHintSearchSignal(t, canceled)
+
+	if handler.appState.CurrentMode() != domain.ModeIdle {
+		t.Fatal("Escape did not leave search while its scan was blocked")
+	}
+}
+
+func TestCompleteHintSearchScan_StaleScanDoesNotReplaceNewSearch(t *testing.T) {
+	t.Parallel()
+
+	handler := newHintSearchTestHandler(t, &portmocks.MockOverlayPort{}, nil)
+	original := handler.hints.Context.SourceHints()
+	handler.hintScanGeneration = 2
+	handler.completeHintSearchScan(handler.modeSession, 1, nil, nil)
+
+	if handler.hints.Context.SourceHints() != original {
+		t.Fatal("old scan replaced the newer search's hints")
+	}
+}
+
+func TestHintSearchFilter_DebouncesAndFlushesBeforeConfirm(t *testing.T) {
+	t.Parallel()
+
+	handler := newHintSearchTestHandler(t, &portmocks.MockOverlayPort{}, nil)
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+
+	handler.hints.Context.SetSearchActive(true)
+	original := handler.hints.Context.Hints()
+	handler.hints.Context.SetSearchQuery("no match")
+	handler.scheduleHintSearchFilter()
+
+	if handler.hints.Context.Hints() != original {
+		t.Fatal("typing filtered synchronously instead of debouncing")
+	}
+
+	handler.confirmHintSearch()
+
+	if handler.hints.Context.Hints().Count() != 0 || handler.hintSearchTimer != nil {
+		t.Fatal("Return did not flush the current query")
+	}
+
+	if !handler.hints.Context.SearchActive() {
+		t.Fatal("Return on no matches closed the input")
+	}
+}
+
+func TestHintSearchFilter_TimerAppliesLatestQuery(t *testing.T) {
+	t.Parallel()
+
+	applied := make(chan struct{}, 1)
+	handler := newHintSearchTestHandler(t, &portmocks.MockOverlayPort{}, nil)
+	handler.mu.Lock()
+	handler.hints.Context.Manager().SetUpdateCallback(func([]*domainhint.Interface) {
+		select {
+		case applied <- struct{}{}:
+		default:
+		}
+	})
+	handler.hints.Context.SetSearchActive(true)
+	handler.hints.Context.SetSearchQuery("search")
+	handler.scheduleHintSearchFilter()
+	handler.hints.Context.SetSearchQuery("no match")
+	handler.scheduleHintSearchFilter()
+	handler.mu.Unlock()
+	awaitHintSearchSignal(t, applied)
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+
+	if handler.hints.Context.Hints().Count() != 0 {
+		t.Fatal("debounce applied an outdated query")
+	}
+}
+
+func TestConfirmHintSearch_ScanPendingKeepsInputOpen(t *testing.T) {
+	t.Parallel()
+
+	handler := newHintSearchTestHandler(t, &portmocks.MockOverlayPort{}, nil)
+	handler.mu.Lock()
+	handler.hints.Context.SetSearchActive(true)
+	handler.hintScanCancel = func() {}
+	handler.confirmHintSearch()
+	pending := handler.hintSearchConfirmPending
+	handler.mu.Unlock()
+
+	if !pending {
+		t.Fatal("Return during scanning did not defer confirmation")
+	}
+
+	handler.completeHintSearchScan(handler.modeSession, handler.hintScanGeneration, nil, nil)
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+
+	if handler.hintSearchConfirmPending || !handler.hints.Context.SearchActive() {
+		t.Fatal("empty scan did not settle pending Return while preserving input")
+	}
+}
+
+func awaitHintSearchSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-time.After(3 * time.Second):
+		t.Fatal("hint search operation blocked")
+	}
+}
+
+func TestRestartHintSearch_PreservesQueryAndKeyboardDuringScan(t *testing.T) {
+	t.Parallel()
+
+	started, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+
+	handler := newHintSearchTestHandler(t, &portmocks.MockOverlayPort{}, nil)
+	cfg := config.DefaultConfig()
+
+	gen, err := domainhint.NewAlphabetGenerator("asdf", domainhint.LabelDirectionNormal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler.hintService = services.NewHintService(&portmocks.MockAccessibilityPort{
+		ClickableElementsFunc: func(ctx context.Context, _ ports.ElementFilter) ([]*element.Element, error) {
+			close(started)
+
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+
+			return nil, ctx.Err()
+		},
+	}, nil, nil, gen, cfg.Hints, nil, nil)
+	handler.mu.Lock()
+	handler.hints.Context.SetStartWithSearch(true)
+	handler.hints.Context.SetSearchActive(true)
+	handler.hints.Context.SetSearchQuery("keep this query")
+	session := handler.modeSession
+	searchSession := handler.hintSearchSession
+
+	handler.hintScanBundleID = "test.app"
+	if !handler.restartHintSearch(t.Context(), image.Rect(0, 0, 1000, 1000)) {
+		t.Fatal("search refresh was not handled")
+	}
+	handler.mu.Unlock()
+	awaitHintSearchSignal(t, started)
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	defer handler.cancelHintScan()
+
+	if handler.modeSession != session || handler.hintSearchSession != searchSession ||
+		handler.appState.CurrentMode() != domain.ModeHints || handler.hints.Context.SearchQuery() != "keep this query" {
+		t.Fatal("display refresh reset the mode, keyboard session or query")
 	}
 }

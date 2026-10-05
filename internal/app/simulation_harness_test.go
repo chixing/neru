@@ -798,6 +798,8 @@ type simAXPort struct {
 	scrolls        []image.Point
 	scrollMods     []action.Modifiers
 	releases       int
+	scanStarted    chan struct{}
+	scanRelease    chan struct{}
 
 	// focusedApp is which application the fixture desktop routes keystrokes
 	// to, and focusedAppQueries how many times the app asked for it.
@@ -816,11 +818,24 @@ var _ ports.AccessibilityPort = (*simAXPort)(nil)
 func (a *simAXPort) Health(_ context.Context) error { return nil }
 
 func (a *simAXPort) ClickableElements(
-	_ context.Context,
+	ctx context.Context,
 	_ ports.ElementFilter,
 ) ([]*element.Element, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	if a.scanStarted != nil {
+		select {
+		case a.scanStarted <- struct{}{}:
+		default:
+		}
+
+		select {
+		case <-a.scanRelease:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 
 	out := make([]*element.Element, len(a.elements))
 	copy(out, a.elements)

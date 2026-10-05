@@ -141,7 +141,7 @@ func (s *HintService) GenerateHints(
 
 	switch strategy {
 	case domain.StrategyVision:
-		elements = s.generateHintsVision(ctx, filter, captureScope, splitWord)
+		elements = s.generateHintsVision(ctx, filter, captureScope, splitWord, cfg.Vision)
 	case domain.StrategyContour:
 		contourCfg := cfg.Contour
 		contourCfg.DetectText = contourCfg.DetectText || splitWord
@@ -280,6 +280,7 @@ func (s *HintService) generateHintsVision(
 	filter ports.ElementFilter,
 	captureScope string,
 	splitWord bool,
+	cfg config.HintsVisionConfig,
 ) []*element.Element {
 	allElements := s.supplementaryElements(ctx, filter)
 
@@ -300,7 +301,7 @@ func (s *HintService) generateHintsVision(
 	windowElements, visionErr := s.vision.DetectElements(
 		ctx,
 		windowBounds,
-		s.config.Vision,
+		cfg,
 		splitWord,
 	)
 	if visionErr != nil {

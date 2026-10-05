@@ -78,6 +78,17 @@ labels to read.
 
 `Backspace` undoes the last cut, and `Space` starts over.
 
+Search activations scan in the background so you can type or press Escape while
+recognition is running. Result highlighting updates after a 60 ms pause in typing;
+Tab and Return apply the latest query immediately. Return pressed during scanning
+confirms when the scan finishes. With no matches, the search stays open for editing.
+
+For text search across the active screen, bind or run:
+
+```sh
+neru hints --strategy contour --capture-scope screen --search --hide-on-empty-search --action left_click
+```
+
 ## Grid
 
 `Primary+Shift+G`, or `neru grid`.
