@@ -18,17 +18,16 @@ import (
 	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/domain/action"
+	"github.com/y3owk1n/neru/internal/domain/event"
 	"github.com/y3owk1n/neru/internal/domain/modecmd"
 	"github.com/y3owk1n/neru/internal/domain/state"
 	"github.com/y3owk1n/neru/internal/ports"
 )
 
-// Mode defines the interface that all navigation modes must implement.
-// This provides a consistent API contract for mode activation, key handling,
-// and cleanup operations.
+// Mode is the interface every navigation mode implements.
 type Mode interface {
 	// Activate enters the mode with the flags the activation carries. Every
-	// flag the mode accepts is in there: nothing is copied out of it on the
+	// flag the mode accepts is in there. Nothing is copied out of it on the
 	// way in, so a mode reads the same value the grammar produced.
 	Activate(activation modecmd.Activation)
 
@@ -37,9 +36,6 @@ type Mode interface {
 
 	// Exit performs mode-specific cleanup and deactivation.
 	Exit()
-
-	// ModeType returns the domain mode type this implementation represents.
-	ModeType() domain.Mode
 
 	// RefreshForMonitorMove puts the mode's Frame back on screen against
 	// targetBounds after the cursor has been warped to another display. The
@@ -54,9 +50,10 @@ type Mode interface {
 	RefreshForMonitorMove(ctx context.Context, targetBounds image.Rectangle)
 }
 
-// Handler is the locked outer shell of the mode handler: it owns the mutexes
+// Handler is the locked outer shell of the mode handler. It owns the mutexes
 // and the exported entry points, each of which takes mu and delegates to the
-// embedded handlerState. Methods on Handler may lock; methods on state may not.
+// embedded handlerState. Methods on Handler may lock, and methods on
+// handlerState may not.
 type Handler struct {
 	handlerState
 
@@ -66,27 +63,38 @@ type Handler struct {
 	mu sync.Mutex
 
 	// moveMonitorMu serializes MoveMonitor invocations. Lock ordering is
-	// always moveMonitorMu -> h.mu: MoveMonitor holds this while clearing the
+	// always moveMonitorMu -> h.mu. MoveMonitor holds this while clearing the
 	// frame and again while refreshActiveModeForMonitorMove dispatches the
 	// refresh, each of which takes h.mu for the length of its own call. Never
 	// acquire in the reverse order.
 	moveMonitorMu sync.Mutex
+
+	// snapMu runs one Snap at a time, scan and cursor move included, so a held
+	// snap's repeat tick starts from where the previous step landed. Lock
+	// ordering is snapMu -> h.mu. Snap takes h.mu only for its own short
+	// holds, and nothing holding h.mu takes snapMu.
+	snapMu sync.Mutex
 }
 
-// state carries every field of the mode handler and every method that runs
-// with Handler.mu already held. It deliberately has no mutex: a state method
-// cannot lock, and it cannot reach the exported (locking) Handler surface, so
-// "caller must hold the lock" is enforced by the compiler instead of by the
-// old *Locked naming convention. Mode implementations receive a *state.
+// handlerState carries every field of the mode handler and every method that
+// runs with Handler.mu already held. It deliberately has no mutex. A
+// handlerState method cannot lock, and it cannot reach the exported (locking)
+// Handler surface, so "caller must hold the lock" is enforced by the compiler
+// instead of by the old *Locked naming convention. Mode implementations receive
+// a *handlerState.
 //
 // The one escape hatch is outer, the back-reference to the owning Handler.
-// It exists solely so state methods can schedule deferred work (timers,
+// It exists solely so handlerState methods can schedule deferred work (timers,
 // goroutines) whose callbacks must take the lock when they later fire. Never
-// call anything on outer synchronously from a state method — that is the
-// self-deadlock the split exists to prevent.
+// call anything on outer synchronously from a handlerState method. That is
+// the self-deadlock the split exists to prevent.
 type handlerState struct {
-	// outer is the owning Handler. Deferred callbacks only; see the type comment.
+	// outer is the owning Handler. Deferred callbacks only. See the type comment.
 	outer *Handler
+
+	// activationRefusal is why the activation in progress did not open its
+	// mode, or nil. ActivateEnabledMode clears it, activates, and reports it.
+	activationRefusal error
 
 	config        *configpkg.Config
 	system        ports.SystemPort
@@ -94,29 +102,27 @@ type handlerState struct {
 	appState      *state.AppState
 	cursorState   *state.CursorState
 	modifierState *state.ModifierState
-	// overlayPort is the one way a mode reaches the screen: it hands over a
+	// overlayPort is the one way a mode reaches the screen. It hands over a
 	// Frame describing what should be on it and never sequences a transition
-	// itself. Since #1213 it is the only overlay reference this package has:
-	// the Linux keyboard grab goes through this same port rather than through
+	// itself. Since #1213 it is the only overlay reference this package has.
+	// The Linux keyboard grab goes through this same port rather than through
 	// the overlay package's singleton (indicator_polling.go).
 	//
-	// Its type is overlaySurface, not ports.OverlayPort: the calls the handler
+	// Its type is overlaySurface, not ports.OverlayPort. The calls the handler
 	// must never make are not on it, so making one is a compile error rather
 	// than a rule to remember (overlay.go).
 	overlayPort overlaySurface
 	// hintsFrameOnScreen records whether this activation has already put the
 	// hints Frame on screen. The hint manager's update callback fires on
-	// activation and again on every narrowing keystroke; only the first needs
+	// activation and again on every narrowing keystroke. Only the first needs
 	// the overlay shown and switched, and paying for a window show per
 	// keystroke is the latency regression AGENTS.md forbids.
 	//
-	// It may only be cleared in a locked section that also invalidates the hint
-	// manager's pending update generation, or a debounce timer firing after the
-	// clear performs a window transition for an activation that is already
-	// gone. The two sites that clear it both satisfy that (`hints.go`,
-	// `hintdraw.go`).
+	// Each site that puts a new collection on screen clears it immediately
+	// before SetHints, whose synchronous update callback performs the window
+	// transition (`hints.go`, `monitor.go`, `handler_refresh.go`).
 	hintsFrameOnScreen bool
-	// New Services
+	// Services
 	hintService            *services.HintService
 	gridService            *services.GridService
 	actionService          *services.ActionService
@@ -138,10 +144,25 @@ type handlerState struct {
 	// Screen bounds for coordinate conversion (grid and hints)
 	screenBounds image.Rectangle
 
+	// events is where mode changes are published, and publishedMode is the
+	// mode name the last of them left open: the idle name when none is. Both
+	// belong to setAppMode (mode_setup.go).
+	events        *event.Bus
+	publishedMode string
+	// switchPending is set while a mode-to-mode transition has closed the old
+	// mode and not yet opened the next. The idle in between publishes nothing.
+	// setAppMode reports the old mode's exit as switched when the next mode
+	// opens, and the transition's release reports it as canceled when the
+	// activation gives up.
+	switchPending bool
+	// exitAction is the action a mode closing as completed ran, for the exit
+	// event. The next mode change reports and clears it.
+	exitAction string
+
 	// focusedApp is the cell the application watcher publishes the focused app
 	// into, and the keymap fields below are what the handler settles from it.
 	// Both belong to keymap.go, which is where the rules about them are
-	// written; the cell is lock-free on purpose and must stay that way.
+	// written. The cell is lock-free on purpose and must stay that way.
 	focusedApp *focusedAppCell
 	// keymap is the mode's own bindings in force and globalHotkeys is the global
 	// [hotkeys] table it falls back to for a chord it does not bind, filtered to
@@ -149,7 +170,7 @@ type handlerState struct {
 	// keystroke that consults both still asks the platform nothing.
 	//
 	// keymapSettledFor is what they were settled for, and keymapSettled says they
-	// have been settled at all — two zero keymaps are a legitimate answer (a mode
+	// have been settled at all. Two zero keymaps are a legitimate answer (a mode
 	// that binds nothing, with no global chords), so neither can double as "not
 	// settled yet".
 	keymap           configpkg.Keymap
@@ -157,11 +178,11 @@ type handlerState struct {
 	keymapSettledFor keymapInputs
 	keymapSettled    bool
 
-	// eventTap is nil until the app's phase 8 calls SetEventTap; every use
+	// eventTap is nil until the app's phase 8 calls SetEventTap. Every use
 	// goes through the nil-guarded helpers in eventtap.go.
 	eventTap              ports.EventTapPort
 	refreshHotkeys        func()
-	executeActionSequence func(source string, steps []string)
+	executeActionSequence func(source string, steps []string, env []string)
 	shutdown              func()
 	refreshHintsTimer     *time.Timer
 	modeSession           uint64
@@ -171,9 +192,10 @@ type handlerState struct {
 	textInput                  ports.TextInputPort
 	hintSearchTextInputActive  bool
 	hintSearchEventTapDisabled bool
-	// hintScanRunning is set while a search activation scans with its input
-	// already open; the input echoes typing without h.mu, which the scan holds.
-	hintScanRunning int32
+	// hintSearchSession counts text-input sessions. A callback a session
+	// queued before it stopped compares it under h.mu and does nothing, so it
+	// cannot reach the next session.
+	hintSearchSession uint64
 
 	// Pending modifier taps waiting to be committed after a short "no follow-up"
 	// window. A regular key press cancels all pending taps.
@@ -193,8 +215,8 @@ type handlerState struct {
 
 	// systemCursorHidden tracks whether the hide_cursor action is holding the
 	// system cursor hidden. It is also what gates the standalone
-	// cursor-following virtual pointer that stands in for it; the in-frame
-	// pointers the grid modes draw are unrelated and no mode sets this.
+	// cursor-following virtual pointer that stands in for it. The in-frame
+	// pointers the grid modes draw are unrelated, and no mode sets this.
 	systemCursorHidden bool
 
 	// lastCursorRehideTime records the last time RehideSystemCursor was called
@@ -214,19 +236,22 @@ type handlerState struct {
 	heldRepeatingKey    string
 	heldRepeatingCancel context.CancelFunc
 
-	// motion is this handler's namespace in the held-key glide controller;
-	// nil (or a nil-safe empty group) when the app runs without one.
+	// motion is this handler's namespace in the held-key glide controller. It
+	// is nil (or a nil-safe empty group) when the app runs without one.
 	motion *heldmotion.Group
 	// fedPress is set for the duration of a key fed over IPC, which has no
 	// release event and so must take the discrete path, never the glide.
 	fedPress bool
+	// selectPublished is set when a select event is published, so
+	// trackSelection does not report the same step twice.
+	selectPublished bool
 }
 
 // HandlerDeps collects everything NewHandler needs.
 //
 // It is a struct rather than a positional list because the list had reached
 // twenty-nine arguments, seven of which were closures that together formed an
-// open-coded ports.EventTapPort. Those seven are gone: the handler holds the
+// open-coded ports.EventTapPort. Those seven are gone. The handler holds the
 // port itself, injected after construction via SetEventTap because the event
 // tap does not exist yet when the handler is built.
 type HandlerDeps struct {
@@ -239,7 +264,7 @@ type HandlerDeps struct {
 	CursorState *state.CursorState
 
 	// OverlayPort is what the modes draw through. It is narrowed to
-	// overlaySurface here rather than taken as ports.OverlayPort: a caller
+	// overlaySurface here rather than taken as ports.OverlayPort. A caller
 	// passes the full port and the handler keeps only the part it may call
 	// (overlay.go).
 	OverlayPort overlaySurface
@@ -263,8 +288,9 @@ type HandlerDeps struct {
 	// ExecuteActionSequence runs an ordered list of action steps. The daemon
 	// owns the sequencing rules (bail handling, error reporting), so a binding
 	// behaves the same whether it is dispatched from here or from anywhere
-	// else. source names the caller (a bind key, "on-exit") for logging.
-	ExecuteActionSequence func(source string, steps []string)
+	// else. source names the caller (a bind key, "on-exit") for logging, and
+	// env is added to every exec step's environment, nil for nothing.
+	ExecuteActionSequence func(source string, steps []string, env []string)
 	// Shutdown quits the daemon.
 	Shutdown func()
 
@@ -273,6 +299,9 @@ type HandlerDeps struct {
 
 	// Motion is the handler's namespace in the held-key glide controller.
 	Motion *heldmotion.Group
+
+	// Events receives every mode entered and exited. Nil publishes nothing.
+	Events *event.Bus
 }
 
 // NewHandler creates a mode handler from deps.
@@ -286,8 +315,8 @@ func NewHandler(deps HandlerDeps) *Handler {
 
 	// Initialize screen bounds for coordinate conversion.
 	// Use a background context since this runs during startup.
-	// CodeNotSupported is expected on non-darwin platforms and is silently ignored;
-	// any other error is logged as a warning.
+	// CodeNotSupported is expected on non-darwin platforms and is ignored. Any
+	// other error is logged as a warning.
 	var screenBounds image.Rectangle
 
 	if deps.System != nil {
@@ -328,6 +357,8 @@ func NewHandler(deps HandlerDeps) *Handler {
 		textInput:              deps.TextInput,
 		motion:                 deps.Motion,
 		system:                 deps.System,
+		events:                 deps.Events,
+		publishedMode:          domain.ModeString(domain.ModeIdle),
 		focusedApp:             &focusedAppCell{},
 		cycleHintIndex:         -1,
 	}
@@ -361,8 +392,8 @@ func newModes(state *handlerState) map[domain.Mode]Mode {
 // fillIndicatorServices gives the handler a service for every indicator,
 // substituting a portless one for anything the caller left out.
 //
-// Mode logic then drives an indicator unconditionally: whether the indicator
-// was ever constructed — a disabled one, a headless backend — is answered
+// Mode logic then drives an indicator unconditionally. Whether the indicator
+// was ever constructed (a disabled one, a headless backend) is answered
 // inside the service instead of by a pointer test at each call site.
 //
 // Only a test builds a handler without one, so a substitution in a real
@@ -391,10 +422,6 @@ func fillIndicatorServices(state *handlerState, logger *zap.Logger) {
 // logIndicatorSubstitution reports an indicator the handler was not given a
 // service for. It names the indicator and nothing it would draw.
 func logIndicatorSubstitution(logger *zap.Logger, indicator ports.Indicator) {
-	if logger == nil {
-		return
-	}
-
 	logger.Debug(
 		"No service for indicator; it will not be drawn",
 		zap.String("indicator", indicator.String()),
@@ -404,14 +431,40 @@ func logIndicatorSubstitution(logger *zap.Logger, indicator ports.Indicator) {
 // ActivateMode enters the mode an activation names, with every flag it was
 // given.
 //
-// It is the handler's only activation entry point, and it takes the same
-// Activation the grammar parses, the CLI builds and the configuration
-// validator reads. Nothing is copied on the way in, so a flag a mode accepts
-// cannot be lost between being read and being applied.
+// It and ActivateEnabledMode are the handler's only activation entry points.
+// Both take the same Activation the grammar parses, the CLI builds and the
+// configuration validator reads. Nothing is copied on the way in, so a flag a
+// mode accepts cannot be lost between being read and being applied.
 func (h *Handler) ActivateMode(activation modecmd.Activation) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	h.activateMode(activation)
+}
+
+// ActivateEnabledMode is ActivateMode for a caller that has to report a
+// refusal. It returns false, and does nothing, when the configuration disables
+// the mode. Otherwise it activates and returns the reason the mode refused to
+// open, such as an excluded focused app, or nil. The check and the activation
+// share one hold of the lock, so a reload cannot disable the mode between them.
+func (h *Handler) ActivateEnabledMode(activation modecmd.Activation) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.config != nil && !h.config.ModeEnabled(domain.ModeString(activation.Mode)) {
+		return false, nil
+	}
+
+	h.activationRefusal = nil
+	h.activateMode(activation)
+
+	return true, h.activationRefusal
+}
+
+// activateMode is the body of both activation entry points.
+//
+// Caller must hold h.mu.
+func (h *handlerState) activateMode(activation modecmd.Activation) {
 	mode := activation.Mode
 
 	// `neru stop` switches every mode off. The IPC controller refuses while
@@ -421,15 +474,19 @@ func (h *Handler) ActivateMode(activation modecmd.Activation) {
 		h.logger.Debug("Neru is stopped, ignoring mode activation",
 			zap.String("mode", domain.ModeString(mode)))
 
+		h.activationRefusal = derrors.New(derrors.CodeInvalidInput, "neru is stopped")
+
 		return
 	}
 
 	// Toggle: if the mode is already active and --toggle was specified,
 	// exit to idle instead of re-activating. Every declared mode shares one
-	// enum value, so there "already active" also means the same name: toggling
-	// one declared mode from inside another switches rather than exits.
+	// enum value, so there "already active" also means the same name. Toggling
+	// one declared mode from inside another switches rather than exits. With a
+	// cycle list, it exits only when the session is on the list's last entry.
 	if activation.Toggle != nil && *activation.Toggle && h.appState.CurrentMode() == mode &&
-		(mode != domain.ModeCustom || h.appState.CustomModeName() == activation.Name) {
+		(mode != domain.ModeCustom || h.appState.CustomModeName() == activation.Name) &&
+		h.cycleOnLastEntry(activation) {
 		h.exitMode()
 
 		return
@@ -448,16 +505,16 @@ func (h *Handler) ActivateMode(activation modecmd.Activation) {
 		return
 	}
 
-	// Normalize --on-exit for external (re-)activations. This method is the sole
-	// entry point for user-driven activations (IPC, hotkeys, systray); internal
-	// refreshes (repeat re-activation, space/screen change, cycle) bypass it and
-	// call the activate* helpers directly with a nil onExit to preserve the
-	// stored steps. An omitted --on-exit on a fresh external command must
-	// clear any steps left over from a prior activation of the same mode
-	// rather than inheriting them, so a later completed action does not run a
-	// stale command. A nil slice reaching those helpers means "preserve"; the
-	// non-nil empty slice substituted here means "clear", and it is a no-op at
-	// dispatch time.
+	// Normalize --on-exit for external (re-)activations. The two entry points
+	// above are the only ones for user-driven activations (IPC, hotkeys,
+	// systray). Internal refreshes (repeat re-activation, space/screen change,
+	// cycle) bypass them and call the activate* helpers directly with a nil
+	// onExit to preserve the stored steps. An omitted --on-exit on a fresh
+	// external command must clear any steps left over from a prior activation
+	// of the same mode rather than inheriting them, so a later completed action
+	// does not run a stale command. A nil slice reaching those helpers means
+	// "preserve". The non-nil empty slice substituted here means "clear", and it
+	// is a no-op at dispatch time.
 	if activation.OnExit == nil {
 		activation.OnExit = []string{}
 	}
@@ -490,8 +547,27 @@ func (h *handlerState) advanceCycles(activation *modecmd.Activation, target Mode
 	}
 }
 
+// cycleOnLastEntry reports whether the open session is on the last entry of
+// the activation's cycle list, which is where --toggle exits rather than
+// advancing. An activation without a list counts as on its last entry, so a
+// plain --toggle exits on the second press.
+func (h *handlerState) cycleOnLastEntry(activation modecmd.Activation) bool {
+	target := h.modes[activation.Mode]
+
+	if reporter, ok := target.(strategyReporter); ok && len(activation.StrategyCycle) > 0 {
+		return reporter.ActiveStrategy() == activation.StrategyCycle[len(activation.StrategyCycle)-1]
+	}
+
+	if reporter, ok := target.(captureScopeReporter); ok && len(activation.CaptureScopeCycle) > 0 {
+		return reporter.ActiveCaptureScope() ==
+			activation.CaptureScopeCycle[len(activation.CaptureScopeCycle)-1]
+	}
+
+	return true
+}
+
 // UpdateConfig updates the handler with new configuration. Overlay appearance
-// is not part of it: the overlay resolves its own Style and the handler reads
+// is not part of it. The overlay resolves its own Style and the handler reads
 // the result.
 func (h *Handler) UpdateConfig(config *configpkg.Config) {
 	h.mu.Lock()
@@ -522,12 +598,12 @@ func (h *Handler) UpdateConfig(config *configpkg.Config) {
 }
 
 // updateComponentConfigs rebuilds the domain state the mode components derive
-// from configuration. Overlay appearance is not here: it reaches the render
+// from configuration. Overlay appearance is not here. It reaches the render
 // components through the overlay's own Style notification.
 //
 // It runs here rather than on the app's reconfigure path because the state it
 // rebuilds is the state a keystroke reads. The grid manager is the one that
-// matters and it carries no lock of its own: the handler assigns it on
+// matters and it carries no lock of its own. The handler assigns it on
 // activation and reads it on every key, both under `h.mu`, so a reload writing
 // it from the app layer was a plain data race on live mode state (#1277).
 func (h *handlerState) updateComponentConfigs(config *configpkg.Config) {
@@ -544,7 +620,8 @@ func (h *handlerState) updateComponentConfigs(config *configpkg.Config) {
 // conversion and names that display to the overlay. The grid, recursive-grid
 // and hint surfaces are drawn in screen-local coordinates (origin 0,0), so a
 // backend whose surface spans the whole desktop needs the screen to place that
-// content on the right monitor; where each screen owns a window it is ignored.
+// content on the right monitor. Where each screen owns a window, it is
+// ignored.
 func (h *handlerState) setScreenBounds(bounds image.Rectangle) {
 	h.screenBounds = bounds
 

@@ -15,8 +15,9 @@ neru doctor   # per-component health, works even if the daemon is down
 neru hints    # does a mode open from the CLI?
 ```
 
-If the CLI cannot reach the daemon, start it with `neru launch`. For more
-detail, see [Collecting diagnostics](#collecting-diagnostics).
+If the CLI cannot reach the daemon, start it with `neru launch`. For a bug
+report, paste the output of `neru doctor --json`, which holds every check in
+one object. For more detail, see [Collecting diagnostics](#collecting-diagnostics).
 
 ## Installing
 
@@ -60,7 +61,7 @@ See [Linux setup](linux.md#error-while-loading-shared-libraries-libtesseractso5)
 
 ### Neru does nothing on macOS
 
-Neru needs Accessibility permission, see
+Neru needs Accessibility permission. See
 [Grant permissions](getting-started.md#macos). If `neru doctor` still reports
 an error, which often happens after an upgrade, remove Neru from the
 Accessibility list, add it again, and [restart the daemon](#restart-the-daemon).
@@ -94,9 +95,11 @@ Or use a window manager that makes the cursor follow focus.
 ### No hints in a browser or Electron app
 
 - **macOS:** Neru detects Chromium, Firefox, WebKit and Electron from the app
-  bundle. With [file logging](#log-file-locations) on, run
-  `grep "Detected non empty bundle type" ~/Library/Logs/neru/app.log`. If your
-  browser is missing, open an issue with its
+  bundle. With [file logging](#log-file-locations) and
+  [debug logging](#enable-debug-logging) on, show hints in the browser, then
+  run `grep bundle_type ~/Library/Logs/neru/app.log`. An empty `bundle_type`
+  on the browser's `Built accessibility tree` line means Neru did not detect
+  it, so open an issue with its
   [bundle ID](../reference/configuration.md#app-identity-across-platforms-bundle_id).
 - **Linux:** start Chromium and Electron apps with
   `--force-renderer-accessibility`.
@@ -110,7 +113,7 @@ and run `neru config reload`. If the default misses it too, open an issue.
 
 ### Hints appear on things I cannot see
 
-Neru may be hinting invisible elements such as `row` and `cell`. Copy the
+Neru may be hinting invisible elements such as `row`, `list_item` and `cell`. Copy the
 `clickable_roles` list from the
 [default config](https://github.com/y3owk1n/neru/blob/main/configs/default-config.toml),
 remove those roles, and run `neru config reload`.
@@ -128,9 +131,24 @@ the log, a screenshot, your OS version, and the app name and version.
 ### No hints in the menu bar or Dock
 
 Both are off by default on macOS. Under `[hints]`, set
-`include_menubar_hints = true` and `include_dock_hints = true`. Add menu bar
-apps by bundle ID to `additional_menubar_hints_targets`, such as
-`"com.apple.controlcenter"`.
+`include_menubar_hints = true` and `include_dock_hints = true`.
+
+To hint another app's menu bar item, add its bundle ID to
+`additional_menubar_hints_targets`. Your list replaces the default one, so copy
+the defaults from the
+[default config](https://github.com/y3owk1n/neru/blob/main/configs/default-config.toml)
+and add yours:
+
+```toml
+[hints]
+additional_menubar_hints_targets = [
+    "com.apple.TextInputMenuAgent",
+    "com.apple.controlcenter",
+    "com.apple.systemuiserver",
+    "com.y3owk1n.neru",
+    "com.example.MenuBarApp",   # your app
+]
+```
 
 ## Hotkeys
 
@@ -169,7 +187,7 @@ To drive Neru from another hotkey tool such as skhd, see
 ### Keys type the wrong characters
 
 Neru reads keys through your OS keyboard layout. Check the layout is selected
-in your OS. Some custom layouts are not resolved automatically, so set
+in your OS. Neru cannot resolve some custom layouts on its own, so set
 [`kb_layout_to_use`](../reference/configuration.md#general) to the one you want,
 copied from the `keyboard_layouts` row of `neru doctor`.
 
@@ -211,14 +229,26 @@ startup, then run `neru launch` again.
 
 ### The daemon exits on startup
 
-Usually a config error, and `neru config validate` names the key. To rule the
-config out, move `config.toml` aside and run `neru launch` in a terminal. It
-runs on built-in defaults and prints why it exits.
+It is usually a config error, and `neru config validate` names the key. To rule the
+config out, move `config.toml` aside and run `neru launch` in a terminal. On
+macOS it asks whether to create a config, with **Create Config**,
+**Use Defaults (No Config)** and **Quit**, and Windows asks the same with Yes,
+No and Cancel. Choose **Use Defaults**. Linux shows a notice and continues.
+Neru then runs on built-in defaults and prints why it exits.
 
 ### "version mismatch" after an upgrade
 
 The running daemon is still the old binary.
 [Restart the daemon](#restart-the-daemon).
+
+### "client needs protocol N, daemon speaks M"
+
+A program built on the Go client, or a script that sends `protocol` over the
+socket, asked for a newer [protocol](../reference/ipc.md#compatibility) than
+the daemon speaks. This happens after a downgrade, or when the program was
+updated and the daemon was not. Upgrade Neru and
+[restart the daemon](#restart-the-daemon), or build the program against the
+client of the release you run.
 
 ### The daemon stops responding or will not quit
 
@@ -236,24 +266,39 @@ If `neru launch` still fails, clear the stale socket as in
 
 ### My config changes do nothing
 
-Neru does not watch the file, see
+Neru does not watch the file. See
 [Apply your changes](configuring.md#apply-your-changes). Run
 `neru config validate`, then `neru config reload`. If the file has one error,
 Neru rejects the whole reload and keeps the previous config. To check which
 file the daemon read, see
 [Where Neru looks for the file](configuring.md#where-neru-looks-for-the-file).
 
-A value set with `neru config set` wins over your file, see
+A misspelled key is not an error. Neru skips it, and `neru config validate`
+names it in a warning, so check its output for `not a Neru option`. The daemon
+also logs each one as a `Configuration warning` at launch and on every reload.
+An editor that reads the [schema](../reference/configuration.md#editor-support)
+flags it as you type.
+
+An option that does nothing on your OS is not an error either. The
+`platform_support` row of [`neru doctor`](../reference/cli.md#neru-doctor)
+lists each one.
+
+A value set with `neru config set` wins over your file. See
 [How the layers combine](configuring.md#how-the-layers-combine).
 `neru config reset <key>` removes it.
 
-### "Failed to parse config"
+### "configuration parse config file failed"
 
-A TOML syntax error or a refused value. `neru config validate` prints the line
-or key and the reason. Common causes:
+The file is not valid TOML, or a value has the wrong type. At launch and in
+`neru config validate`, the message follows `Configuration validation failed:`
+and names the line. Common causes:
 
 - a key containing `+` without quotes
-- a typo in a section header
+- a string where a number belongs, such as `max_depth = "50"`
+
+A value Neru refuses prints `configuration validate configuration failed`
+instead, with the key and the reason. Common causes:
+
 - a color without its leading `#`
 - a hotkey bound to an empty string, where `__disabled__` was meant
 
@@ -273,8 +318,10 @@ ignore_clickable_check = true
 
 ### No hints in Mission Control (macOS)
 
-The Dock draws Mission Control, so set `include_dock_hints = true` and
-`detect_mission_control = true` under `[hints]`.
+Dock hints include Mission Control. Set `include_dock_hints = true` and
+`detect_mission_control = true` under `[hints]` to get hints on the current
+desktop's windows. The desktops in the Spaces bar get hints once the bar
+expands, so move the pointer to the top edge before showing hints.
 
 ### The cursor lands in the wrong place under Accessibility Zoom (macOS)
 
@@ -310,6 +357,14 @@ log file, set `disable_file_logging = false` under `[logging]` and
 | Linux    | `~/.local/state/neru/log/app.log`     |
 | Windows  | `%LOCALAPPDATA%\neru\log\app.log`     |
 
+When the [login service](../reference/cli.md#neru-services) runs Neru, a
+crash or a failure before the log file opens is not in `app.log`:
+
+- **macOS:** read `~/Library/Logs/neru/daemon.err.log`, where the service sends
+  the daemon's stderr.
+- **Linux:** run `journalctl --user -u neru`. The journal holds everything the
+  daemon printed, with or without file logging.
+
 `[logging].log_file` overrides the path. Each line is JSON, so
 `grep ERROR ~/Library/Logs/neru/app.log` finds failures Neru could not recover
 from, and `grep WARN` finds ones it worked around. Rotation is in the
@@ -342,6 +397,6 @@ with the bug-report form. It asks for `neru doctor` output, your OS version,
 
 1. Force Neru to quit, as in
    [The daemon stops responding](#the-daemon-stops-responding-or-will-not-quit).
-2. Remove it, see [Uninstallation](installation.md#uninstallation).
+2. Remove it as [Uninstallation](installation.md#uninstallation) describes.
 3. Reinstall and run `neru launch`.
 4. On macOS, grant Accessibility permission again.

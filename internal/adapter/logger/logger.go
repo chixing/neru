@@ -25,7 +25,7 @@ var (
 	globalLogger *zap.Logger
 	// logFile is the rotating file sink underneath the global logger, held as an
 	// io.WriteCloser because writing to it and closing it is all this package
-	// asks of it — and because a test can then stand in for it.
+	// asks of it, and because a test can then stand in for it.
 	logFile   io.WriteCloser
 	logFileMu sync.RWMutex
 )
@@ -43,7 +43,6 @@ func Init(
 	logFileMu.Lock()
 	defer logFileMu.Unlock()
 
-	// Close existing log file if any
 	if logFile != nil {
 		closeErr := logFile.Close()
 		if closeErr != nil {
@@ -57,7 +56,6 @@ func Init(
 		logFile = nil
 	}
 
-	// Determine log level
 	level := zapcore.InfoLevel
 
 	switch logLevel {
@@ -92,9 +90,7 @@ func Init(
 		newConsoleCore(zapcore.AddSync(consoleWriter), level, isTerminal),
 	}
 
-	// Add file logging if not disabled
 	if !disableFileLogging {
-		// Determine log file path
 		if logFilePath == "" {
 			defaultLogFilePath, err := defaultLogFilePath()
 			if err != nil {
@@ -108,7 +104,6 @@ func Init(
 			logFilePath = defaultLogFilePath
 		}
 
-		// Create log directory
 		logDir := filepath.Dir(logFilePath)
 
 		mkdirErr := os.MkdirAll(logDir, DefaultDirPerms)
@@ -120,7 +115,6 @@ func Init(
 			)
 		}
 
-		// Create lumberjack logger for file rotation
 		logFile = &lumberjack.Logger{
 			Filename:   logFilePath,
 			MaxSize:    maxFileSize, // Size in MB
@@ -129,16 +123,13 @@ func Init(
 			Compress:   true,        // Compress old log files
 		}
 
-		// Create file encoder (JSON for machine parsing)
 		fileEncoder := zapcore.NewJSONEncoder(fileEncoderConfig)
 
 		cores = append(cores, zapcore.NewCore(fileEncoder, zapcore.AddSync(logFile), level))
 	}
 
-	// Create core with both console and file output (if enabled)
 	core := zapcore.NewTee(cores...)
 
-	// Create logger
 	globalLogger = zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
 
 	return nil
@@ -198,7 +189,7 @@ func Sync() error {
 // It synchronizes the logger and closes the log file if file logging is enabled.
 //
 // Every teardown step runs even when an earlier one fails, and the failures are
-// reported together: a logger that could not be flushed still gets its log file
+// reported together. A logger that could not be flushed still gets its log file
 // closed and its global cleared, rather than leaking the file handle behind a
 // stale logger. Close therefore leaves nothing behind to close twice, so the
 // second Close of a shutdown path that already failed is a quiet no-op.
@@ -237,47 +228,4 @@ func appendLoggingFailure(failures, err error, message string) error {
 	}
 
 	return multierr.Append(failures, derrors.Wrap(err, derrors.CodeLoggingFailed, message))
-}
-
-// helper is the global logger with the package's own helper frame skipped, so
-// an entry logged through Debug, Info, Warn, Error or Fatal reports its
-// caller's file and line rather than this file's.
-func helper() *zap.Logger {
-	return Get().WithOptions(zap.AddCallerSkip(1))
-}
-
-// Debug logs a debug-level message with optional structured fields.
-// Debug messages are typically used for detailed diagnostic information.
-func Debug(msg string, fields ...zap.Field) {
-	helper().Debug(msg, fields...)
-}
-
-// Info logs an info-level message with optional structured fields.
-// Info messages are used for general operational information.
-func Info(msg string, fields ...zap.Field) {
-	helper().Info(msg, fields...)
-}
-
-// Warn logs a warning-level message with optional structured fields.
-// Warning messages indicate potentially harmful situations.
-func Warn(msg string, fields ...zap.Field) {
-	helper().Warn(msg, fields...)
-}
-
-// Error logs an error-level message with optional structured fields.
-// Error messages indicate serious problems that need attention.
-func Error(msg string, fields ...zap.Field) {
-	helper().Error(msg, fields...)
-}
-
-// Fatal logs a fatal-level message and immediately exits the application.
-// Fatal messages indicate unrecoverable errors that require immediate termination.
-func Fatal(msg string, fields ...zap.Field) {
-	helper().Fatal(msg, fields...)
-}
-
-// With creates a new child logger instance with the specified fields added to all log entries.
-// This is useful for adding context to all logs from a specific component or operation.
-func With(fields ...zap.Field) *zap.Logger {
-	return Get().With(fields...)
 }

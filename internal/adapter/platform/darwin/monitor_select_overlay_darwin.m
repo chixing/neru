@@ -78,9 +78,20 @@ static NSFont *monitorSelectResolveFont(NSString *name, CGFloat size, BOOL bold)
 
 #pragma mark - C Interface Implementation
 
+// runOnMainSync runs work on the main thread and waits for it. On the main
+// thread it runs work inline, because libdispatch traps a dispatch_sync onto
+// the main queue from the main thread. Shutdown removes the panels there.
+static void runOnMainSync(dispatch_block_t work) {
+	if ([NSThread isMainThread]) {
+		work();
+	} else {
+		dispatch_sync(dispatch_get_main_queue(), work);
+	}
+}
+
 void NeruShowMonitorSelectPanels(MonitorSelectTargetData *targets, int count, MonitorSelectStyle style) {
 	if (_NeruMonitorSelectPanels) {
-		dispatch_sync(dispatch_get_main_queue(), ^{
+		runOnMainSync(^{
 			@autoreleasepool {
 				for (NSPanel *existing in _NeruMonitorSelectPanels) {
 					[existing setContentView:nil];
@@ -98,7 +109,7 @@ void NeruShowMonitorSelectPanels(MonitorSelectTargetData *targets, int count, Mo
 	if (!_NeruMonitorSelectPanels)
 		_NeruMonitorSelectPanels = [[NSMutableArray alloc] initWithCapacity:count];
 
-	dispatch_sync(dispatch_get_main_queue(), ^{
+	runOnMainSync(^{
 		@autoreleasepool {
 			for (int i = 0; i < count; i++) {
 				MonitorSelectTargetData target = targets[i];
@@ -207,8 +218,6 @@ void NeruShowMonitorSelectPanels(MonitorSelectTargetData *targets, int count, Mo
 					textY = badgeY + (badgeHeight - totalTextH) / 2;
 				}
 
-				/// --- Build sublayers ---
-
 				// Badge background (CAShapeLayer for rounded rect)
 				CAShapeLayer *bgLayer = [CAShapeLayer layer];
 				CGRect badgeRect = CGRectMake(badgeX, badgeY, badgeWidth, badgeHeight);
@@ -218,7 +227,6 @@ void NeruShowMonitorSelectPanels(MonitorSelectTargetData *targets, int count, Mo
 					bgLayer.strokeColor = borderColor.CGColor;
 					bgLayer.lineWidth = style.borderWidth;
 				}
-				// Build rounded rect CGPath
 				CGMutablePathRef bgPath = CGPathCreateMutable();
 				CGPathAddRoundedRect(bgPath, NULL, badgeRect, radius, radius);
 				bgLayer.path = bgPath;
@@ -263,7 +271,7 @@ void NeruHideMonitorSelectPanels(void) {
 	if (!_NeruMonitorSelectPanels)
 		return;
 
-	dispatch_sync(dispatch_get_main_queue(), ^{
+	runOnMainSync(^{
 		@autoreleasepool {
 			for (NSPanel *panel in _NeruMonitorSelectPanels) {
 				panel.contentView = nil;

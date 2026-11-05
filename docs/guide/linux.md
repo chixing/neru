@@ -8,6 +8,9 @@ Wayland also needs two device permissions. Per-desktop notes are in
 
 Neru picks a backend once at startup from `XDG_CURRENT_DESKTOP`,
 `WAYLAND_DISPLAY` and `DISPLAY`. `neru doctor` shows it as `display_server`.
+A Wayland session takes `wayland-wlroots` when `XDG_CURRENT_DESKTOP` is unset,
+names a compositor in the first row, or contains `wlroots`, as labwc's
+`labwc:wlroots` does.
 
 | Desktop                                                          | Backend           | Status                                                     |
 | ---------------------------------------------------------------- | ----------------- | ---------------------------------------------------------- |
@@ -45,7 +48,7 @@ Neru picks a backend once at startup from `XDG_CURRENT_DESKTOP`,
 5. Run `neru doctor`. Every row should be healthy.
 
 The install script offers step 2 for you. If you skip steps 2 and 3, Neru
-still runs with less, see [Running without the permissions](#running-without-the-permissions).
+still runs with fewer features. See [Running without the permissions](#running-without-the-permissions).
 
 ## Runtime libraries
 
@@ -124,13 +127,21 @@ A remapper's auto-detect grabs Neru's devices too, so exclude them. For kanata:
 Or list your physical keyboards in `linux-dev-names-include`. For keyd, exclude
 `-1234:567a`, `-1234:567b` and `-1234:5679` under `[ids]`.
 
+Start order depends on the remapper:
+
+- **kanata**
+  - Start order does not matter. Neru leaves a keyboard kanata holds to it and
+    captures kanata's output keyboard.
+  - If kanata starts later, Neru hands it the keyboards, and takes back any it
+    has not claimed after three seconds.
+  - `kanata --nodelay` grabs at once, so start it before Neru.
+- **keyd**
+  - keyd grabs at once, so start it before Neru.
+
+With either one:
+
 - If a remapper grabs a Neru device anyway, Neru releases every keyboard and
   logs why. Mode key capture stays off until the daemon restarts.
-- With kanata, start order does not matter. Neru leaves a keyboard the
-  remapper holds to it and captures its output keyboard. A remapper that starts
-  later is handed the keyboards, and Neru takes back any it has not claimed
-  after three seconds.
-- keyd and `kanata --nodelay` grab at once, so start them before Neru.
 - Write Neru hotkeys as the keys the remapper emits.
 - A remapper output device that also moves the pointer is re-emitted through
   `neru-pointer-proxy`.
@@ -153,7 +164,7 @@ group. The same device lets the keyboard proxy re-emit keys and gives
 ## Running without the permissions
 
 Without the `input` group, Neru's `[hotkeys]` do nothing on Wayland. Bind
-`neru hints` and the other modes in your compositor instead, see
+`neru hints` and the other modes in your compositor instead. See
 [Global hotkeys on Wayland](linux-desktops.md#global-hotkeys-on-wayland).
 
 Without a writable `/dev/uinput`:
@@ -193,6 +204,10 @@ service does not start, check `systemctl --user status neru.service` and
 `systemctl --user is-active graphical-session.target`. If the target stays
 inactive, run `neru launch` from your compositor's autostart instead.
 
+- **oku's service.** With oku 0.18.0 or later,
+  `oku add -g github:y3owk1n/neru --service` writes `oku-neru.service` on the
+  same target, so the setup above applies to it too. Check it with
+  `oku service status neru`. Use it or `neru services install`, not both.
 - **Other init systems.** On runit, OpenRC or s6, `neru services` reports that
   it is not supported. Run `neru launch` from your session instead.
 - **A unit Neru did not write.** Neru manages only units starting with
@@ -207,10 +222,8 @@ inactive, run `neru launch` from your compositor's autostart instead.
 ## Known limitations
 
 Hint coverage, alerts and the other limits Linux shares with Windows are in
-[Platform support](../reference/platform-support.md#notes). Specific to Linux:
-
-- **Monitor hotplug** is tracked live. On Wayland, a resolution or scale change
-  to an existing monitor needs a [daemon restart](troubleshooting.md#restart-the-daemon).
+[Platform support](../reference/platform-support.md#notes), and the ones only
+Linux has under [Known gaps](../reference/platform-support.md#known-gaps).
 
 ## Troubleshooting
 
@@ -233,7 +246,7 @@ Debian, Ubuntu, Arch and builds from source do not need this.
 ### "WAYLAND_DISPLAY is not set"
 
 Neru runs under X11 or a TTY, and uses the X11 backend when `DISPLAY` is set.
-From the systemd service, see [Systemd user service](#systemd-user-service).
+When the error comes from the systemd service, see [Systemd user service](#systemd-user-service).
 
 ### "neru does not recognize this Wayland compositor"
 

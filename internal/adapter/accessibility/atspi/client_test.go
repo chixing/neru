@@ -5,6 +5,9 @@ package atspi
 import (
 	"slices"
 	"testing"
+	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/y3owk1n/neru/internal/domain/element"
 )
@@ -41,6 +44,47 @@ func TestAppMatchesFocusedID(t *testing.T) {
 			if got := appMatchesFocusedID(tc.atspiName, tc.appID); got != tc.want {
 				t.Errorf("appMatchesFocusedID(%q, %q) = %v, want %v",
 					tc.atspiName, tc.appID, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClient_TitleScanMissed_SkipsOnlyWhileNothingChanged(t *testing.T) {
+	client := New(zap.NewNop(), nil)
+
+	const appID, title = "foot", "~/src"
+
+	apps := []accRef{{Name: ":1.10"}, {Name: ":1.11"}}
+	withNewApp := []accRef{{Name: ":1.10"}, {Name: ":1.11"}, {Name: ":1.12"}}
+
+	client.rememberTitleMiss(appID, title, apps)
+
+	tests := []struct {
+		name  string
+		title string
+		apps  []accRef
+		want  bool
+	}{
+		{"the same title among the same apps", title, apps, true},
+		{"a new title", "~/src/neru", apps, false},
+		{"an app started since", title, withNewApp, false},
+	}
+
+	expired := New(zap.NewNop(), nil)
+	expired.rememberTitleMiss(appID, title, apps)
+	expired.titleMissed[appID+"\x00"+title] = titleMiss{
+		apps: busFingerprint(apps),
+		at:   time.Now().Add(-titleMissTTL),
+	}
+
+	if expired.titleScanMissed(appID, title, apps) {
+		t.Error("a miss older than titleMissTTL still skipped the scan")
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := client.titleScanMissed(appID, test.title, test.apps); got != test.want {
+				t.Errorf("titleScanMissed() = %v, want %v", got, test.want)
 			}
 		})
 	}
@@ -268,7 +312,8 @@ func TestStateBitset(t *testing.T) {
 }
 
 func TestRoleBitfield(t *testing.T) {
-	// push button 43 -> word1 bit11; link 88 -> word2 bit24; menu 129 -> word4 bit1.
+	// push button (43) is word 1 bit 11, link (88) is word 2 bit 24, and push
+	// button menu (129) is word 4 bit 1.
 	got := roleBitfield([]int32{43, 88, 129})
 	if len(got) != atspiRoleWords {
 		t.Fatalf("len = %d, want %d", len(got), atspiRoleWords)
@@ -345,6 +390,15 @@ func TestDeriveTargetRoleIDs(t *testing.T) {
 		}
 	})
 
+	t.Run("text_field also fetches text, which GTK 3 entries report", func(t *testing.T) {
+		ids := deriveTargetRoleIDs(rolesSet(resolveLinuxRoles(t, "text_field")))
+		if !slices.Contains(ids, atspiRoleNameToID[atspiRoleText]) {
+			t.Errorf("text_field -> %v, want the text role id among them", ids)
+		}
+
+		noDuplicates(t, ids)
+	})
+
 	t.Run("multiple semantic roles union their ids", func(t *testing.T) {
 		ids := deriveTargetRoleIDs(rolesSet(resolveLinuxRoles(t, "list_item", "row", "button")))
 		for _, want := range []int32{32, 90, 43, 62} { // list item, table row, push/toggle button
@@ -406,7 +460,7 @@ func TestAtspiRoleNameToIDCoversTheVocabulary(t *testing.T) {
 
 // TestAtspiRoleNames_CoverTheEnum checks the role list against the shape of the
 // AtspiRole enum. Ids are the slice indices, so gaps and duplicates cannot
-// occur by construction; what can still go wrong is a name being added or
+// occur by construction. What can still go wrong is a name being added or
 // dropped, which shifts every id after it. Pinning the length and the last
 // entry catches that, and TestAtspiRoleNameToIDAnchors catches a reordering.
 // ATSPI_ROLE_LAST_DEFINED (131) is a sentinel and must not be listed.

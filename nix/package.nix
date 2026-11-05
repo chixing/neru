@@ -1,9 +1,9 @@
 {
-  autoPatchelfHook,
   fetchurl,
   gitUpdater,
   installShellFiles,
   makeWrapper,
+  patchelf,
   stdenv,
   versionCheckHook,
   lib,
@@ -53,23 +53,40 @@ if useZip then
       {
         "aarch64-darwin" = {
           url = "https://github.com/y3owk1n/neru/releases/download/v${version}/neru-darwin-arm64.zip";
-          sha256 = "sha256-LkcPHG86D6wlNRtFV2bCCd+AdEDQ3sIxOLZzG/zJA8A=";
+          sha256 = "sha256-5+YGj3qsoFcZaw0GAasvx16FLsn7kLbL0su/4BINQzY=";
         };
         "x86_64-darwin" = {
           url = "https://github.com/y3owk1n/neru/releases/download/v${version}/neru-darwin-amd64.zip";
-          sha256 = "sha256-OMDAOCTyfVs6zYk5hKylYQ0SZLYF/8l7u5BBHxQqeGw=";
+          sha256 = "sha256-UrWBYdnQKFFBPtdlP98AWP+Mr9ojZFA3YvT00lBQVj8=";
         };
         "aarch64-linux" = {
           url = "https://github.com/y3owk1n/neru/releases/download/v${version}/neru-linux-arm64.zip";
-          sha256 = "sha256-OMmlHQVHZg+aaO8GDJLTPEGULNelwiFqBxIfg6uMu9M=";
+          sha256 = "sha256-zYzQsX2alFi18N0mzRrx2gxRe2pgv4C23/jb3zskTo8=";
         };
         "x86_64-linux" = {
           url = "https://github.com/y3owk1n/neru/releases/download/v${version}/neru-linux-amd64.zip";
-          sha256 = "sha256-u0LO67YL/dPEPrS9RUYNQ/evVl7aq5w1dcUQSbIgeNY=";
+          sha256 = "sha256-y47DCgpc7rlwKx51CE1LgOo9MFbbm3W7W+r+CY6ZKwo=";
         };
       }
       .${stdenv.hostPlatform.system} or (throw "Unsupported system: ${stdenv.hostPlatform.system}");
 
+    linuxLibs = [
+      cairo
+      libei
+      libxkbcommon
+      wayland
+      wayland-protocols
+      libx11
+      libxext
+      libxfixes
+      libxrandr
+      libxrender
+      libxtst
+      libxi
+      fontconfig
+      tesseract
+      pipewire
+    ];
   in
   stdenv.mkDerivation {
     pname = "neru";
@@ -90,27 +107,11 @@ if useZip then
       unzip
     ]
     ++ lib.optionals stdenv.hostPlatform.isLinux [
-      autoPatchelfHook
+      patchelf
       makeWrapper
     ];
 
-    buildInputs = lib.optionals stdenv.hostPlatform.isLinux [
-      cairo
-      libei
-      libxkbcommon
-      wayland
-      wayland-protocols
-      libx11
-      libxext
-      libxfixes
-      libxrandr
-      libxrender
-      libxtst
-      libxi
-      fontconfig
-      tesseract
-      pipewire
-    ];
+    buildInputs = lib.optionals stdenv.hostPlatform.isLinux linuxLibs;
 
     installPhase = ''
       runHook preInstall
@@ -127,6 +128,14 @@ if useZip then
           ''
             mkdir -p $out/bin
             mv bin/neru $out/bin/neru
+
+            # autoPatchelfHook sets the interpreter before the rpath. With
+            # patchelf 0.19.2 that order leaves .dynamic in a read-only
+            # segment, and the loader segfaults before neru runs. See
+            # NixOS/patchelf#674. Setting the rpath first, in a separate call,
+            # avoids the bug.
+            patchelf --set-rpath ${lib.makeLibraryPath linuxLibs} $out/bin/neru
+            patchelf --set-interpreter "$(cat $NIX_CC/nix-support/dynamic-linker)" $out/bin/neru
             mkdir -p $out/share/man/man1
             mv share/man/man1/*.1 $out/share/man/man1/
           ''
@@ -188,7 +197,7 @@ else
 
     # scripts/update-nix-hashes.sh writes this, and the four zip hashes above.
     # The nix-hashes workflow runs it after every push to main.
-    vendorHash = "sha256-PMFbAkmnrkcnR/oxeE/WLixblVX/i6jWRu6ceZu5yvc=";
+    vendorHash = "sha256-CFnt1bKENI9iEGHlIfPsbNpX4Jbnb2UJcEYQPlEEIO0=";
 
     ldflags = [
       "-s"
@@ -256,7 +265,7 @@ else
     postInstall = ''
       # generate man pages
       mkdir -p $out/share/man/man1
-      go run ./cmd/genman $out/share/man/man1
+      go run -ldflags="-X github.com/y3owk1n/neru/internal/buildinfo.Version=${finalAttrs.version}" ./cmd/genman $out/share/man/man1
 
       # install shell completions
       if ${lib.boolToString (stdenv.buildPlatform.canExecute stdenv.hostPlatform)}; then

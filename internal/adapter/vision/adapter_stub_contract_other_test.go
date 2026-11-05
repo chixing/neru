@@ -21,12 +21,12 @@ import (
 // Pinning that matters more than it looks. The hint pipeline chooses between
 // the accessibility strategy and the vision strategy at runtime, and it decides
 // vision is unavailable by calling Health and checking IsNotSupported. If a
-// stub here started returning nil — say a refactor gave Health a default
-// "return nil" — the pipeline would select the vision strategy here, then get
+// stub here started returning nil, say because a refactor gave Health a default
+// "return nil", the pipeline would select the vision strategy here, then get
 // an empty element list from DetectElements and show the user no hints at all,
 // with no error to explain why.
 //
-// Tagged for the `other` slot only, so no CI leg runs it today; it is the
+// Tagged for the `other` slot only, so no CI leg runs it today. It is the
 // contract a fourth platform would inherit.
 func TestVisionAdapter_AllMethodsReportNotSupportedOffDarwin(t *testing.T) {
 	adapter := vision.NewAdapter(nil)
@@ -68,6 +68,18 @@ func TestVisionAdapter_AllMethodsReportNotSupportedOffDarwin(t *testing.T) {
 					ctx,
 					image.Rect(0, 0, 100, 100),
 					config.DefaultConfig().Hints.Contour,
+				)
+
+				return err
+			},
+		},
+		{
+			name: "DetectSegments",
+			call: func() error {
+				_, err := adapter.DetectSegments(
+					ctx,
+					image.Rect(0, 0, 100, 100),
+					config.DefaultConfig().Hints.Segment,
 				)
 
 				return err
@@ -130,6 +142,20 @@ func TestVisionAdapter_StubsReturnNoPartialResults(t *testing.T) {
 			len(contours))
 	}
 
+	segments, err := adapter.DetectSegments(
+		ctx,
+		image.Rect(0, 0, 100, 100),
+		config.DefaultConfig().Hints.Segment,
+	)
+	if err == nil {
+		t.Fatal("DetectSegments returned a nil error")
+	}
+
+	if segments != nil {
+		t.Errorf("DetectSegments returned %d elements alongside its error, want nil",
+			len(segments))
+	}
+
 	capture, err := adapter.CaptureScreen(ctx)
 	if err == nil {
 		t.Fatal("CaptureScreen returned a nil error")
@@ -141,7 +167,7 @@ func TestVisionAdapter_StubsReturnNoPartialResults(t *testing.T) {
 }
 
 // TestVisionAdapter_StubsAreStableAcrossCalls guards against a stub that
-// succeeds once — for example one that lazily initializes some state and then
+// succeeds once, for example one that lazily initializes some state and then
 // reports a different error, or none, on a second call.
 func TestVisionAdapter_StubsAreStableAcrossCalls(t *testing.T) {
 	adapter := vision.NewAdapter(nil)
@@ -156,7 +182,7 @@ func TestVisionAdapter_StubsAreStableAcrossCalls(t *testing.T) {
 }
 
 // TestVisionAdapter_NilLoggerIsAccepted covers the constructor contract shared
-// with every other adapter in the tree: a nil logger falls back to a no-op
+// with every other adapter in the tree. A nil logger falls back to a no-op
 // rather than panicking on first use.
 func TestVisionAdapter_NilLoggerIsAccepted(t *testing.T) {
 	adapter := vision.NewAdapter(nil)

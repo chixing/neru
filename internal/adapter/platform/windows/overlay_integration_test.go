@@ -5,6 +5,7 @@ package windows_test
 import (
 	"image"
 	"strings"
+	"sync"
 	"testing"
 
 	winplatform "github.com/y3owk1n/neru/internal/adapter/platform/windows"
@@ -80,4 +81,44 @@ func TestOverlayRectDrawingIntegration(t *testing.T) {
 	overlay.FillRect(cell, 0xCC3366FF)
 	overlay.StrokeRect(cell, 0xFFFFFFFF, 2)
 	_ = overlay.Flush()
+}
+
+// TestOverlayWindow_Show_RecreateDoesNotRaceCallerBoundsAccess recreates the
+// window on the overlay UI thread while another goroutine resizes, reads and
+// draws on it, as rebuildOnGDI does while the manager draws. Only -race
+// reports a failure here. Whether a mid-create ResizeTo reaches the window
+// is pinned by TestOverlayWindow_Show_RecreateCatchesUpToAMidCreateResize.
+func TestOverlayWindow_Show_RecreateDoesNotRaceCallerBoundsAccess(t *testing.T) {
+	t.Parallel()
+
+	overlay, err := winplatform.NewOverlayWindowAt(0, 0, 64, 64)
+	skipIfOverlayUnavailable(t, err)
+
+	if err != nil {
+		t.Fatalf("NewOverlayWindowAt: %v", err)
+	}
+
+	defer overlay.Destroy()
+
+	const iterations = 200
+
+	var waitGroup sync.WaitGroup
+
+	waitGroup.Go(func() {
+		for range iterations {
+			overlay.Destroy()
+			overlay.Show()
+		}
+	})
+
+	waitGroup.Go(func() {
+		for i := range iterations {
+			size := 32 + i%32
+			_ = overlay.ResizeTo(i%16, i%16, size, size)
+			_ = overlay.Bounds()
+			overlay.FillRect(image.Rect(0, 0, size, size), 0x8000FF00)
+		}
+	})
+
+	waitGroup.Wait()
 }

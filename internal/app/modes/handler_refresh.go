@@ -15,7 +15,7 @@ import (
 // display as it now is, with the filters the session was activated with, and
 // hands the result over as a transition onto that display.
 //
-// It reports whether the labels reached the screen; every path that says no has
+// It reports whether the labels reached the screen. Every path that says no has
 // left the mode, because hints pointing at a display that is gone are worse
 // than none.
 //
@@ -38,8 +38,17 @@ func (h *handlerState) refreshHintsForScreenChange(ctx context.Context) bool {
 	// screen. The old IME session is bound to the previous screen and loses
 	// focus during the space transition, causing subsequent keystrokes to be
 	// forwarded to the frontmost app instead.
-	if h.hints != nil && h.hints.Context != nil && h.hints.Context.SearchActive() {
+	if h.hints.Context.SearchActive() {
 		h.cancelHintSearch()
+	}
+
+	// Nothing can scan supplied targets again, and their coordinates describe
+	// the display as it was.
+	if h.hints.Context.TargetsSupplied() {
+		h.logger.Debug("Screen changed under supplied hint targets; exiting hints mode")
+		h.exitMode()
+
+		return false
 	}
 
 	// Get the filters the mode was activated with from the context
@@ -48,18 +57,15 @@ func (h *handlerState) refreshHintsForScreenChange(ctx context.Context) bool {
 	strategyOverride := h.hints.Context.StrategyOverride()
 	captureScopeOverride := h.hints.Context.CaptureScopeOverride()
 	labelDirectionOverride := h.hints.Context.LabelDirectionOverride()
+	splitWordOverride := h.hints.Context.SplitWord()
 
-	// Generate hints with filters preserved; SetHints below performs the
+	// Generate hints with filters preserved. SetHints below performs the
 	// single redraw after active-screen filtering.
-	splitWordOverride := false
-	if h.hints != nil && h.hints.Context != nil {
-		splitWordOverride = h.hints.Context.SplitWord()
-	}
-
+	//
 	// The walk is given the same HintTimeout budget the activation and
 	// monitor-move paths give it. The context a screen change arrives with is
 	// the application's own and carries no deadline, and this walk runs under
-	// h.mu — a tree that never answers would hold the lock, and with it every
+	// h.mu, so a tree that never answers would hold the lock, and with it every
 	// keystroke, for as long as it took.
 	//
 	// The traversal reads the context as it descends, so this bounds the
@@ -102,12 +108,11 @@ func (h *handlerState) refreshHintsForScreenChange(ctx context.Context) bool {
 	}
 
 	// The screen moved under the overlay, so the next draw is a transition
-	// onto the new one rather than a repaint of the old: it has to be resized
+	// onto the new one rather than a repaint of the old. It has to be resized
 	// to the new display, shown and switched, and that whole sequence belongs
 	// to the overlay. As on the activation and monitor-move paths, the flag is
-	// cleared immediately before SetHints, which bumps the hint manager's
-	// update generation in the same locked section, so a debounce timer that
-	// fired during the change cannot re-show the overlay on the old display.
+	// cleared immediately before SetHints, and SetHints draws that
+	// transition.
 	h.hintsFrameOnScreen = false
 
 	setHintsErr := h.hints.Context.SetHints(
@@ -117,7 +122,7 @@ func (h *handlerState) refreshHintsForScreenChange(ctx context.Context) bool {
 		// The flag was cleared above, so the overlay is neither sized for the
 		// new display nor showing a collection that belongs to it. Leaving the
 		// mode running would leave the old screen's labels on screen at the old
-		// size; exiting is what the three failure paths above already do.
+		// size. Exiting is what the three failure paths above already do.
 		h.logger.Warn("Failed to refresh hints for screen change", zap.Error(setHintsErr))
 		h.exitMode()
 
@@ -132,7 +137,7 @@ func (h *handlerState) refreshHintsForScreenChange(ctx context.Context) bool {
 // current input is reset because old cell coordinates are invalid on the new
 // screen.
 //
-// It reports whether the grid reached the screen; only a draw the overlay
+// It reports whether the grid reached the screen. Only a draw the overlay
 // refused says no.
 //
 // The caller holds h.mu (GridMode.RefreshForScreenChange, dispatched by
@@ -142,8 +147,6 @@ func (h *handlerState) refreshGridForScreenChange() bool {
 	// Regenerate the grid with updated screen bounds.
 	// createGridInstance also updates h.screenBounds and sets the grid on the context.
 	gridInstance := h.createGridInstance(h.grid.Context.CaptureScope())
-
-	currentInput := ""
 
 	if h.grid.Manager != nil {
 		// Sync the Manager's internal grid reference so subsequent key presses
@@ -156,21 +159,22 @@ func (h *handlerState) refreshGridForScreenChange() bool {
 		h.grid.Manager.Reset()
 	}
 
-	// Clear stale selection — old coordinates are invalid on the new screen.
+	// Clear the stale selection, since old coordinates are invalid on the new
+	// screen.
 	h.grid.Context.ClearSelectionPoint()
 
 	// The screen changed under the overlay, so this is a transition onto the
-	// new one: it is resized and shown as well as redrawn.
+	// new one, and it is resized and shown as well as redrawn.
 	if !h.showFrame(
-		ports.GridFrame{Grid: gridInstance, Input: currentInput},
+		ports.GridFrame{Grid: gridInstance},
 		"refresh grid after screen change",
 	) {
 		return false
 	}
 
-	// Ensure the virtual pointer is hidden (the grid draw may clear
-	// cursorIndicatorVisible via NeruClearOverlay, but we explicitly hide it
-	// for consistency).
+	// The selection was cleared, so this hides the virtual pointer. The grid
+	// draw may already clear cursorIndicatorVisible through NeruClearOverlay,
+	// but hiding it here does not depend on that.
 	h.refreshGridVirtualPointer()
 
 	return true
@@ -211,17 +215,18 @@ func (h *handlerState) refreshRecursiveGridForScreenChange() {
 		h.recursiveGrid.Manager.CurrentGrid().RemapToNewBounds(region)
 		h.recursiveGrid.Manager.CurrentGrid().SetMinSize(h.recursiveGridMinSize())
 	} else {
-		// No existing manager — fall back to full initialization.
+		// With no manager, fall back to full initialization.
 		h.initializeRecursiveGridManager(region)
 	}
 
-	// Clear stale selection — old coordinates are invalid on the new screen.
+	// Clear the stale selection, since old coordinates are invalid on the new
+	// screen.
 	if h.recursiveGrid != nil && h.recursiveGrid.Context != nil {
 		h.recursiveGrid.Context.ClearSelectionPoint()
 	}
 
 	// The screen moved under the overlay, so this is a transition onto the new
-	// one: it is resized, shown and switched as well as drawn, and the overlay
+	// one. It is resized, shown and switched as well as drawn, and the overlay
 	// owns that sequence. Handing over a redraw instead would leave the surface
 	// sized for the display just left.
 	if h.recursiveGrid != nil && h.recursiveGrid.Manager != nil {
@@ -236,13 +241,13 @@ func (h *handlerState) refreshRecursiveGridForScreenChange() {
 // re-resolved every Style for itself, so all that is left is the mode drawing
 // what it already holds.
 //
-// This is the whole dispatch and it runs under one hold of h.mu: the mode is
+// This is the whole dispatch and it runs under one hold of h.mu. The mode is
 // read once, selected once and called once, so it cannot change between being
 // chosen and being used and no implementation re-checks it (ADR 0004). Scroll
-// and idle answer by not carrying the axis — scroll draws nothing of its own,
-// and idle has no entry in the mode map at all — which is the same nothing the
-// app layer's empty switch arms used to say, now with a debug line naming what
-// declined.
+// and idle answer by not carrying the axis, since scroll draws nothing of its
+// own and idle has no entry in the mode map at all. That is the same nothing
+// the app layer's empty switch arms used to say, now with a debug line naming
+// what declined.
 //
 // It reports whether the active mode redrew, so a caller can tell a theme
 // change that reached the screen from one that found nothing to repaint.
@@ -259,26 +264,27 @@ func (h *Handler) RefreshActiveModeForThemeChange() bool {
 }
 
 // RefreshActiveModeForScreenChange puts whichever mode is on screen back onto
-// the display as it now is — a monitor plugged in or unplugged, a resolution
-// changed, a laptop woken to a different arrangement — and reports whether the
-// overlay still needs a resize of its own afterwards.
+// the display as it now is, after a monitor is plugged in or unplugged, a
+// resolution changes, or a laptop wakes to a different arrangement. It reports
+// whether the overlay still needs a resize of its own afterwards.
 //
-// This is the whole dispatch and it runs under one hold of h.mu: the mode is
+// This is the whole dispatch and it runs under one hold of h.mu. The mode is
 // read once, selected once and called once, so it cannot change between being
 // chosen and being used and no implementation re-checks it (ADR 0004). The
 // unlocked snapshot the app layer used to take, and the three per-mode
 // re-checks that guarded the window it opened, went with it.
 //
-// Idle answers first, and answers that nothing is owed: with no mode open there
+// Idle answers first, and answers that nothing is owed. With no mode open there
 // is nothing drawn for the display that changed, and resizing the overlay is
-// what brings it up — so the display change a user has most often, with nothing
+// what brings it up, so the display change a user has most often, with nothing
 // on screen, leaves the screen alone. Scroll and the monitor picker carry the
 // axis by not implementing it, because neither holds a drawing built for the
 // bounds that just changed, and the overlay is resized for them the way it
-// always was. A mode that rebuilt nothing — switched off in configuration, or
-// without the session state to rebuild from — is resized for the same way.
+// always was. A mode that rebuilt nothing, because it is switched off in
+// configuration or has no session state to rebuild from, is resized for the
+// same way.
 //
-// It reports whether the overlay still needs a resize of its own — never
+// It reports whether the overlay still needs a resize of its own, never
 // whether a refresh succeeded. A refresh that found nothing to draw and left
 // the mode took the overlay off the display it was on, and resizing it
 // afterwards would bring it back up empty.

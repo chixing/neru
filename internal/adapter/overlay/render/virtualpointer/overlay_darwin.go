@@ -11,26 +11,26 @@ import "C"
 
 import (
 	"sync"
+	"time"
 	"unsafe"
 
 	"go.uber.org/zap"
 
 	"github.com/y3owk1n/neru/internal/adapter/overlay/render/overlayutil"
-	// The overlay.h included above only declares its symbols; importing the
+	// The overlay.h included above only declares its symbols. Importing the
 	// bridge is what links the Objective-C that defines them (ADR 0009).
 	_ "github.com/y3owk1n/neru/internal/adapter/platform/darwin"
 	"github.com/y3owk1n/neru/internal/config"
 )
 
-// Overlay renders a cursor-following virtual pointer in its own small window.
 const (
-	// NSWindowSharingNone represents NSWindowSharingNone (0) - hidden from screen sharing.
+	// NSWindowSharingNone represents NSWindowSharingNone (0), which hides the window from screen sharing.
 	NSWindowSharingNone = 0
-	// NSWindowSharingReadOnly represents NSWindowSharingReadOnly (1) - visible in screen sharing.
+	// NSWindowSharingReadOnly represents NSWindowSharingReadOnly (1), which shows the window in screen sharing.
 	NSWindowSharingReadOnly = 1
 )
 
-// Overlay is a virtual pointer overlay window.
+// Overlay renders a cursor-following virtual pointer in its own small window.
 type Overlay struct {
 	window C.OverlayWindow
 	config config.VirtualPointerConfig
@@ -38,6 +38,15 @@ type Overlay struct {
 	logger *zap.Logger
 
 	configMu sync.RWMutex
+
+	memo overlayutil.IndicatorMemo[pointerDraw]
+}
+
+// pointerDraw holds the virtual pointer draw inputs that the configuration
+// does not supply.
+type pointerDraw struct {
+	x, y, size int
+	fillColor  string
 }
 
 // NewOverlay creates a dedicated virtual pointer overlay window.
@@ -65,21 +74,28 @@ func (o *Overlay) SetConfig(cfg config.VirtualPointerConfig) {
 	defer o.configMu.Unlock()
 
 	o.config = cfg
+	o.memo.Invalidate()
 }
 
 // Show displays the virtual pointer overlay window.
 func (o *Overlay) Show() {
-	C.NeruShowOverlayWindow(o.window)
+	if o.memo.Show(time.Now()) {
+		C.NeruShowOverlayWindow(o.window)
+	}
 }
 
 // Hide conceals the virtual pointer overlay window.
 func (o *Overlay) Hide() {
-	C.NeruHideOverlayWindow(o.window)
+	if o.memo.Hide() {
+		C.NeruHideOverlayWindow(o.window)
+	}
 }
 
 // Clear removes the virtual pointer from the overlay.
 func (o *Overlay) Clear() {
-	C.NeruHideCursorIndicator(o.window)
+	if o.memo.Clear() {
+		C.NeruHideCursorIndicator(o.window)
+	}
 }
 
 // SetSharingType sets the window sharing type for screen sharing visibility.
@@ -92,14 +108,24 @@ func (o *Overlay) SetSharingType(hide bool) {
 	C.NeruSetOverlaySharingType(o.window, sharingType)
 }
 
-// ResizeToActiveScreen is a no-op; positioning is handled per draw.
-func (o *Overlay) ResizeToActiveScreen() {}
+// ResizeToActiveScreen makes the next draw go through, because a display change
+// can move the same Quartz point to a different Cocoa frame.
+func (o *Overlay) ResizeToActiveScreen() {
+	o.memo.Invalidate()
+}
 
 // Draw positions the overlay on the cursor and renders the virtual pointer indicator.
 // When a char is configured in the overlay's config, the character is drawn using the
 // configured font and text color. Otherwise falls back to a filled circle using fillColor.
 func (o *Overlay) Draw(xCoordinate, yCoordinate, size int, fillColor string) {
 	if size < 1 || fillColor == "" {
+		return
+	}
+
+	draw := pointerDraw{x: xCoordinate, y: yCoordinate, size: size, fillColor: fillColor}
+
+	unchanged, epoch := o.memo.BeginDraw(draw)
+	if unchanged {
 		return
 	}
 
@@ -132,6 +158,8 @@ func (o *Overlay) Draw(xCoordinate, yCoordinate, size int, fillColor string) {
 			textColor:  cTextColor,
 		},
 	)
+
+	o.memo.EndDraw(draw, epoch)
 }
 
 // Destroy releases the overlay window.

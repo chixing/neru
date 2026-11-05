@@ -19,7 +19,7 @@ import (
 	"github.com/y3owk1n/neru/internal/ports"
 )
 
-// wlrootsOverlay is the no-cgo stand-in; see x11_nocgo.go for why these twins
+// wlrootsOverlay is the no-cgo stand-in. See x11_nocgo.go for why these twins
 // keep their methods per-backend while the cgo build shares them.
 type wlrootsOverlay struct {
 	sublayerKeys string
@@ -102,3 +102,6 @@ func (o *wlrootsOverlay) cancelAnimation()               {}
 func (o *wlrootsOverlay) setRenderMu(_ *sync.Mutex)      {}
 func (o *wlrootsOverlay) setKeyboardCaptureEnabled(bool) {}
 func (o *wlrootsOverlay) startPoller()                   {}
+
+// withBlanked runs capture as it is, because this build draws no overlay.
+func (o *wlrootsOverlay) withBlanked(capture func() error) error { return capture() }

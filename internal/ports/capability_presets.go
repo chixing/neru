@@ -7,13 +7,6 @@ func supportedCapability(detail string) FeatureCapability {
 	}
 }
 
-func stubCapability(detail string) FeatureCapability {
-	return FeatureCapability{
-		Status: FeatureStatusStub,
-		Detail: detail,
-	}
-}
-
 // DarwinCapabilities returns the supported macOS runtime capabilities.
 func DarwinCapabilities() PlatformCapabilities {
 	return PlatformCapabilities{
@@ -37,7 +30,7 @@ func DarwinCapabilities() PlatformCapabilities {
 		Notifications: supportedCapability(
 			"native alerts and notifications available via NSAlert/UserNotifications",
 		),
-		GlobalHotkeys: supportedCapability("global hotkeys available via per-key CGEventTaps"),
+		GlobalHotkeys: supportedCapability("global hotkeys available via one shared CGEventTap"),
 		KeyboardEventTap: supportedCapability(
 			"keyboard event tap available via Quartz event taps",
 		),
@@ -46,7 +39,7 @@ func DarwinCapabilities() PlatformCapabilities {
 			"system dark mode detection available via Cocoa appearance APIs",
 		),
 		TextInput: supportedCapability(
-			"native hint-search field available via an NSTextField overlay",
+			"native hint-search field available via a text view in a key panel",
 		),
 		Vision: supportedCapability(
 			"OCR element detection available via the Vision framework and ScreenCaptureKit",
@@ -71,7 +64,7 @@ func LinuxCapabilities() PlatformCapabilities {
 			"cursor movement/tracking available via XTest, Wayland virtual-pointer, or libei (KDE/COSMIC)",
 		),
 		// Live-probed by the Linux SystemAdapter on Wayland, which downgrades
-		// this to a stub when /dev/uinput is not writable: the virtual-pointer
+		// this to a stub when /dev/uinput is not writable. The virtual-pointer
 		// fallback still scrolls most clients, but not Chromium or Electron on
 		// Hyprland. See linux.SystemAdapter.scrollCapability.
 		Scroll: supportedCapability(
@@ -119,37 +112,36 @@ func LinuxCapabilities() PlatformCapabilities {
 				"where the compositor/X11 exposes a focus-change signal and polling " +
 				"otherwise; on GNOME/Mutter the Neru GNOME Shell extension is the source",
 		),
-		// Default placeholder; the Linux SystemAdapter overrides this with
+		// Default placeholder. The Linux SystemAdapter overrides this with
 		// the live-probed state (current color-scheme + source) on each
 		// Capabilities() call. See linux.SystemAdapter.Capabilities.
 		DarkModeDetection: supportedCapability(
 			"dark mode detection via freedesktop appearance portal (Settings.Read), with kdeglobals fallback",
 		),
-		// What is a stub here is the *field*: no Linux text control owns
-		// keyboard focus for hint search, so the characters come from the event
-		// tap and an input method never sees them. The query is on screen —
-		// the overlay draws the badge — which is why the detail says so rather
-		// than leaving "not implemented" to imply nothing appears.
-		TextInput: stubCapability(
-			"no native hint-search field: the query is read from the event tap's " +
-				"key stream, so dead keys and IME composition do not reach it; " +
-				"the overlay draws the search badge",
+		// The field is a layer-shell surface, so it exists only where the
+		// compositor offers one. Elsewhere the characters come from the event
+		// tap and an input method never sees them.
+		TextInput: supportedCapability(
+			"native hint-search field on X11, taking input-method and dead-key " +
+				"text through XIM, and on Wayland compositors with a layer shell, " +
+				"taking it through text-input-v3 and xkb compose; on GNOME the " +
+				"query is read from the event tap's key stream",
 		),
 		// Both halves are implemented on every backend: capture through
 		// wlr-screencopy, XGetImage or the portal's ScreenCast session,
 		// recognition through tesseract. The detail names the three things that
-		// can still be missing on a given machine — KDE's screen-sharing consent
-		// has to be approved once, the tesseract language data is a separate
-		// distribution package from the library Neru links, and the CGO-off
-		// build has no engine — because this preset is static and `neru doctor`
-		// reports it without probing. VisionPort.Health answers the same
+		// can still be missing on a given machine, because this preset is static
+		// and `neru doctor` reports it without probing. KDE's screen-sharing
+		// consent has to be approved once, the tesseract language data is a
+		// separate distribution package from the library Neru links, and the
+		// CGO-off build has no engine. VisionPort.Health answers the same
 		// question for the live session, and names which one it is.
 		Vision: supportedCapability(
 			"vision element detection via tesseract OCR over a screen capture " +
 				"(wlr-screencopy on wlroots, XGetImage on X11, the xdg-desktop-portal " +
 				"ScreenCast session on KDE and COSMIC, which asks for screen-sharing consent " +
-				"once); text only, with no rectangle detection; needs a cgo build " +
-				"and the tesseract eng language data installed",
+				"once), with button shapes from the contour detector over the same " +
+				"frame; text needs a cgo build and the tesseract eng language data installed",
 		),
 		KeyFeed: supportedCapability(
 			"key injection via a uinput virtual keyboard when /dev/uinput is " +
@@ -207,14 +199,16 @@ func WindowsCapabilities() PlatformCapabilities {
 			"dark mode detection available via the Windows personalization registry " +
 				"(Themes\\Personalize AppsUseLightTheme)",
 		),
-		TextInput: stubCapability(
-			"native hint-search field not implemented yet; hint search falls back " +
-				"to the event tap's key stream",
+		TextInput: supportedCapability(
+			"native hint-search field via an EDIT control in a tool window, taking " +
+				"input-method text through IMM and dead keys through TranslateMessage; " +
+				"when Windows does not give it the foreground, hint search reads the " +
+				"event tap's key stream",
 		),
 		Vision: supportedCapability(
 			"vision element detection via Windows.Media.Ocr over a BitBlt screen " +
-				"capture; text only, and it needs an OCR language pack for one of the " +
-				"account's languages",
+				"capture, with button shapes from the contour detector over the same " +
+				"frame; text needs an OCR language pack for one of the account's languages",
 		),
 		KeyFeed: supportedCapability("key injection available via SendInput"),
 		Systray: supportedCapability(

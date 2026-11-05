@@ -11,8 +11,10 @@ import (
 
 	"github.com/y3owk1n/neru/internal/adapter/platform"
 	"github.com/y3owk1n/neru/internal/app"
+	"github.com/y3owk1n/neru/internal/buildinfo"
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/config/loader"
+	"github.com/y3owk1n/neru/internal/configschema"
 	"github.com/y3owk1n/neru/internal/ports"
 )
 
@@ -38,9 +40,7 @@ func LaunchDaemon(configPath string) {
 	systemPort, sysPortErr := platform.NewSystemPort()
 
 	// On non-macOS, print a brief startup notice directing to 'neru doctor'
-	// for the full platform capability report. Uses the system port's
-	// lightweight PlatformLabel() (no I/O or live probes) as the primary
-	// source, falling back to CurrentOS() when the port is unavailable.
+	// for the full platform capability report.
 	if !platform.IsDarwin() {
 		if sysPortErr != nil {
 			fmt.Fprintf(os.Stderr, "%s\n\n", sysPortErr.Error())
@@ -64,7 +64,6 @@ func LaunchDaemon(configPath string) {
 
 	configResult := service.LoadWithValidation(configPath)
 
-	// If there's a validation error, show alert and exit
 	if configResult.ValidationError != nil {
 		handleConfigValidationError(configResult)
 	}
@@ -138,7 +137,7 @@ func handleConfigOnboarding(
 		return configResult
 	}
 
-	err = config.WriteDefaultConfig(defaultPath, false)
+	err = config.WriteDefaultConfig(defaultPath, false, configschema.URL(buildinfo.Version))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create config file: %v\n", err)
 

@@ -11,6 +11,7 @@ import (
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/config/loader"
 	"github.com/y3owk1n/neru/internal/domain"
+	"github.com/y3owk1n/neru/internal/domain/event"
 	"github.com/y3owk1n/neru/internal/domain/state"
 	"github.com/y3owk1n/neru/internal/ports"
 )
@@ -57,18 +58,25 @@ type Controller struct {
 	// that macros are unavailable.
 	ExecuteMacro macroRunner
 
+	// Events is what `neru watch` streams. Nil refuses the stream.
+	Events *event.Bus
+
 	// Info handler for config updates
 	infoHandler *InfoHandler
 
 	Handlers map[string]func(context.Context, ipc.Command) ipc.Response
+
+	// Streams are the commands whose reply is a stream, registered on the
+	// server apart from Handlers.
+	Streams map[string]ipc.StreamHandler
 }
 
 // Deps collects everything New needs.
 //
 // It is a struct rather than a positional parameter list because the list had
-// grown to fourteen arguments, most of them nil at any given call site — which
+// grown to fourteen arguments, most of them nil at any given call site. That
 // made every new port a mechanical edit across seven test files and made the
-// nils impossible to read. Zero values are valid: a nil service simply means
+// nils impossible to read. Zero values are valid. A nil service means
 // the corresponding commands report that it is unavailable, and EventTap and
 // IPCServer are legitimately nil until initialization phase 8 fills them in via
 // SetInfrastructure.
@@ -110,6 +118,9 @@ type Deps struct {
 	// global hotkeys. When nil, the hotkeys wait for the binder's next refresh.
 	SetEnabled func(enabled bool)
 
+	// Events is the bus `neru watch` streams.
+	Events *event.Bus
+
 	Logger *zap.Logger
 }
 
@@ -137,11 +148,15 @@ func New(deps Deps) *Controller {
 		ExecuteSequence: deps.ExecuteSequence,
 		ExecuteMacro:    deps.ExecuteMacro,
 		SetEnabled:      deps.SetEnabled,
+		Events:          deps.Events,
 		Logger:          logger.Named("ipc.controller"),
 		Handlers:        make(map[string]func(context.Context, ipc.Command) ipc.Response),
 	}
 
-	// Register command handlers
+	ipcController.Streams = map[string]ipc.StreamHandler{
+		domain.CommandWatch: ipcController.HandleWatch,
+	}
+
 	ipcController.registerHandlers(deps.Config)
 
 	return ipcController
@@ -178,13 +193,17 @@ func (c *Controller) HandleCommand(ctx context.Context, command ipc.Command) ipc
 }
 
 // answeredWhilePaused lists what `neru stop` does not switch off: lifecycle,
-// status and configuration, and the preference toggles. Anything else is
-// refused while paused.
+// status, the queries and configuration, and the preference toggles. Anything
+// else is refused while paused.
 var answeredWhilePaused = map[string]bool{
 	domain.CommandPing:                        true,
 	domain.CommandStart:                       true,
 	domain.CommandStop:                        true,
 	domain.CommandStatus:                      true,
+	domain.CommandQueryDisplays:               true,
+	domain.CommandQueryCursor:                 true,
+	domain.CommandQueryWindow:                 true,
+	domain.CommandQueryApp:                    true,
 	domain.CommandConfig:                      true,
 	domain.CommandReloadConfig:                true,
 	domain.CommandHealth:                      true,
@@ -246,13 +265,13 @@ func (c *Controller) setEnabled(enabled bool) {
 
 // registerHandlers registers all command handlers by delegating to sub-controllers.
 func (c *Controller) registerHandlers(cfg *config.Config) {
-	// Initialize handler components
 	lifecycleHandler := NewLifecycleHandler(c.AppState, c.Modes, c.setEnabled, c.Logger)
 	modesHandler := NewModesHandler(c.Modes, c.Logger)
 	// The slots are IPC-session state with no dependencies, so the controller
-	// owns them: the actions handler writes them and the info handler reports
+	// owns them. The actions handler writes them and the info handler reports
 	// them, and nothing outside this controller needs to reach them.
 	cursorSlots := state.NewCursorSlots()
+	cursorSlots.PublishTo(c.Events)
 
 	actionsHandler := NewActionsHandler(
 		c.ActionService,
@@ -263,7 +282,7 @@ func (c *Controller) registerHandlers(cfg *config.Config) {
 		cursorSlots,
 		c.Logger,
 	)
-	// SetConfigField stays zero here; SetConfigFieldCallback fills it in after
+	// SetConfigField stays zero here. SetConfigFieldCallback fills it in after
 	// construction, since the callback needs the fully built app.
 	c.infoHandler = NewInfoHandler(InfoHandlerDeps{
 		ConfigService: c.ConfigService,
@@ -289,15 +308,12 @@ func (c *Controller) registerHandlers(cfg *config.Config) {
 
 	c.infoHandler.RegisterHandlers(c.Handlers)
 
-	// Register overlay handler
 	overlayHandler := NewOverlayHandler(c.AppState, c.Logger)
 	overlayHandler.RegisterHandlers(c.Handlers)
 
-	// Register scroll handler
 	scrollHandler := NewScrollHandler(c.AppState, c.ScrollService, c.Logger)
 	scrollHandler.RegisterHandlers(c.Handlers)
 
-	// Register action sequence handler
 	sequenceHandler := NewSequenceHandler(c.ExecuteSequence, c.ExecuteMacro, c.Logger)
 	sequenceHandler.RegisterHandlers(c.Handlers)
 }

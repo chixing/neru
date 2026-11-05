@@ -18,29 +18,30 @@ import "C"
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"unsafe"
 
 	"go.uber.org/zap"
 
 	// Blank import links the Objective-C bridge that defines
 	// NeruStartHintSearchTextInput / NeruStopHintSearchTextInput. Without it the
-	// package compiles but fails to link on its own — which is why this package
-	// had no tests: `go test ./internal/adapter/textinput/` could not build a
+	// package compiles but fails to link on its own, which is why this package
+	// had no tests. `go test ./internal/adapter/textinput/` could not build a
 	// test binary. keyfeed_darwin.go carries the same import for the same reason.
 	_ "github.com/y3owk1n/neru/internal/adapter/platform/darwin"
 	"github.com/y3owk1n/neru/internal/ports"
 )
 
 // TextInput manages the macOS native text input session.
+//
+// The field calls the bridges on the main thread, sometimes inside a round
+// trip that the handler waits on while holding its lock. So the bridges only
+// post to the session's queue, and the queue runs the callbacks in order on a
+// goroutine of its own. Start and Stop release mu before entering C, since the
+// bridges take it on the main thread.
 type TextInput struct {
-	logger    *zap.Logger
-	callbacks ports.TextInputCallbacks
-	mu        sync.RWMutex
-
-	querySeq        uint64
-	lastExecutedSeq uint64
-	callbackMu      sync.Mutex
+	logger *zap.Logger
+	queue  *callbackQueue
+	mu     sync.RWMutex
 }
 
 var (
@@ -70,9 +71,16 @@ func (t *TextInput) StartHintSearchSession(
 	callbacks ports.TextInputCallbacks,
 	frame ports.TextInputFrame,
 ) (bool, error) {
+	queue := newCallbackQueue(callbacks)
+
 	t.mu.Lock()
-	t.callbacks = callbacks
+	previous := t.queue
+	t.queue = queue
 	t.mu.Unlock()
+
+	if previous != nil {
+		previous.stop()
+	}
 
 	started := C.NeruStartHintSearchTextInput(
 		C.TextInputQueryCallback(C.textInputQueryBridge),
@@ -86,6 +94,15 @@ func (t *TextInput) StartHintSearchSession(
 	)
 
 	if started == 0 {
+		// The handler does not stop a session that never started.
+		t.mu.Lock()
+		if t.queue == queue {
+			t.queue = nil
+		}
+		t.mu.Unlock()
+
+		queue.stop()
+
 		return false, nil
 	}
 
@@ -95,102 +112,62 @@ func (t *TextInput) StartHintSearchSession(
 // StopHintSearchSession stops the native hint search session.
 func (t *TextInput) StopHintSearchSession(_ context.Context) error {
 	t.mu.Lock()
-	t.callbacks = ports.TextInputCallbacks{}
+	queue := t.queue
+	t.queue = nil
 	t.mu.Unlock()
+
+	if queue != nil {
+		queue.stop()
+	}
 
 	C.NeruStopHintSearchTextInput()
 
 	return nil
 }
 
-//export textInputQueryBridge
-func textInputQueryBridge(query *C.char, _ unsafe.Pointer) {
+// activeQueue returns the running session's queue, or nil when there is none.
+func activeQueue() *callbackQueue {
 	globalTextInputMu.RLock()
 	textInput := globalTextInput
 	globalTextInputMu.RUnlock()
 
 	if textInput == nil {
-		return
+		return nil
 	}
 
-	seq := atomic.AddUint64(&textInput.querySeq, 1)
+	textInput.mu.RLock()
+	defer textInput.mu.RUnlock()
+
+	return textInput.queue
+}
+
+//export textInputQueryBridge
+func textInputQueryBridge(query *C.char, _ unsafe.Pointer) {
+	queue := activeQueue()
+	if queue == nil {
+		return
+	}
 
 	queryStr := ""
 	if query != nil {
 		queryStr = C.GoString(query)
 	}
 
-	textInput.mu.RLock()
-	callback := textInput.callbacks.OnQueryChanged
-	textInput.mu.RUnlock()
-
-	if callback == nil {
-		return
-	}
-
-	go func(seq uint64, query string) {
-		textInput.callbackMu.Lock()
-		defer textInput.callbackMu.Unlock()
-
-		if seq < textInput.lastExecutedSeq {
-			return
-		}
-		textInput.lastExecutedSeq = seq
-
-		callback(query)
-	}(seq, queryStr)
+	queue.queryChanged(queryStr)
 }
 
 //export textInputConfirmBridge
 func textInputConfirmBridge(_ unsafe.Pointer) {
-	globalTextInputMu.RLock()
-	textInput := globalTextInput
-	globalTextInputMu.RUnlock()
-
-	if textInput == nil {
-		return
+	if queue := activeQueue(); queue != nil {
+		queue.confirm()
 	}
-
-	textInput.mu.RLock()
-	callback := textInput.callbacks.OnConfirm
-	textInput.mu.RUnlock()
-
-	if callback == nil {
-		return
-	}
-
-	go func() {
-		textInput.callbackMu.Lock()
-		defer textInput.callbackMu.Unlock()
-
-		callback()
-	}()
 }
 
 //export textInputCancelBridge
 func textInputCancelBridge(_ unsafe.Pointer) {
-	globalTextInputMu.RLock()
-	textInput := globalTextInput
-	globalTextInputMu.RUnlock()
-
-	if textInput == nil {
-		return
+	if queue := activeQueue(); queue != nil {
+		queue.cancel()
 	}
-
-	textInput.mu.RLock()
-	callback := textInput.callbacks.OnCancel
-	textInput.mu.RUnlock()
-
-	if callback == nil {
-		return
-	}
-
-	go func() {
-		textInput.callbackMu.Lock()
-		defer textInput.callbackMu.Unlock()
-
-		callback()
-	}()
 }
 
 //export textInputCycleNextBridge
@@ -200,26 +177,7 @@ func textInputCycleNextBridge(_ unsafe.Pointer) { dispatchCycle(false) }
 func textInputCyclePreviousBridge(_ unsafe.Pointer) { dispatchCycle(true) }
 
 func dispatchCycle(backward bool) {
-	globalTextInputMu.RLock()
-	textInput := globalTextInput
-	globalTextInputMu.RUnlock()
-
-	if textInput == nil {
-		return
+	if queue := activeQueue(); queue != nil {
+		queue.cycle(backward)
 	}
-
-	textInput.mu.RLock()
-	callback := textInput.callbacks.OnCycle
-	textInput.mu.RUnlock()
-
-	if callback == nil {
-		return
-	}
-
-	go func() {
-		textInput.callbackMu.Lock()
-		defer textInput.callbackMu.Unlock()
-
-		callback(backward)
-	}()
 }

@@ -13,6 +13,9 @@ on:
             - ".github/workflows/website.yml"
     release:
         types: [published]
+    # A daily build keeps the GitHub star count on the pages at most a day old.
+    schedule:
+        - cron: "17 6 * * *"
     workflow_dispatch:
 name: Website
 permissions:
@@ -28,8 +31,7 @@ jobs:
         runs-on: ubuntu-latest
         env:
             ASTRO_TELEMETRY_DISABLED: "1"
-            NERU_SITE: https://y3owk1n.github.io
-            NERU_BASE: /neru/
+            NERU_SITE: https://neru.kylewong.my
         steps:
             # The latest channel builds the newest v* tag's docs/, so the
             # checkout needs every tag. Nightly is the checkout, which a
@@ -41,7 +43,7 @@ jobs:
 
             # Node comes from website/oku.toml, apart from the Go toolchain.
             - name: Setup Node
-              uses: y3owk1n/oku@v0.9.0
+              uses: y3owk1n/oku@v0.18.3
               with:
                   path: website
               env:
@@ -59,6 +61,9 @@ jobs:
 
             - name: Build latest and nightly
               run: just website-build
+              env:
+                  # The build reads the star count from the GitHub API.
+                  GITHUB_TOKEN: ${{ github.token }}
 
             - name: Upload the site
               if: github.repository == 'y3owk1n/neru' && github.event_name != 'pull_request'

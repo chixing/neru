@@ -19,11 +19,11 @@
 // The manager is bound at version 1 on purpose. Versions 2 and 3 add damage
 // tracking and dmabuf negotiation, which a one-shot shm grab has no use for,
 // and version 1 guarantees the "buffer" event without the buffer_done handshake
-// — a smaller state machine for the same pixels.
+// That is a smaller state machine for the same pixels.
 #define NERU_SCREENCOPY_MANAGER_VERSION 1
 
-// Only reached when a caller passes a non-positive budget; the Go wrapper
-// always passes screenCaptureTimeoutMS.
+// Only reached when a caller passes a non-positive budget. The Go wrapper
+// always passes what is left of the caller's deadline, at least 1 ms.
 #define NERU_SCREENCOPY_FALLBACK_TIMEOUT_MS 2000
 
 // Largest frame dimension accepted from the compositor. Far above any real
@@ -39,6 +39,10 @@ typedef struct {
 	int h;
 	int has_position;
 	int has_size;
+	// transform is the output's wl_output.transform. A frame arrives in the
+	// output's buffer orientation, so the caller turns a rotated or flipped
+	// output's frame back to match what is on screen.
+	int32_t transform;
 } NeruScreencopyOutput;
 
 typedef struct {
@@ -73,7 +77,7 @@ static int64_t neru_screencopy_now_ms(void) {
 // wl_output, zxdg_output_v1 and the frame all send events this file has no use
 // for, but a listener with a NULL slot is a crash waiting for the compositor
 // that sends it. Every event therefore gets a correctly typed handler and the
-// unused ones do nothing — casting one shared no-op into each slot would be an
+// unused ones do nothing. Casting one shared no-op into each slot would be an
 // incompatible function-pointer call, which is undefined behavior.
 static void neru_screencopy_xdg_done(void *data, struct zxdg_output_v1 *xdg_output) {
 	(void)data;
@@ -89,7 +93,6 @@ static void neru_screencopy_xdg_string(void *data, struct zxdg_output_v1 *xdg_ou
 static void neru_screencopy_output_geometry(
     void *data, struct wl_output *output, int32_t x, int32_t y, int32_t physical_width, int32_t physical_height,
     int32_t subpixel, const char *make, const char *model, int32_t transform) {
-	(void)data;
 	(void)output;
 	(void)x;
 	(void)y;
@@ -98,7 +101,8 @@ static void neru_screencopy_output_geometry(
 	(void)subpixel;
 	(void)make;
 	(void)model;
-	(void)transform;
+
+	((NeruScreencopyOutput *)data)->transform = transform;
 }
 
 static void neru_screencopy_output_mode(
@@ -165,7 +169,7 @@ static void neru_screencopy_frame_buffer(
 	NeruScreencopyCtx *ctx = (NeruScreencopyCtx *)data;
 
 	if (ctx->has_buffer) {
-		// Version 1 sends exactly one buffer event; keep the first regardless.
+		// Version 1 sends exactly one buffer event. Keep the first regardless.
 		return;
 	}
 
@@ -263,7 +267,7 @@ static void neru_screencopy_registry_global_remove(void *data, struct wl_registr
 	(void)data;
 	(void)registry;
 	(void)name;
-	// The connection lives for one capture; a hotplug mid-capture surfaces as a
+	// The connection lives for one capture, and a hotplug mid-capture surfaces as a
 	// failed frame rather than needing bookkeeping here.
 }
 
@@ -317,7 +321,7 @@ static int neru_screencopy_wait(NeruScreencopyCtx *ctx, const int *flag, int64_t
 	return *flag ? 1 : 0;
 }
 
-// The sync callback only flips a flag; the caller owns the wl_callback and
+// The sync callback only flips a flag. The caller owns the wl_callback and
 // destroys it either way, so a timed-out roundtrip cannot leave a listener
 // pointing at a stack variable that has gone.
 static void neru_screencopy_sync_done(void *data, struct wl_callback *callback, uint32_t serial) {
@@ -334,7 +338,7 @@ static const struct wl_callback_listener neru_screencopy_sync_listener = {
 // neru_screencopy_roundtrip is wl_display_roundtrip with the caller's deadline
 // on it. The library version blocks forever, which would let a compositor that
 // stops answering during discovery hang the capture well past the budget Go
-// asked for — the one thing the timeout exists to prevent.
+// asked for, the one thing the timeout exists to prevent.
 static int neru_screencopy_roundtrip(NeruScreencopyCtx *ctx, int64_t deadline) {
 	int done = 0;
 
@@ -357,9 +361,9 @@ static int neru_screencopy_roundtrip(NeruScreencopyCtx *ctx, int64_t deadline) {
 // coordinates. Returns NULL when no single output contains it.
 //
 // screencopy captures one output, so a region spanning two monitors could only
-// be answered by cropping — which would hand back a frame whose top-left is not
+// be answered by cropping, which would hand back a frame whose top-left is not
 // the caller's, with nothing in the result to say so. Refusing keeps the
-// invariant that what comes back covers exactly what was asked for; stitching
+// invariant that what comes back covers exactly what was asked for. Stitching
 // several outputs is work no caller needs yet.
 static NeruScreencopyOutput *neru_screencopy_select_output(
     NeruScreencopyCtx *ctx, int x, int y, int w, int h, int *local_x, int *local_y) {
@@ -474,7 +478,7 @@ static void neru_screencopy_teardown(NeruScreencopyCtx *ctx) {
 static int neru_screencopy_copy_frame(
     NeruScreencopyCtx *ctx, struct zwlr_screencopy_frame_v1 *frame, int64_t deadline, NeruCapture *out) {
 	// Frame metadata arrives from the compositor, so it is validated rather than
-	// trusted: the dimensions are capped and every product is computed in 64
+	// trusted. The dimensions are capped and every product is computed in 64
 	// bits. Without that, a width near UINT32_MAX makes width * 4 wrap, the
 	// stride check passes, and the conversion loop then reads past a mapping
 	// sized from the wrapped value.
@@ -525,7 +529,7 @@ static int neru_screencopy_copy_frame(
 
 	wl_buffer_destroy(buffer);
 
-	// The mapping held screen pixels; wipe before unmapping so the pages go
+	// The mapping held screen pixels. Wipe before unmapping so the pages go
 	// back to the kernel blank.
 	neru_capture_wipe(data, size);
 	munmap(data, size);
@@ -533,15 +537,15 @@ static int neru_screencopy_copy_frame(
 	return status;
 }
 
-int neru_screencopy_capture_region(int x, int y, int w, int h, int timeout_ms, NeruCapture *out) {
+int neru_screencopy_capture_region(int x, int y, int w, int h, int timeout_ms, NeruCapture *out, int *transform) {
 	int begin = neru_capture_begin(out, w, h);
 	if (begin != NERU_CAPTURE_OK) {
 		return begin;
 	}
 
 	if (timeout_ms <= 0) {
-		// Go owns the real budget (screenCaptureTimeoutMS); this only keeps a
-		// direct C caller from waiting forever.
+		// Go owns the real budget (captureBudgetMS). This only keeps a direct C
+		// caller from waiting forever.
 		timeout_ms = NERU_SCREENCOPY_FALLBACK_TIMEOUT_MS;
 	}
 
@@ -608,6 +612,10 @@ int neru_screencopy_capture_region(int x, int y, int w, int h, int timeout_ms, N
 		status = ctx.failed ? NERU_CAPTURE_ERR_FAILED : NERU_CAPTURE_ERR_TIMEOUT;
 	} else {
 		status = neru_screencopy_copy_frame(&ctx, frame, deadline, out);
+	}
+
+	if (transform) {
+		*transform = target->transform;
 	}
 
 	zwlr_screencopy_frame_v1_destroy(frame);

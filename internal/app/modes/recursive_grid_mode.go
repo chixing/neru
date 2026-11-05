@@ -14,16 +14,17 @@ import (
 // Compile-time interface compliance checks: the core interface, then every
 // optional extension recursive-grid mode opts into (extensions.go).
 var (
-	_ Mode                   = (*RecursiveGridMode)(nil)
-	_ selectionTracker       = (*RecursiveGridMode)(nil)
-	_ cellNavigator          = (*RecursiveGridMode)(nil)
-	_ cursorFollowSelector   = (*RecursiveGridMode)(nil)
-	_ exitStepReporter       = (*RecursiveGridMode)(nil)
-	_ inputEditor            = (*RecursiveGridMode)(nil)
-	_ hotkeyOverrideReporter = (*RecursiveGridMode)(nil)
-	_ themeRefresher         = (*RecursiveGridMode)(nil)
-	_ screenRefresher        = (*RecursiveGridMode)(nil)
-	_ captureScopeReporter   = (*RecursiveGridMode)(nil)
+	_ Mode                    = (*RecursiveGridMode)(nil)
+	_ selectionTracker        = (*RecursiveGridMode)(nil)
+	_ cellNavigator           = (*RecursiveGridMode)(nil)
+	_ cursorFollowSelector    = (*RecursiveGridMode)(nil)
+	_ exitStepReporter        = (*RecursiveGridMode)(nil)
+	_ inputEditor             = (*RecursiveGridMode)(nil)
+	_ hotkeyOverrideReporter  = (*RecursiveGridMode)(nil)
+	_ themeRefresher          = (*RecursiveGridMode)(nil)
+	_ screenRefresher         = (*RecursiveGridMode)(nil)
+	_ captureScopeReporter    = (*RecursiveGridMode)(nil)
+	_ selectionRegionReporter = (*RecursiveGridMode)(nil)
 )
 
 // RecursiveGridMode implements the Mode interface for recursive-grid navigation.
@@ -34,7 +35,7 @@ type RecursiveGridMode struct {
 // NewRecursiveGridMode creates a new recursive-grid mode instance.
 func NewRecursiveGridMode(handler *handlerState) *RecursiveGridMode {
 	return &RecursiveGridMode{
-		baseMode: newBaseMode(handler, domain.ModeRecursiveGrid, "RecursiveGridMode"),
+		baseMode: newBaseMode(handler, "RecursiveGridMode"),
 	}
 }
 
@@ -60,7 +61,7 @@ func (m *RecursiveGridMode) RefreshForMonitorMove(
 
 // RefreshForThemeChange draws the region the user has zoomed to again, so it
 // picks up the colors the overlay just re-resolved. The zoom history is
-// untouched: only the palette changed, not the screen underneath it.
+// untouched. Only the palette changed, not the screen underneath it.
 //
 // A mode with no manager has no region to draw, and says so rather than
 // reporting a redraw the overlay never received.
@@ -79,7 +80,7 @@ func (m *RecursiveGridMode) RefreshForThemeChange() bool {
 
 // RefreshForScreenChange remaps the zoom history onto the display as it now is,
 // so the region the user had narrowed to survives a display change instead of
-// starting over: recursive grid is a sequence of narrowing choices, and
+// starting over. Recursive grid is a sequence of narrowing choices, and
 // throwing the region away throws their progress away with it.
 //
 // Recursive grid switched off in configuration, or with no component to remap,
@@ -105,6 +106,32 @@ func (m *RecursiveGridMode) Exit() {
 	m.handler.cleanupRecursiveGridMode()
 }
 
+// SelectionWrites reports how many times this session has set its selection.
+func (m *RecursiveGridMode) SelectionWrites() uint64 {
+	if m.handler.recursiveGrid == nil || m.handler.recursiveGrid.Context == nil {
+		return 0
+	}
+
+	return m.handler.recursiveGrid.Context.SelectionWrites()
+}
+
+// SelectionRegion reports the region the zoom has reached. Once the grid can
+// divide no further, the last pick selects a cell without zooming into it, and
+// that cell is the region. At the top level with no cell picked it is the
+// whole screen, which narrows nothing.
+func (m *RecursiveGridMode) SelectionRegion() (image.Rectangle, bool) {
+	if m.handler.recursiveGrid == nil || m.handler.recursiveGrid.Manager == nil {
+		return image.Rectangle{}, false
+	}
+
+	grid := m.handler.recursiveGrid.Manager.CurrentGrid()
+	if grid.CurrentDepth() == 0 && !grid.HasFinalCell() {
+		return image.Rectangle{}, false
+	}
+
+	return grid.EffectiveBounds().Add(m.handler.screenBounds.Min), true
+}
+
 // SelectionPoint reports the region center recursive-grid mode has selected.
 func (m *RecursiveGridMode) SelectionPoint() (image.Point, bool) {
 	if m.handler.recursiveGrid == nil || m.handler.recursiveGrid.Context == nil {
@@ -125,6 +152,17 @@ func (m *RecursiveGridMode) ClearSelectionPoint() bool {
 	m.handler.refreshRecursiveGridVirtualPointer()
 
 	return true
+}
+
+// PlaceSelectionPoint moves the selection onto point and the virtual pointer
+// with it.
+func (m *RecursiveGridMode) PlaceSelectionPoint(point image.Point) {
+	if m.handler.recursiveGrid == nil || m.handler.recursiveGrid.Context == nil {
+		return
+	}
+
+	m.handler.recursiveGrid.Context.SetSelectionPoint(point)
+	m.handler.refreshRecursiveGridVirtualPointer()
 }
 
 // SelectionAnchor anchors to the selected region center, which is where the
@@ -154,8 +192,8 @@ func (m *RecursiveGridMode) MoveCell(dir domain.Direction, count int) {
 		return
 	}
 
-	// The update callback set the selection point and redrew the overlay;
-	// only cursor tracking is left.
+	// The update callback set the selection point and redrew the overlay.
+	// Only cursor tracking is left.
 	absoluteCenter := geometry.ConvertToAbsoluteCoordinates(center, handler.screenBounds)
 
 	if handler.recursiveGrid.Context != nil &&
@@ -186,7 +224,7 @@ func (m *RecursiveGridMode) CursorFollowSelection() (bool, bool) {
 }
 
 // ApplyCursorFollowSelection sets or toggles the preference and then settles
-// what the change owes: the virtual pointer stands in for the real cursor only
+// what the change owes. The virtual pointer stands in for the real cursor only
 // while the cursor is not following, and turning following on puts the cursor
 // on the region center that is already selected.
 func (m *RecursiveGridMode) ApplyCursorFollowSelection(desired *bool) (bool, bool) {
@@ -267,7 +305,7 @@ func (m *RecursiveGridMode) cursorFollowContext() (cursorFollowContext, bool) {
 
 // settleAtCurrentCenter re-selects the center of the region the manager now
 // holds, redraws it, and brings whichever pointer is standing in for the
-// selection — the virtual one, or the real cursor when it follows — onto it.
+// selection onto it: the virtual one, or the real cursor when it follows.
 func (m *RecursiveGridMode) settleAtCurrentCenter(moveFailureMessage string) {
 	handler := m.handler
 

@@ -13,24 +13,16 @@ import (
 // Each note is worded as the sentence a user reads in the load-time warning and
 // in the published table, so it names the gap rather than the code that has it.
 const (
-	noteScreenShareHide = "hiding the overlay from a screen share is an NSWindow sharing level, " +
-		"a Quartz concept with no X11, Wayland or Win32 counterpart"
+	noteScreenShareHide = "hiding the overlay from a screen share is an NSWindow sharing level " +
+		"on macOS and a display affinity on Windows, with no X11 or Wayland counterpart"
 	noteVisionConfidence = "Windows.Media.Ocr reports no per-word confidence, so every word " +
 		"scores one there and a floor keeps everything; the Vision framework and tesseract " +
 		"score each word"
-	noteVisionRectangles = "rectangle detection has no OCR answer, so it stays macOS-only " +
-		"even where the vision strategy lands; that half is text-only"
 	noteMacOSSurfaces = "the menu bar, the Dock, Notification Center, Stage Manager, " +
 		"picture-in-picture and the screen-capture chrome are macOS surfaces with no counterpart"
 	noteContourText    = "only the macOS capture path runs text recognition beside contour"
 	noteMissionControl = "Mission Control is a macOS concept, so the detection never fires " +
 		"and the hooks never run"
-	noteTreeDepth = "only the AX walk takes a depth limit; the AT-SPI walk uses a fixed one " +
-		"and the UIA walk records the option without reading it"
-	noteClickableCheck = "the clickable check is AX-specific; the AT-SPI and UIA walks " +
-		"decide what is clickable their own way and never consult it"
-	noteVisibleCheck = "the visibility hit-test is an AX and UIA question; the AT-SPI walk " +
-		"never consults it"
 	noteGridPrewarm = "only the darwin grid overlay prewarms its layers; the other backends " +
 		"draw on demand"
 )
@@ -38,7 +30,7 @@ const (
 // captureScopeOptions are the paths for capture_scope, which shadows the hints
 // section per app the way strategy does, and the grid, recursive_grid and
 // bisect sections, whose region starts as the scope names. They are declared
-// everywhere: the option shapes the capture strategies and where a region
+// everywhere. The option shapes the capture strategies and where a region
 // mode starts, every platform has a capture backend now, and a platform with
 // no focused-window source warns and starts from the screen.
 var captureScopeOptions = []string{
@@ -56,7 +48,7 @@ var captureScopeOptions = []string{
 
 // darwinOnly, darwinAndLinux and darwinAndWindows are the narrow columns this
 // schema uses today, named so a reader compares two options by the same words.
-// A linux-only column existed for contour until macOS fed it a frame; add one
+// A linux-only column existed for contour until macOS fed it a frame. Add one
 // back the moment an option needs it rather than reaching for the nearest fit.
 var (
 	darwinOnly       = parity.Platforms{parity.Darwin}
@@ -69,7 +61,7 @@ var (
 //
 // It is exhaustive on purpose. Being supported everywhere is written down
 // rather than inherited from a section or assumed by omission, for the reason
-// newDefaultConfig() assigns a field even when the value is Go's zero: a column
+// newDefaultConfig() assigns a field even when the value is Go's zero. A column
 // nobody wrote cannot be told from a forgotten one, and the forgotten one is
 // exactly how smooth_scroll reached the schema, the validators and the
 // documentation with no Linux code path
@@ -80,18 +72,19 @@ var (
 // rather than shipping as a silent no-op.
 //
 // A config.Color is declared at the field rather than at its light and dark
-// leaves, because that is the option a person writes: a Color takes one value
-// as readily as a table of two.
+// leaves, because that is the option a person writes, and a Color takes one
+// value as readily as a table of two.
 //
-// The narrow columns below are the ones the tree can point at today — an
+// The narrow columns below are the ones the tree can point at today. Each is an
 // entry in the Platform Exclusives table of docs/reference/platform-support.md, or a Known
 // Gaps entry naming the whole option rather than part of its behavior. A
 // capability that is partly there is not a column this type can state, and
 // stays a Known Gaps entry.
 func PlatformSupport() parity.Declaration {
 	return parity.Join(
-		parity.On(parity.KindOption, darwinOnly, noteScreenShareHide,
-			"general.hide_overlay_in_screen_share",
+		parity.On(parity.KindOption, darwinAndWindows, noteScreenShareHide,
+			ScreenShareHideOption,
+			"hooks.on_screen_share_hide",
 		),
 
 		parity.On(parity.KindOption, darwinOnly, noteContourText,
@@ -111,28 +104,8 @@ func PlatformSupport() parity.Declaration {
 			"hints.detect_mission_control",
 			"hints.on_mission_control_activated",
 			"hints.on_mission_control_deactivated",
-		),
-
-		parity.On(parity.KindOption, darwinOnly, noteTreeDepth,
-			"hints.max_depth",
-		),
-		parity.On(parity.KindOption, darwinOnly, noteClickableCheck,
-			"hints.ignore_clickable_check",
-			"hints.app_configs.ignore_clickable_check",
-			"grid.app_configs.ignore_clickable_check",
-			"recursive_grid.app_configs.ignore_clickable_check",
-			"bisect.app_configs.ignore_clickable_check",
-			"scroll.app_configs.ignore_clickable_check",
-			"app_configs.ignore_clickable_check",
-		),
-		parity.On(parity.KindOption, darwinAndWindows, noteVisibleCheck,
-			"hints.visible_check_enabled",
-			"hints.app_configs.visible_check_enabled",
-			"grid.app_configs.visible_check_enabled",
-			"recursive_grid.app_configs.visible_check_enabled",
-			"bisect.app_configs.visible_check_enabled",
-			"scroll.app_configs.visible_check_enabled",
-			"app_configs.visible_check_enabled",
+			"hooks.on_mission_control_activated",
+			"hooks.on_mission_control_deactivated",
 		),
 
 		parity.On(parity.KindOption, darwinOnly, noteGridPrewarm,
@@ -144,14 +117,6 @@ func PlatformSupport() parity.Declaration {
 			"hints.vision.button_min_confidence",
 			"hints.vision.generic_clickable_min_confidence",
 		),
-		parity.On(parity.KindOption, darwinOnly, noteVisionRectangles,
-			"hints.vision.detect_rectangles",
-			"hints.vision.rectangle_max_candidates",
-			"hints.vision.rectangle_min_size",
-			"hints.vision.rectangle_min_aspect",
-			"hints.vision.rectangle_max_aspect",
-		),
-
 		parity.Everywhere(parity.KindOption,
 			"recursive_grid.animation.enabled",
 			"recursive_grid.animation.duration_ms",
@@ -202,6 +167,11 @@ func PlatformSupport() parity.Declaration {
 		// strategy value itself carries no declaration, like contour.
 		parity.Everywhere(parity.KindOption,
 			"hints.vision.detect_text",
+			"hints.vision.detect_rectangles",
+			"hints.vision.rectangle_max_candidates",
+			"hints.vision.rectangle_min_size",
+			"hints.vision.rectangle_min_aspect",
+			"hints.vision.rectangle_max_aspect",
 			"hints.vision.request_timeout_ms",
 			"hints.vision.merge_iou_threshold",
 			"hints.vision.button_min_aspect",
@@ -213,8 +183,10 @@ func PlatformSupport() parity.Declaration {
 			"hints.vision.image_min_size",
 			"hints.vision.checkbox_max_size",
 		),
-		// The contour detector is pure Go and every capture backend feeds it.
+		// The contour and segment detectors are pure Go and every capture
+		// backend feeds them.
 		parity.Everywhere(parity.KindOption,
+			"hints.segment.targets",
 			"hints.contour.request_timeout_ms",
 			"hints.contour.edge_low_threshold",
 			"hints.contour.edge_high_threshold",
@@ -230,15 +202,27 @@ func PlatformSupport() parity.Declaration {
 		),
 		// Unbound modifier chords reach the focused application on macOS, on
 		// the Wayland evdev tap and on Windows. X11 cannot pass them through
-		// at all, which is a display-server limit rather than a column: the
+		// at all, which is a display-server limit rather than a column, because the
 		// blessed Linux stack is Wayland (Known Gaps, docs/reference/platform-support.md).
 		// X11InertWords is where that limit is said.
 		parity.Everywhere(parity.KindOption, passthroughOptions...),
 		parity.Everywhere(parity.KindOption,
 			"general.excluded_apps",
-			"general.kb_layout_to_use",
 			"general.exec_shell",
 			"general.exec_shell_args",
+			// A PerPlatform option's entries are each read only on the
+			// platform they name. A file shared across machines carries all
+			// three on purpose, so none of them warns on a platform that does
+			// not read it.
+			"general.kb_layout_to_use.darwin",
+			"general.kb_layout_to_use.linux",
+			"general.kb_layout_to_use.windows",
+			"general.shell.darwin",
+			"general.shell.linux",
+			"general.shell.windows",
+			"general.primary_modifier.darwin",
+			"general.primary_modifier.linux",
+			"general.primary_modifier.windows",
 
 			"theme.light.surface",
 			"theme.light.accent",
@@ -253,6 +237,21 @@ func PlatformSupport() parity.Declaration {
 
 			"macros",
 			"modes",
+			"hooks.on_mode_enter",
+			"hooks.on_mode_exit",
+			"hooks.on_select",
+			"hooks.on_app_focus",
+			"hooks.on_enable",
+			"hooks.on_disable",
+			"hooks.on_config_reload",
+			"hooks.on_scroll_invert",
+			"hooks.on_cursor_save",
+			"hooks.on_cursor_restore",
+			"hooks.on_sticky_modifiers",
+			"hooks.on_monitor_move",
+			"hooks.on_screen_change",
+			"hooks.on_ready",
+			"hooks.on_quit",
 
 			"hints.enabled",
 			"hints.strategy",
@@ -279,6 +278,21 @@ func PlatformSupport() parity.Declaration {
 			"hints.boundary_highlight.border_width",
 			"hints.boundary_highlight.border_radius",
 			"hints.clickable_roles",
+			"hints.max_depth",
+			"hints.visible_check_enabled",
+			"hints.app_configs.visible_check_enabled",
+			"grid.app_configs.visible_check_enabled",
+			"recursive_grid.app_configs.visible_check_enabled",
+			"bisect.app_configs.visible_check_enabled",
+			"scroll.app_configs.visible_check_enabled",
+			"app_configs.visible_check_enabled",
+			"hints.ignore_clickable_check",
+			"hints.app_configs.ignore_clickable_check",
+			"grid.app_configs.ignore_clickable_check",
+			"recursive_grid.app_configs.ignore_clickable_check",
+			"bisect.app_configs.ignore_clickable_check",
+			"scroll.app_configs.ignore_clickable_check",
+			"app_configs.ignore_clickable_check",
 			"hints.app_configs",
 			"hints.app_configs.bundle_id",
 			"hints.app_configs.strategy",
@@ -529,13 +543,13 @@ func PlatformSupport() parity.Declaration {
 //
 // It is what the platform-support warning is judged against, and it is the
 // user's files rather than the loaded configuration on purpose. Only what
-// somebody wrote can be reported to them: the shipped scroll bindings name
+// somebody wrote can be reported to them. The shipped scroll bindings name
 // scroll_left, which injects nothing on Windows, and telling every Windows user
 // about a line they never typed is noise about somebody else's bug
 // (docs/reference/platform-support.md, Known Gaps).
 type Written struct {
 	// Options maps a TOML path to the value written at it. A non-scalar value
-	// is present with an empty string: the path is what says the option was
+	// is present with an empty string. The path is what says the option was
 	// written, and only a declaration about a specific value needs more.
 	Options map[string]string
 	// Steps are the action strings the files write, in no particular order.
@@ -564,8 +578,8 @@ const noteX11Passthrough = "the X11 backend cannot pass an unbound chord " +
 //
 // The platform column is per OS and cannot say "Linux, except X11", and
 // teaching the declaration a backend axis is far too much machinery for one
-// row. So the one limit finer than a column is declared beside the column: the
-// same Word shape, the same Note, and the loader appends the findings to the
+// row. So the one limit finer than a column is declared beside the column, with
+// the same Word shape and the same Note. The loader appends the findings to the
 // ones InertWords made, which is what gets them the same warning voice and the
 // same doctor row (#1613).
 //
@@ -573,7 +587,7 @@ const noteX11Passthrough = "the X11 backend cannot pass an unbound chord " +
 // written bool arrives as a bare path with no value (Written.Options), and a
 // `passthrough_unbounded_keys = false` a user left in the file is not a promise
 // this backend is failing to keep. The dependents are reported only when they
-// were written: they are inert everywhere without passthrough, which is a
+// were written, since they are inert everywhere without passthrough, which is a
 // cross-field question and not this one.
 func X11InertWords(cfg *Config, written Written) parity.Declaration {
 	if !cfg.General.PassthroughUnboundedKeys {
@@ -614,9 +628,9 @@ func InertWords(written Written, target parity.Platform) parity.Declaration {
 // inertOptions reports the options a user wrote that do nothing on the given
 // platform.
 //
-// A path below a declared option resolves to that option — a Color written as a
-// table reaches its light and dark leaves — so the warning names the option
-// rather than the leaf.
+// A path below a declared option resolves to that option, as when a Color
+// written as a table reaches its light and dark leaves, so the warning names
+// the option rather than the leaf.
 func inertOptions(written map[string]string, target parity.Platform) parity.Declaration {
 	declaration := PlatformSupport()
 
@@ -641,8 +655,8 @@ func inertOptions(written map[string]string, target parity.Platform) parity.Decl
 }
 
 // writtenValue finds what the user wrote at an option's path, counting a path
-// written below it — the light and dark leaves of a Color — as writing the
-// option itself. The value it returns is the one written at the option's own
+// written below it, such as the light and dark leaves of a Color, as writing
+// the option itself. The value it returns is the one written at the option's own
 // path, empty when only a leaf below it was.
 func writtenValue(written map[string]string, path string) (string, bool) {
 	if value, wrote := written[path]; wrote {
@@ -661,7 +675,7 @@ func writtenValue(written map[string]string, path string) (string, bool) {
 // inertSteps reports the actions and mode flags a set of steps names that do
 // nothing on the given platform.
 //
-// A word is reported once however many steps carry it: the answer is about the
+// A word is reported once however many steps carry it. The answer is about the
 // word, and a person who bound hide_cursor to four keys has one thing to learn,
 // not four.
 func inertSteps(steps []string, target parity.Platform) parity.Declaration {
@@ -700,8 +714,8 @@ func inertSteps(steps []string, target parity.Platform) parity.Declaration {
 // so there is one answer to what a flag written with a value looks like rather
 // than a second parser here that could disagree with it.
 //
-// Only the step's own flags, and not the steps nested inside an --on-exit:
-// reading those means reading a step out of the argument list it was quoted
+// Only the step's own flags, and not the steps nested inside an --on-exit.
+// Reading those means reading a step out of the argument list it was quoted
 // into, which is the runtime's job at the moment it dispatches them, and is the
 // same line ValidateModeCommands draws.
 func wordsWritten(actionStr string) []parity.Word {

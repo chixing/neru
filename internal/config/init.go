@@ -30,8 +30,10 @@ const linuxHotkeysBlockComment = `# Global hotkeys are disabled by default on Li
 # "Primary+Shift+S" = "scroll"`
 
 // WriteDefaultConfig writes the default configuration to the specified path.
-// If force is false and the file already exists, it returns an error.
-func WriteDefaultConfig(cfgPath string, force bool) error {
+// If force is false and the file already exists, it returns an error. A
+// non-empty schemaURL becomes a #:schema first line, which is how Taplo and
+// Even Better TOML find the schema that completes and checks the file.
+func WriteDefaultConfig(cfgPath string, force bool, schemaURL string) error {
 	_, statErr := os.Stat(cfgPath)
 	if statErr == nil && !force {
 		return derrors.Newf(
@@ -54,7 +56,12 @@ func WriteDefaultConfig(cfgPath string, force bool) error {
 		)
 	}
 
-	writeErr := os.WriteFile(cfgPath, platformDefaultConfig(), DefaultFilePerms)
+	content := platformDefaultConfig()
+	if schemaURL != "" {
+		content = append([]byte("#:schema "+schemaURL+"\n"), content...)
+	}
+
+	writeErr := os.WriteFile(cfgPath, content, DefaultFilePerms)
 	if writeErr != nil {
 		return derrors.Wrap(writeErr, derrors.CodeConfigIOFailed, "failed to write config file")
 	}
@@ -63,22 +70,9 @@ func WriteDefaultConfig(cfgPath string, force bool) error {
 }
 
 // platformDefaultConfig returns the embedded default config with platform-specific
-// adjustments applied (e.g. exec_shell path on Windows).
+// adjustments applied (the Linux hotkeys are left commented out).
 func platformDefaultConfig() []byte {
-	cfg := configs.DefaultConfig
-
-	content := string(cfg)
-
-	if runtime.GOOS == "windows" {
-		content = strings.ReplaceAll(content,
-			`exec_shell = "/bin/bash"`,
-			`exec_shell = "C:\\Windows\\System32\\cmd.exe"`,
-		)
-		content = strings.ReplaceAll(content,
-			`exec_shell_args = ["-lc"]`,
-			`exec_shell_args = ["/c"]`,
-		)
-	}
+	content := string(configs.DefaultConfig)
 
 	if runtime.GOOS == "linux" {
 		content = strings.ReplaceAll(content,
@@ -87,9 +81,7 @@ func platformDefaultConfig() []byte {
 		)
 	}
 
-	cfg = []byte(content)
-
-	return cfg
+	return []byte(content)
 }
 
 // DefaultConfigPath returns the default configuration file path.

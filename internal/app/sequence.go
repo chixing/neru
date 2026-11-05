@@ -10,10 +10,10 @@ import (
 // newSequenceExecutor builds the executor from the App's own components.
 //
 // Every dependency is handed over as a function or a one-method interface, so
-// the executor never sees the App. That is what lets sequencing be tested — and
-// eventually moved — without a daemon.
+// the executor never sees the App. That is what lets sequencing be tested, and
+// eventually moved, without a daemon.
 func (a *App) newSequenceExecutor() *sequence.Executor {
-	// Handing over a typed nil would defeat the executor's own nil check: the
+	// Handing over a typed nil would defeat the executor's own nil check. The
 	// interface would be non-nil and the first step would dereference it.
 	var commands sequence.CommandHandler
 	if a.ipcController != nil {
@@ -49,17 +49,9 @@ func (a *App) sequences() *sequence.Executor {
 	return a.newSequenceExecutor()
 }
 
-// executeActionSequence runs steps in order and reports what happened.
-func (a *App) executeActionSequence(
-	ctx context.Context,
-	source string,
-	steps []string,
-) sequence.Outcome {
-	return a.sequences().Run(ctx, source, steps)
-}
-
-// executeActionSequenceWithPolicy is executeActionSequence with an explicit
-// failure policy, for callers that set one for the whole sequence.
+// executeActionSequenceWithPolicy runs steps in order and reports what
+// happened. It takes an explicit failure policy, for callers that set one for
+// the whole sequence.
 func (a *App) executeActionSequenceWithPolicy(
 	ctx context.Context,
 	source string,
@@ -75,8 +67,14 @@ func (a *App) executeMacro(ctx context.Context, name string, args []string) erro
 }
 
 // runActionSequence executes a sequence and discards the outcome. It is the
-// entry point for callers that have nobody to report to — hotkeys, held-key
-// repeat, and a mode's --on-exit.
+// entry point for callers that have nobody to report to, hotkeys and held-key
+// repeat.
 func (a *App) runActionSequence(source string, steps []string) {
 	a.sequences().RunAndForget(source, steps)
+}
+
+// runActionSequenceWithEnv is runActionSequence with env added to every exec
+// step's environment, which is how a mode's --on-exit sees its selection.
+func (a *App) runActionSequenceWithEnv(source string, steps []string, env []string) {
+	a.sequences().RunAndForgetWithEnv(source, steps, env)
 }

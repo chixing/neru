@@ -41,8 +41,11 @@ Each step is one of:
   or `toggle-screen-share`
 - `run <step>...`, a nested sequence
 - `exec <command>`, which runs a shell command through
-  [`general.exec_shell`](../reference/configuration.md#general), such as
-  `"Primary+T" = "exec open -a Terminal"`
+  [`general.shell`](../reference/configuration.md#general), such as
+  `"Primary+T" = "exec open -a Terminal"`. The next step waits up to 30
+  seconds for the shell to exit. Neru discards what the command prints. On
+  macOS and Linux, end the command with `&` to leave it running in the
+  background.
 
 Apart from `exec`, each step is the command you would type after `neru` in a
 shell, with the same flags, so you can try a binding from a terminal first.
@@ -50,7 +53,8 @@ shell, with the same flags, so you can try a binding from a terminal first.
 ## Sequences
 
 An array of steps is a sequence. A hotkey binding, a
-[macro](../reference/configuration.md#macros), a mode's `--on-exit` steps and
+[macro](../reference/configuration.md#macros), a mode's `--on-exit` steps, a
+[hook](../reference/configuration.md#hooks) and
 [`neru run`](../reference/cli.md#neru-run) all run sequences the same way.
 
 - Neru logs a failed step and runs the next one.
@@ -99,7 +103,7 @@ An `app_configs` entry changes bindings while one app has focus.
 
 The entry merges over the base table under the same rules as a config table
 merges over the defaults. `bundle_id` means a different thing on each
-platform, see
+platform. See
 [App identity](../reference/configuration.md#app-identity-across-platforms-bundle_id).
 
 ## Mistakes are caught at load
@@ -109,7 +113,7 @@ Neru checks every binding and macro when the config loads, so a typo fails
 
 | In a binding                                                                            | Result                                             |
 | --------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| A flag no mode has (`hints --serach`), or a value no flag takes (`--strategy=nonsense`) | The config fails to load and Neru runs on defaults |
+| A flag no mode has (`hints --serach`), or a value no flag takes (`--strategy=nonsense`) | Refused. `neru launch` shows the error and exits, and `neru config reload` keeps the previous config |
 | A flag the named mode does not accept (`grid --search`)                                 | Loads, and `neru config validate` warns            |
 | A flag whose partner is missing (`hints --repeat` with no `--action`)                   | Loads, and `neru config validate` warns            |
 

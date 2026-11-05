@@ -5,6 +5,7 @@ package windows
 import (
 	"context"
 	"image"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,9 +14,9 @@ import (
 )
 
 // These are the only tests that run Windows.Media.Ocr. Everything else about
-// the backend — how a word's box lands on the screen, which failures a caller
-// should stop retrying — is decided in Go and tested without an engine;
-// whether the bridge actually reads text cannot be.
+// the backend, such as how a word's box lands on the screen and which failures
+// a caller should stop retrying, is decided in Go and tested without an engine.
+// Whether the bridge actually reads text cannot be.
 //
 // The end-to-end test paints a word on the overlay, captures it back off the
 // desktop and asks the engine what it says, which is the whole vision
@@ -43,7 +44,7 @@ func requireEngine(t *testing.T) {
 }
 
 // TestRecognizeText_ReadsAWordOffTheScreen is the acceptance check for the
-// vision strategy on Windows: a known word rendered into a window is captured
+// vision strategy on Windows. A known word rendered into a window is captured
 // and found, at the rectangle it was drawn in.
 func TestRecognizeText_ReadsAWordOffTheScreen(t *testing.T) {
 	requireEngine(t)
@@ -68,21 +69,7 @@ func TestRecognizeText_ReadsAWordOffTheScreen(t *testing.T) {
 		t.Fatalf("Flush: %v", flushErr)
 	}
 
-	time.Sleep(100 * time.Millisecond)
-
-	img, err := CaptureScreenRegion(context.Background(), card)
-	if err != nil {
-		t.Fatalf("CaptureScreenRegion(%v): %v", card, err)
-	}
-
-	words, stats, err := RecognizeText(
-		context.Background(),
-		img,
-		OCRParams{WordLevel: true, TimeoutMS: 5000},
-	)
-	if err != nil {
-		t.Fatalf("RecognizeText: %v", err)
-	}
+	img, words, stats := readCard(t, card, word)
 
 	t.Logf("recognized %d runs in %s", len(words), stats.Recognition)
 
@@ -114,12 +101,54 @@ func TestRecognizeText_ReadsAWordOffTheScreen(t *testing.T) {
 	}
 
 	// The frame is a region of a live desktop, so what the engine read there
-	// is screen content: only the boxes are logged, never the text.
+	// is screen content. Only the boxes are logged, never the text.
 	for _, got := range words {
 		t.Logf("recognized a run of %d characters at %v", len(got.Text), got.Bounds)
 	}
 
 	t.Errorf("recognized %d runs, none of them %q", len(words), word)
+}
+
+// readCard captures card and reads it until the engine finds word, or a few
+// seconds pass. The overlay reaches the screen some time after Flush returns,
+// and a CI desktop can take longer than a fixed wait allows, so the capture is
+// retried rather than timed. It returns the last frame and what the engine read
+// in it.
+func readCard(
+	t *testing.T,
+	card image.Rectangle,
+	word string,
+) (*image.RGBA, []OCRWord, OCRStats) {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+
+	for {
+		time.Sleep(100 * time.Millisecond)
+
+		// Read through the raw copy, because the card is one of Neru's own
+		// windows, which CaptureScreenRegion leaves out.
+		img, err := bitBltRegion(card)
+		if err != nil {
+			t.Fatalf("bitBltRegion(%v): %v", card, err)
+		}
+
+		words, stats, err := RecognizeText(
+			context.Background(),
+			img,
+			OCRParams{WordLevel: true, TimeoutMS: 5000},
+		)
+		if err != nil {
+			t.Fatalf("RecognizeText: %v", err)
+		}
+
+		found := slices.ContainsFunc(words, func(got OCRWord) bool {
+			return strings.EqualFold(got.Text, word)
+		})
+		if found || time.Now().After(deadline) {
+			return img, words, stats
+		}
+	}
 }
 
 // TestRecognizeText_BlankFrameIsNotAnError pins the difference between "there
@@ -144,8 +173,8 @@ func TestRecognizeText_BlankFrameIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestRecognizeText_AcceptsAFrameWiderThanTheEngineLimit pins the resample:
-// a frame past MaxImageDimension, which any 4K monitor is, is read rather
+// TestRecognizeText_AcceptsAFrameWiderThanTheEngineLimit pins the resample.
+// A frame past MaxImageDimension, which any 4K monitor is, is read rather
 // than refused, and comes back in its own coordinate space.
 func TestRecognizeText_AcceptsAFrameWiderThanTheEngineLimit(t *testing.T) {
 	requireEngine(t)

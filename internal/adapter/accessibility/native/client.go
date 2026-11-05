@@ -85,12 +85,14 @@ func (c *Client) FocusedApplication(_ context.Context) (ax.App, error) {
 }
 
 // ClickableNodes returns clickable nodes for the given root element.
-// If maxDepth is > 0, it overrides the configured tree depth.
+// If maxDepth is > 0, it overrides the configured tree depth. readState asks
+// for each node's identifier and focused state.
 func (c *Client) ClickableNodes(
 	ctx context.Context,
 	root ax.Element,
 	roles []string,
 	maxDepth int,
+	readState bool,
 ) ([]ax.Node, error) {
 	element, extractErr := c.extractElement(root)
 	if extractErr != nil {
@@ -98,6 +100,7 @@ func (c *Client) ClickableNodes(
 	}
 
 	opts, allowedRoles, ignoreClickableCheck := c.buildClickableOpts(element, roles, maxDepth)
+	opts.SetReadState(readState)
 
 	tree, treeErr := BuildTree(ctx, element, opts)
 	if treeErr != nil {
@@ -173,6 +176,37 @@ func (c *Client) MenuBarClickableElements(
 	return nodesResult, nil
 }
 
+// MissionControlClickableNodes returns the clickable elements Mission Control
+// draws while it is up. Only macOS has one.
+func (c *Client) MissionControlClickableNodes(
+	ctx context.Context,
+	maxDepth int,
+) ([]ax.Node, error) {
+	nodes, nodesErr := MissionControlClickableElements(ctx, c.logger, c.configProvider, maxDepth)
+	if nodesErr != nil {
+		if derrors.IsNotSupported(nodesErr) {
+			return nil, nodesErr
+		}
+
+		return nil, derrors.Wrap(
+			nodesErr,
+			derrors.CodeAccessibilityFailed,
+			"failed to get Mission Control elements",
+		)
+	}
+
+	nodesResult := make([]ax.Node, len(nodes))
+	for index, node := range nodes {
+		nodesResult[index] = &InfraNode{
+			node:           node,
+			clickable:      true,
+			configProvider: c.configProvider,
+		}
+	}
+
+	return nodesResult, nil
+}
+
 // ClickableElementsFromBundleID returns clickable elements for the application with the given bundle ID.
 // If maxDepth is > 0, it overrides the configured tree depth for flat supplementary sources.
 func (c *Client) ClickableElementsFromBundleID(
@@ -225,6 +259,19 @@ func (c *Client) PerformAction(
 
 	switch actionType {
 	case action.TypeLeftClick:
+		// A left click while the left button is held ends that drag at the
+		// click point, as left_click --state up would. A full click there would
+		// press over the held button and leave it recorded as held.
+		if IsMouseButtonDown(action.ButtonLeft) {
+			performActionErr = MouseUpAtPoint(point, action.ButtonLeft, modifiers)
+
+			ensureMouseUp()
+
+			break
+		}
+
+		ensureMouseUp()
+
 		performActionErr = LeftClickAtPoint(point, restoreCursor, modifiers)
 	case action.TypeRightClick:
 		ensureMouseUp()
@@ -244,7 +291,6 @@ func (c *Client) PerformAction(
 
 		return nil
 	case action.TypeScroll:
-		// Scroll actions are handled separately via the Scroll method
 		return derrors.Newf(
 			derrors.CodeInvalidInput,
 			"scroll actions should use Scroll method: %s",
@@ -263,7 +309,7 @@ func (c *Client) PerformAction(
 
 // performMouseButtonAction presses or releases the button addressed by
 // actionType. Toggle actions resolve against the button state recorded by the
-// platform adapter: held buttons are released, free buttons are pressed.
+// platform adapter. Held buttons are released and free buttons are pressed.
 func performMouseButtonAction(
 	actionType action.Type,
 	point image.Point,
@@ -301,7 +347,7 @@ func (c *Client) Scroll(deltaX, deltaY int, modifiers action.Modifiers) error {
 	scrollErr := ScrollAtCursor(deltaX, deltaY, modifiers)
 	if scrollErr != nil {
 		// A backend refusing a modifier it cannot present says so with
-		// CodeNotSupported, and derrors matches only the outermost code — so
+		// CodeNotSupported, and derrors matches only the outermost code, so
 		// wrapping here would turn "this platform cannot do that" into a
 		// generic failure before any caller could tell them apart.
 		if derrors.IsNotSupported(scrollErr) {
@@ -351,7 +397,7 @@ func (c *Client) SupportsSupplementaryElements() bool {
 	return supportsSupplementaryElements()
 }
 
-// Close is a no-op for the default infrastructure client; the macOS AX API
+// Close is a no-op for the default infrastructure client. The macOS AX API
 // does not hold process-external resources that need explicit teardown.
 func (c *Client) Close() error { return nil }
 
@@ -403,7 +449,7 @@ func (c *Client) buildClickableOpts(
 	}
 
 	// Backends that enumerate rather than walk a cached tree use the role set
-	// to prune before reading per-element properties; on the others this is a
+	// to prune before reading per-element properties. On the others this is a
 	// no-op and filtering happens in FindClickableElements.
 	opts.SetRoles(allowedRoles)
 
@@ -415,7 +461,7 @@ func (c *Client) buildClickableOpts(
 	return opts, allowedRoles, ignoreClickableCheck
 }
 
-// InfraWindow wraps an Window.
+// InfraWindow wraps a Window.
 type InfraWindow struct {
 	element *Element
 }
@@ -477,7 +523,7 @@ func (a *InfraApp) Info() (*ax.AppInfo, error) {
 	}, nil
 }
 
-// InfraNode wraps an TreeNode.
+// InfraNode wraps a TreeNode.
 type InfraNode struct {
 	node           *TreeNode
 	clickable      bool
@@ -554,6 +600,24 @@ func (n *InfraNode) SearchText() string {
 	}
 
 	return n.node.Info().SearchText()
+}
+
+// IsFocused returns whether the node has keyboard focus.
+func (n *InfraNode) IsFocused() bool {
+	if n.node == nil || n.node.Info() == nil {
+		return false
+	}
+
+	return n.node.Info().IsFocused()
+}
+
+// Identifier returns the identifier the app's developer gave the node.
+func (n *InfraNode) Identifier() string {
+	if n.node == nil || n.node.Info() == nil {
+		return ""
+	}
+
+	return n.node.Info().Identifier()
 }
 
 // IsClickable returns true if the node is clickable.

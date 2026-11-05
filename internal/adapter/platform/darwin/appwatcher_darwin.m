@@ -9,6 +9,7 @@
 #import "appwatcher.h"
 
 #import <Cocoa/Cocoa.h>
+#include <stdatomic.h>
 
 #pragma mark - External Function Declarations
 
@@ -17,6 +18,19 @@ extern void handleAppTerminate(const char *appName, const char *bundleID);
 extern void handleAppActivate(const char *appName, const char *bundleID);
 extern void handleAppDeactivate(const char *appName, const char *bundleID);
 extern void handleScreenParametersChanged(void);
+
+/// Neru activates itself to give hint search's text field the keyboard. That is
+/// not the user switching applications, so the watcher does not forward Neru's
+/// own activations.
+static BOOL isNeruProcess(NSRunningApplication *app) { return app.processIdentifier == getpid(); }
+
+/// lastForwardedActivation is the process whose activation the watcher forwarded
+/// last. When hint search closes, the application the user was in activates
+/// again. The watcher dropped Neru's own activation in between, so this is the
+/// same application, and forwarding it would announce a focus change that did
+/// not happen. It is atomic because a notification can arrive off the main
+/// thread.
+static _Atomic(pid_t) lastForwardedActivation = 0;
 
 #pragma mark - App Watcher Delegate Implementation
 
@@ -92,6 +106,12 @@ extern void handleScreenParametersChanged(void);
 		if (!app)
 			return;
 
+		if (isNeruProcess(app) ||
+		    atomic_exchange(&lastForwardedActivation, app.processIdentifier) == app.processIdentifier) {
+			NeruUpdateMissionControlState();
+			return;
+		}
+
 		// Copy strings to prevent dangling pointers across the thread boundary
 		NSString *appName = app.localizedName ?: @"Unknown";
 		NSString *bundleID = app.bundleIdentifier ?: @"unknown.bundle";
@@ -162,7 +182,7 @@ extern void handleScreenParametersChanged(void);
 				self.debounceTimer = nil;
 			}
 
-			// Schedule a new debounce timer — fires 500ms after the last event
+			// Schedule a new debounce timer that fires 500ms after the last event
 			dispatch_source_t timer = dispatch_source_create(
 			    DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
 			if (timer) {
@@ -244,7 +264,7 @@ void NeruStartAppWatcher(void) {
 
 		// Synchronize the cached Mission Control state at startup.
 		// If detection is disabled (the default), this is a cheap no-op that
-		// resets the cache to false.  When detection is later enabled via
+		// resets the cache to false. When detection is later enabled via
 		// NeruSetDetectMissionControlEnabled, the queue, timer, and space-change
 		// observer are initialized lazily at that point.
 		NeruUpdateMissionControlState();
@@ -274,6 +294,6 @@ void NeruStopAppWatcher(void) {
 		[center removeObserver:delegate];
 		[[NSNotificationCenter defaultCenter] removeObserver:delegate];
 
-		delegate = nil;  // ARC will handle deallocation
+		delegate = nil;
 	});
 }

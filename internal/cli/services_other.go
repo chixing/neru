@@ -8,7 +8,7 @@ import (
 
 // unsupportedServices is the one sentence every subcommand says on a platform
 // with no service manager behind it. macOS drives a launchd agent, Linux a
-// systemd user unit and Windows a Task Scheduler task; nothing else does, so
+// systemd user unit and Windows a Task Scheduler task. Nothing else does, so
 // the refusal names all three rather than leaving a reader to guess which
 // platform they are missing out on.
 func unsupportedServices(action string) error {
@@ -39,6 +39,6 @@ func restartService() error {
 	return unsupportedServices("restart")
 }
 
-func statusService() string {
-	return "Service management is not supported on this platform"
+func statusService() serviceStatus {
+	return serviceStatus{Message: "Service management is not supported on this platform"}
 }

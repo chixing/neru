@@ -1,6 +1,9 @@
 package config_test
 
 import (
+	"maps"
+	"math"
+	"strings"
 	"testing"
 
 	"github.com/y3owk1n/neru/internal/config"
@@ -74,6 +77,95 @@ func TestConfigValidateHotkeys_BisectAppOverridePrefixConflict(t *testing.T) {
 	err := cfg.ValidateHotkeys()
 	if err == nil {
 		t.Fatal("ValidateHotkeys() expected merged bisect app override prefix conflict, got nil")
+	}
+}
+
+func TestConfigValidateHotkeys_PrefixConflictInEveryTable(t *testing.T) {
+	conflict := func() map[string]config.StringOrStringArray {
+		return map[string]config.StringOrStringArray{
+			"g":  {config.CmdIdle},
+			"gg": {config.CmdIdle},
+		}
+	}
+	appConfigs := func() []config.AppConfig {
+		return []config.AppConfig{{BundleID: TestBundleIDSafari, Hotkeys: conflict()}}
+	}
+	appOverride := func(key string) []config.AppConfig {
+		return []config.AppConfig{{
+			BundleID: TestBundleIDSafari,
+			Hotkeys:  map[string]config.StringOrStringArray{key: {config.CmdIdle}},
+		}}
+	}
+
+	tests := []struct {
+		name   string
+		field  string
+		mutate func(cfg *config.Config)
+	}{
+		{
+			name:   "grid app_configs",
+			field:  "grid.app_configs[0]",
+			mutate: func(cfg *config.Config) { cfg.Grid.AppConfigs = appConfigs() },
+		},
+		{
+			name:   "recursive_grid app_configs",
+			field:  "recursive_grid.app_configs[0]",
+			mutate: func(cfg *config.Config) { cfg.RecursiveGrid.AppConfigs = appConfigs() },
+		},
+		{
+			name:  "grid base sequence and app single key",
+			field: "grid.hotkeys merged with grid.app_configs[0]",
+			mutate: func(cfg *config.Config) {
+				cfg.Grid.Hotkeys["gg"] = config.StringOrStringArray{config.CmdIdle}
+				cfg.Grid.AppConfigs = appOverride("g")
+			},
+		},
+		{
+			name:  "grid base single key and app sequence",
+			field: "grid.hotkeys merged with grid.app_configs[0]",
+			mutate: func(cfg *config.Config) {
+				cfg.Grid.Hotkeys["g"] = config.StringOrStringArray{config.CmdIdle}
+				cfg.Grid.AppConfigs = appOverride("gg")
+			},
+		},
+		{
+			name:  "recursive_grid base sequence and app single key",
+			field: "recursive_grid.hotkeys merged with recursive_grid.app_configs[0]",
+			mutate: func(cfg *config.Config) {
+				cfg.RecursiveGrid.Hotkeys["gg"] = config.StringOrStringArray{config.CmdIdle}
+				cfg.RecursiveGrid.AppConfigs = appOverride("g")
+			},
+		},
+		{
+			name:  "recursive_grid base single key and app sequence",
+			field: "recursive_grid.hotkeys merged with recursive_grid.app_configs[0]",
+			mutate: func(cfg *config.Config) {
+				cfg.RecursiveGrid.Hotkeys["g"] = config.StringOrStringArray{config.CmdIdle}
+				cfg.RecursiveGrid.AppConfigs = appOverride("gg")
+			},
+		},
+		{
+			name:   "monitor_select hotkeys",
+			field:  "monitor_select.hotkeys",
+			mutate: func(cfg *config.Config) { maps.Copy(cfg.MonitorSelect.Hotkeys, conflict()) },
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			testCase.mutate(cfg)
+
+			err := cfg.ValidateHotkeys()
+			if err == nil || !strings.Contains(err.Error(), testCase.field) ||
+				!strings.Contains(err.Error(), "prefix conflict") {
+				t.Fatalf(
+					"ValidateHotkeys() = %v, want a prefix conflict in %s",
+					err,
+					testCase.field,
+				)
+			}
+		})
 	}
 }
 
@@ -219,29 +311,22 @@ func TestConfigValidateHints_DuplicateHintChars(t *testing.T) {
 	}
 }
 
-func TestConfigValidateHints_AsciiHintChars(t *testing.T) {
-	cfg := config.DefaultConfig()
-
-	cfg.Hints.HintCharacters = "ab"
-
-	err := cfg.ValidateHints(nil)
-	if err != nil {
-		t.Fatalf("ValidateHints() unexpected error: %v", err)
-	}
-
-	cfg.Hints.HintCharacters = "aé"
-
-	err = cfg.ValidateHints(nil)
-	if err == nil {
-		t.Fatal("ValidateHints() expected error for non-ASCII hint_characters")
-	}
-}
-
+// TestConfigValidateVirtualPointer pins the refusals. The default char is a
+// multi-byte rune, so validBase already proves the validator counts one rune
+// as one character, not by its bytes.
 func TestConfigValidateVirtualPointer(t *testing.T) {
-	cfg := config.DefaultConfig()
+	for _, char := range []string{"", "ab"} {
+		cfg := validBase(t)
+		cfg.VirtualPointer.UI.Char = char
 
-	err := cfg.ValidateVirtualPointer()
-	if err != nil {
-		t.Fatalf("ValidateVirtualPointer() unexpected error: %v", err)
+		assertRejected(t, cfg.ValidateVirtualPointer(), "virtual_pointer.ui.char", char)
 	}
+
+	runIntBounds(t, []intBound{{
+		name:     "virtual_pointer.ui.font_size",
+		set:      func(c *config.Config, v int) { c.VirtualPointer.UI.FontSize = v },
+		validate: (*config.Config).ValidateVirtualPointer,
+		minValid: 0,
+		maxValid: math.MaxInt32,
+	}})
 }

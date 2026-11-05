@@ -61,12 +61,8 @@ static void drain(NeruEiClient *c) {
 			struct ei_seat *s = ei_event_get_seat(e);
 			if (!c->seat) {
 				c->seat = ei_seat_ref(s);
-				// Stage 1: bind keyboard alone. KWin's EIS implementation
-				// silently drops the keyboard device when it is bound
-				// alongside pointer capabilities in a single call (KDE bug
-				// (https://bugs.kde.org/show_bug.cgi?id=520464, confirmed on Plasma 6). After this bind is flushed
-				// and the keyboard device exists, a second bind adds the
-				// pointer capabilities without affecting the keyboard.
+				// Stage 1 of the two-stage capability bind, keyboard alone.
+				// See the stage 2 bind in attach_eis for why.
 				ei_seat_bind_capabilities(s, EI_DEVICE_CAP_KEYBOARD, NULL);
 			}
 			break;
@@ -129,7 +125,7 @@ static void drain(NeruEiClient *c) {
 }
 
 // pump dispatches any pending socket data and drains the resulting events.
-// Non-blocking; safe to call before every emit.
+// Non-blocking, and safe to call before every emit.
 static void pump(NeruEiClient *c) {
 	int fd = ei_get_fd(c->ei);
 	struct pollfd pfd = {.fd = fd, .events = POLLIN};
@@ -236,7 +232,7 @@ NeruEiClient *neru_ei_connect(int timeout_ms) {
 
 	// Portal session via liboeffis -> EIS fd. This path cannot restore an
 	// earlier grant (liboeffis exposes no restore token), so it prompts on
-	// every start; neru_ei_connect_fd is the path that does not.
+	// every start. neru_ei_connect_fd is the path that does not.
 	c->oeffis = oeffis_new(NULL);
 	if (!c->oeffis) {
 		neru_ei_disconnect(c);
@@ -397,7 +393,7 @@ int neru_ei_has_keyboard(NeruEiClient *c) {
 	// in neru_ei_connect (which only waits for the pointer device). Pump any
 	// pending EIS events so the keyboard state is visible to the caller.
 	pump(c);
-	// Only check device existence, not resume state: a transient pause by the
+	// Only check device existence, not resume state. A transient pause by the
 	// compositor would otherwise make the Go layer report a permanent "not
 	// granted" error even though the device exists and will be resumed shortly.
 	return c->keyboard != NULL;

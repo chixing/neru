@@ -28,11 +28,6 @@ func NewIPCCommunicator(timeoutSec int) *IPCCommunicator {
 	}
 }
 
-// SetTimeout updates the timeout for IPC operations.
-func (c *IPCCommunicator) SetTimeout(timeoutSec int) {
-	c.timeoutSec = timeoutSec
-}
-
 // SendCommand sends a command to the running Neru daemon.
 func (c *IPCCommunicator) SendCommand(action string, args []string) (ipc.Response, error) {
 	ipcClient := ipc.NewClient()
@@ -98,7 +93,7 @@ func NewOutputFormatter() *OutputFormatter {
 // PrintJSON prints a command's payload as indented JSON, for callers that are
 // scripts rather than people.
 //
-// It prints the payload alone rather than the IPC envelope around it: a script
+// It prints the payload alone rather than the IPC envelope around it. A script
 // asking for the state wants the state, and a failed command reports through
 // the exit status and stderr as every other command does.
 func (f *OutputFormatter) PrintJSON(cmd *cobra.Command, data any) error {
@@ -120,34 +115,8 @@ func (f *OutputFormatter) PrintJSON(cmd *cobra.Command, data any) error {
 func (f *OutputFormatter) PrintStatus(cmd *cobra.Command, data any) error {
 	cmd.Println("Neru Status:")
 
-	// Try to parse as structured status data
-	if statusData, ok := data.(map[string]any); ok {
-		if enabled, ok := statusData["enabled"].(bool); ok {
-			status := "stopped"
-			if enabled {
-				status = "running"
-			}
-
-			cmd.Println("  Status: " + status)
-		}
-
-		if mode, ok := statusData["mode"].(string); ok {
-			cmd.Println("  Mode: " + mode)
-		}
-
-		if configPath, ok := statusData["config"].(string); ok {
-			cmd.Println("  Config: " + configPath)
-		}
-
-		if capabilities, ok := statusData["capabilities"].(map[string]any); ok &&
-			len(capabilities) > 0 {
-			cmd.Println("  Platform: " + stringValue(capabilities["platform"]))
-		}
-
-		printProfile(cmd, statusData["profile"])
-		printToggles(cmd, statusData)
-	} else {
-		// Fallback to JSON output
+	statusData, ok := data.(map[string]any)
+	if !ok {
 		jsonData, jsonDataErr := json.MarshalIndent(data, "  ", "  ")
 		if jsonDataErr != nil {
 			return derrors.Wrap(
@@ -158,27 +127,62 @@ func (f *OutputFormatter) PrintStatus(cmd *cobra.Command, data any) error {
 		}
 
 		cmd.Println(string(jsonData))
+
+		return nil
 	}
+
+	if enabled, ok := statusData["enabled"].(bool); ok {
+		status := "stopped"
+		if enabled {
+			status = "running"
+		}
+
+		cmd.Println("  Status: " + status)
+	}
+
+	if mode, ok := statusData["mode"].(string); ok {
+		cmd.Println("  Mode: " + mode)
+	}
+
+	if configPath, ok := statusData["config"].(string); ok {
+		cmd.Println("  Config: " + configPath)
+	}
+
+	if capabilities, ok := statusData["capabilities"].(map[string]any); ok &&
+		len(capabilities) > 0 {
+		cmd.Println("  Platform: " + stringValue(capabilities["platform"]))
+	}
+
+	printProfile(cmd, statusData["profile"])
+	printToggles(cmd, statusData)
 
 	return nil
 }
 
 // PrintHealth prints health check results.
-func (f *OutputFormatter) PrintHealth(cmd *cobra.Command, success bool, data any) error {
-	healthData, ok := data.(map[string]any)
+func (f *OutputFormatter) PrintHealth(cmd *cobra.Command, response ipc.Response) error {
+	success := response.Success
+
+	healthData, ok := response.Data.(map[string]any)
 	if !ok {
-		// Fallback for unexpected data shape
 		if success {
 			cmd.Println("✅ All systems operational")
 
 			return nil
 		}
 
-		cmd.Println("  ⚠️  Health check returned errors")
+		// A daemon that refused the request, such as one running another
+		// version, sends no data but says why.
+		line := "  ⚠️  Health check returned errors"
+		if response.Message != "" {
+			line += ": " + response.Message + " (code: " + response.Code + ")"
+		}
+
+		cmd.Println(line)
 
 		return ErrUnhealthy
 	}
-	// Print metadata header
+
 	cmd.Println("Daemon status:")
 
 	if version, ok := healthData["version"].(string); ok && version != "" {
@@ -206,7 +210,7 @@ func (f *OutputFormatter) PrintHealth(cmd *cobra.Command, success bool, data any
 	printFocusedApp(cmd, healthData["capabilities"])
 
 	cmd.Println()
-	// Print component checks
+
 	components, hasComponents := healthData["components"].(map[string]any)
 	if !hasComponents {
 		if success {
@@ -319,7 +323,7 @@ func printDarkMode(cmd *cobra.Command, rawCapabilities any) {
 
 // printOverlayBackend renders an "Overlay backend:" line from overlay_detail,
 // which the daemon fills from the overlay itself. The profile's Overlay line
-// above it is the static plan; this one is what is drawing right now, which
+// above it is the static plan, and this one is what is drawing right now, which
 // on Windows is the difference between Direct2D and the GDI fallback.
 func printOverlayBackend(cmd *cobra.Command, rawCapabilities any) {
 	capabilities, ok := rawCapabilities.(map[string]any)
@@ -337,8 +341,8 @@ func printOverlayBackend(cmd *cobra.Command, rawCapabilities any) {
 
 // printNotifications renders a "Notifications:" metadata line when the daemon
 // populated notifications_detail, which it does exactly when notifications are
-// unavailable — so the line appears only when there is something to do about
-// it. On Linux that reason is probed live and names the daemon to install; on
+// unavailable, so the line appears only when there is something to do about
+// it. On Linux that reason is probed live and names the daemon to install. On
 // the other platforms it names what is unbuilt.
 func printNotifications(cmd *cobra.Command, rawCapabilities any) {
 	capabilities, ok := rawCapabilities.(map[string]any)
@@ -361,7 +365,7 @@ func printNotifications(cmd *cobra.Command, rawCapabilities any) {
 // The status beside it is "stub" whether the subsystem is missing or the
 // desktop simply has nothing focused, because the capability is live-probed and
 // has to report what a caller observes right now. This line is what tells those
-// two apart — without it, clicking the wallpaper on X11 reads as a broken
+// two apart. Without it, clicking the wallpaper on X11 reads as a broken
 // display server.
 func printFocusedApp(cmd *cobra.Command, rawCapabilities any) {
 	capabilities, ok := rawCapabilities.(map[string]any)
@@ -387,7 +391,7 @@ const (
 
 // printToggles prints the runtime toggles that a toggle-* command can change.
 //
-// A toggle that carries no state is skipped rather than printed as off:
+// A toggle that carries no state is skipped rather than printed as off, because
 // cursor-follow-selection only exists while a mode is running, and reading it
 // as "off" would suggest a state the daemon is not in.
 func printToggles(cmd *cobra.Command, statusData map[string]any) {
@@ -479,22 +483,4 @@ func profileLabel(name string) string {
 	default:
 		return strings.ToUpper(name[:1]) + strings.ReplaceAll(name[1:], "_", " ")
 	}
-}
-
-// ErrorHandler provides consistent error handling for CLI commands.
-type ErrorHandler struct{}
-
-// NewErrorHandler creates a new error handler.
-func NewErrorHandler() *ErrorHandler {
-	return &ErrorHandler{}
-}
-
-// HandleIPCError wraps IPC errors with consistent formatting.
-func (e *ErrorHandler) HandleIPCError(err error, context string) error {
-	return derrors.Wrap(err, derrors.CodeIPCFailed, context)
-}
-
-// HandleSerializationError wraps serialization errors.
-func (e *ErrorHandler) HandleSerializationError(err error, context string) error {
-	return derrors.Wrap(err, derrors.CodeSerializationFailed, context)
 }

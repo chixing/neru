@@ -39,6 +39,10 @@ const (
 	// FlagHideOnEmptySearch hides every hint while the search query is empty.
 	FlagHideOnEmptySearch Flag = "hide-on-empty-search"
 
+	// FlagConfirmOnLabel confirms a search once a label typed after it leaves
+	// one match.
+	FlagConfirmOnLabel Flag = "confirm-on-label"
+
 	// FlagExitOnUnmatched exits the mode when a key matches no hint.
 	FlagExitOnUnmatched Flag = "exit-on-unmatched"
 
@@ -60,6 +64,9 @@ const (
 	// FlagSplitWord splits detected text into word-level regions.
 	FlagSplitWord Flag = "split-word"
 
+	// FlagTargets supplies the targets hints mode labels, in place of a scan.
+	FlagTargets Flag = "targets"
+
 	// FlagZoomToDepth auto-zooms recursive grid to a depth.
 	FlagZoomToDepth Flag = "zoom-to-depth"
 
@@ -70,10 +77,10 @@ const (
 
 // The one message each flag gives when its value is missing or unusable.
 //
-// Missing and unusable share a message on purpose: they are the same mistake
+// Missing and unusable share a message on purpose. They are the same mistake
 // seen from two sides, and the answer to both is the same sentence. Each is
-// written to be true wherever it is read — on a command line, in an IPC
-// response, and as advice about a binding — so none of them names a way of
+// written to be true wherever it is read, whether on a command line, in an IPC
+// response, or as advice about a binding, so none of them names a way of
 // invoking Neru that only one of those three has.
 const (
 	msgActionValue              = "--action requires a value"
@@ -81,9 +88,10 @@ const (
 	msgOnExitValue              = "--on-exit requires a value"
 	msgRoleValue                = "--role requires a value (use comma-separated: --role=button,link)"
 	msgTextValue                = "--text requires a value (use comma-separated: --text=foo,bar)"
-	msgStrategyValue            = "--strategy requires axtree, vision, or contour"
+	msgStrategyValue            = "--strategy requires axtree, vision, contour, or segment"
 	msgCaptureScopeValue        = "--capture-scope requires window or screen"
 	msgLabelDirectionValue      = "--label-direction requires normal or reverse"
+	msgTargetsValue             = `--targets requires JSON listing at least one target with a width and height, as {"hints":[{"x":10,"y":20,"width":80,"height":24}]}`
 	msgZoomToDepthValue         = "--zoom-to-depth requires a non-negative integer"
 	msgCursorSelectionModeValue = "--cursor-selection-mode requires follow or hold"
 
@@ -100,37 +108,42 @@ const (
 // What each flag is for, in one sentence.
 //
 // A flag is explained here rather than where it is registered, for the same
-// reason its rules are: a mode command is written in three places, and the
+// reason its rules are. A mode command is written in three places, and the
 // sentence that says what a flag does is true in all of them. It is worded to
 // read as advice about a flag rather than about a command line, so a reader
-// that is not one — the daemon's answer, a generated reference — can say it
-// too.
+// that is not one, such as the daemon's answer or a generated reference, can
+// say it too.
 const (
 	usageToggle              = "Open the mode, or leave it if it is already open"
 	usageRepeat              = "Reopen the mode after the action runs. Needs --action"
 	usageModifier            = "Modifiers to hold during the action, comma-separated: cmd, super, meta, shift, alt, option, ctrl. Needs --action"
-	usageOnExit              = "Step to run after the action, written as in a hotkey binding. Repeat for more steps. Needs --action, and does not run if the mode is canceled"
+	usageOnExit              = "Step to run after the action, written as in a hotkey binding. Repeat for more steps. Needs --action and refuses --repeat. Does not run if the mode is canceled. Exec steps see the selection as NERU_X, NERU_Y, NERU_MODE and NERU_ACTION"
 	usageCursorSelectionMode = "Whether the real cursor follows the selection (follow) or stays put (hold)"
 	usageSearch              = "Open with the hint search field showing"
 	usageHideOnEmptySearch   = "Hide every hint until the search has text. Needs --search"
+	usageConfirmOnLabel      = "Confirm the search as soon as a label typed after the search text leaves one match, without Return"
 	usageExitOnUnmatched     = "Exit when a key matches no hint"
 	usageRole                = "Only hint these roles, comma-separated, such as button,link (see 'neru roles'). Repeat to add more"
 	usageText                = "Only hint elements whose text contains one of these, comma-separated and case-insensitive. Repeat to add more"
-	usageStrategy            = "How hints find elements: axtree (accessibility tree), vision (OCR) or contour (shape detection). " + usageCycle + ", as in --strategy=axtree,vision"
-	usageCaptureScope        = "Region to work in: window (the focused window) or screen (the whole screen). " + usageCycle + ", as in --capture-scope=window,screen"
+	usageStrategy            = "How hints find elements: axtree (accessibility tree), vision (OCR), contour (shape detection) or segment (controls and labels from pixels). " + usageCycle + ", as in --strategy=axtree,vision. " + usageCycleToggle
+	usageCaptureScope        = "Region to work in: window (the focused window) or screen (the whole screen). " + usageCycle + ", as in --capture-scope=window,screen. " + usageCycleToggle
 	usageLabelDirection      = "Label order: normal (shorter labels first) or reverse (spread across the alphabet)"
 	usageSplitWord           = "Hint each word of detected text separately. Needs the vision strategy"
+	usageTargets             = "Label these targets instead of scanning, as JSON in the shape 'neru query hints --json' prints. Refuses the flags that decide what a scan collects, and --repeat"
 	usageZoomToDepth         = "Open recursive grid already zoomed to this depth at the cursor"
 )
 
 // usageCycle is what a comma-separated list means on the flags that cycle.
 const usageCycle = "A comma-separated list cycles, moving to the next value each time the command runs while the mode is open"
 
+// usageCycleToggle is how --toggle changes a cycle list.
+const usageCycleToggle = "With --toggle, running the command on the last value leaves the mode instead of wrapping"
+
 // usageAction names the actions a mode can perform, so the vocabulary a user
 // is offered is the one the rules accept rather than a list kept alongside it.
-var usageAction = "Mouse button action to run on the selection: " +
+var usageAction = "Action to run on the selection: " +
 	action.ModeActionNamesString() +
-	". Chain with commas, as in left_click,left_click"
+	". move_mouse only leaves the cursor there. Chain with commas, as in left_click,left_click"
 
 // String returns the bare name.
 func (f Flag) String() string { return string(f) }
@@ -148,7 +161,7 @@ func (f Flag) Assign(value string) string { return "--" + string(f) + "=" + valu
 //
 // Its fields are unexported and it is built only by the two constructors
 // below, so a flag cannot be declared without saying how it parses and how it
-// renders — the compiler asks for both.
+// renders. The compiler asks for both.
 type Descriptor struct {
 	name  Flag
 	short string
@@ -172,7 +185,7 @@ type Descriptor struct {
 type Kind int
 
 const (
-	// KindPresence is a flag that carries no value: writing it is the whole
+	// KindPresence is a flag that carries no value. Writing it is the whole
 	// statement.
 	KindPresence Kind = iota
 
@@ -212,7 +225,7 @@ func valueFlag(
 // occurrence adding to the list the earlier ones started.
 //
 // It is a value flag in every other respect. What separates the two is what a
-// second occurrence means: on a plain value flag the last one wins, and on one
+// second occurrence means. On a plain value flag the last one wins, and on one
 // of these none of them is lost. A reader that offers the flag has to know
 // which, or the steps of an --on-exit sequence would silently come down to the
 // last one written.
@@ -231,12 +244,12 @@ func listFlag(
 	return descriptor
 }
 
-// presenceFlag declares a flag that carries no value: writing it is the whole
+// presenceFlag declares a flag that carries no value. Writing it is the whole
 // statement.
 //
 // A value written onto one anyway is refused rather than dropped. Taking
 // "--toggle=false" as a request to toggle is the shape of mistake this module
-// exists to stop: the flag was read, the value was not, and nothing said so.
+// exists to stop. The flag was read, the value was not, and nothing said so.
 func presenceFlag(
 	name Flag,
 	short string,
@@ -282,11 +295,11 @@ func (d Descriptor) Kind() Kind { return d.kind }
 func (d Descriptor) TakesValue() bool { return d.kind != KindPresence }
 
 // Apply reads one written value into an activation, as this flag's own rule
-// says. A presence-only flag is applied with an empty value: writing it is the
-// whole statement.
+// says. A presence-only flag is applied with an empty value, because writing it
+// is the whole statement.
 //
 // It is exported for the reader that holds a flag's value already typed rather
-// than as an argument to be found — the CLI reads cobra's own flags this way.
+// than as an argument to be found. The CLI reads cobra's own flags this way.
 // Going through the same function a parse does is what keeps the two from
 // disagreeing about what a written value means.
 func (d Descriptor) Apply(activation *Activation, value string) error {
@@ -297,7 +310,7 @@ func (d Descriptor) Apply(activation *Activation, value string) error {
 // given it. [Render] is the whole table's version of the same thing.
 //
 // It is exported for a reader that carries some of the vocabulary but not all
-// of it: the hints probe takes the flags that decide which elements are
+// of it. The hints probe takes the flags that decide which elements are
 // collected and refuses the rest, and answering "was this one given?" is what
 // it needs to say so.
 func (d Descriptor) Render(activation Activation) []string { return d.render(activation) }
@@ -317,7 +330,7 @@ func (d Descriptor) AcceptedBy(mode domain.Mode) bool {
 // vocabulary declares them.
 //
 // [Descriptor.AcceptedBy] answers the question a reader with a mode in hand
-// asks. This answers the one a reader without a mode asks — the published flag
+// asks. This answers the one a reader without a mode asks. The published flag
 // reference lists which modes take a flag, and reading that from the same
 // declaration is what stops the document from claiming a mode the binary does
 // not offer it on.
@@ -393,7 +406,7 @@ var (
 // Modes returns every mode a mode command can name, idle included.
 //
 // It is exported for the reader that has to answer "is every mode accounted
-// for?" rather than "what does this one accept?" — the guardrail that pins a
+// for?" rather than "what does this one accept?". The guardrail that pins a
 // command to the vocabulary needs the list to walk, and reading it from here is
 // what makes a mode added to the grammar and forgotten on the command line a
 // build failure.
@@ -409,7 +422,7 @@ var modeNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
 // ValidModeName reports whether name may be used as a declared mode's name.
 //
 // It is exported for the configuration, which judges the keys of [modes] by
-// the same rule the grammar judges the argument of a mode command: a name one
+// the same rule the grammar judges the argument of a mode command. A name one
 // accepts and the other refuses is a mode that can be declared and never
 // entered.
 func ValidModeName(name string) bool {
@@ -419,7 +432,7 @@ func ValidModeName(name string) bool {
 // LookupMode returns the mode a command word names.
 //
 // It is exported for the reader that has to decide whether something is a mode
-// command before it can be parsed: a configuration holds its bindings as text,
+// command before it can be parsed. A configuration holds its bindings as text,
 // and the word it recognizes has to be the word the daemon dispatches on, or
 // the two would disagree about which steps are even mode commands.
 func LookupMode(word string) (domain.Mode, bool) {
@@ -478,6 +491,12 @@ var descriptors = []Descriptor{
 		func(activation *Activation) { activation.HideOnEmptySearch = enabled() },
 		func(activation Activation) []string {
 			return renderPresence(FlagHideOnEmptySearch, activation.HideOnEmptySearch)
+		},
+	),
+	presenceFlag(FlagConfirmOnLabel, "", usageConfirmOnLabel, hintsOnly,
+		func(activation *Activation) { activation.ConfirmOnLabel = enabled() },
+		func(activation Activation) []string {
+			return renderPresence(FlagConfirmOnLabel, activation.ConfirmOnLabel)
 		},
 	),
 	presenceFlag(FlagExitOnUnmatched, "", usageExitOnUnmatched, hintsOnly,
@@ -554,17 +573,31 @@ var descriptors = []Descriptor{
 	),
 	valueFlag(FlagLabelDirection, "", usageLabelDirection, msgLabelDirectionValue, hintsOnly,
 		func(activation *Activation, value string) error {
-			if value != domain.LabelDirectionNormal && value != domain.LabelDirectionReverse {
-				return invalid(msgLabelDirectionValue)
+			direction, err := ParseLabelDirection(value)
+			if err != nil {
+				return err
 			}
 
-			activation.LabelDirection = &value
+			activation.LabelDirection = &direction
 
 			return nil
 		},
 		func(activation Activation) []string {
 			return renderValue(FlagLabelDirection, activation.LabelDirection)
 		},
+	),
+	valueFlag(FlagTargets, "", usageTargets, msgTargetsValue, hintsOnly,
+		func(activation *Activation, value string) error {
+			targets, err := parseTargets(value)
+			if err != nil {
+				return err
+			}
+
+			activation.Targets = targets
+
+			return nil
+		},
+		renderTargets,
 	),
 	presenceFlag(FlagSplitWord, "", usageSplitWord, hintsOnly,
 		func(activation *Activation) { activation.SplitWord = enabled() },
@@ -641,12 +674,16 @@ func Lookup(name Flag) (Descriptor, bool) {
 // accepts.
 //
 // It is exported because the hints probe takes the same flag without being a
-// mode command: a probe reports what hints mode would target and enters
+// mode command. A probe reports what hints mode would target and enters
 // nothing, so it has an argument list of its own. Reading the vocabulary from
 // here is what stops the two from disagreeing about what "axtree" means.
 func ParseStrategy(value string) (string, error) {
-	if value != domain.StrategyAXTree && value != domain.StrategyVision &&
-		value != domain.StrategyContour {
+	switch value {
+	case domain.StrategyAXTree,
+		domain.StrategyVision,
+		domain.StrategyContour,
+		domain.StrategySegment:
+	default:
 		return "", invalid(msgStrategyValue)
 	}
 
@@ -658,6 +695,16 @@ func ParseStrategy(value string) (string, error) {
 func ParseCaptureScope(value string) (string, error) {
 	if value != domain.CaptureScopeWindow && value != domain.CaptureScopeScreen {
 		return "", invalid(msgCaptureScopeValue)
+	}
+
+	return value, nil
+}
+
+// ParseLabelDirection reads a label direction, the value --label-direction
+// accepts. Exported for the hints probe, for the reason ParseStrategy is.
+func ParseLabelDirection(value string) (string, error) {
+	if value != domain.LabelDirectionNormal && value != domain.LabelDirectionReverse {
+		return "", invalid(msgLabelDirectionValue)
 	}
 
 	return value, nil

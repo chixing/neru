@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// A command is bounded: the daemon refuses one that would make it buffer
+// A command is bounded. The daemon refuses one that would make it buffer
 // without limit, and says so rather than reporting truncated JSON.
 func TestServer_HandleConnection_RefusesAnOversizedCommand(t *testing.T) {
 	t.Parallel()
@@ -34,7 +34,7 @@ func TestServer_HandleConnection_RefusesAnOversizedCommand(t *testing.T) {
 
 	oversized, marshalErr := json.Marshal(Command{
 		Action: "run",
-		Args:   []string{strings.Repeat("x", maxCommandBytes)},
+		Args:   []string{strings.Repeat("x", MaxCommandBytes)},
 	})
 	if marshalErr != nil {
 		t.Fatalf("Marshal() error = %v", marshalErr)
@@ -116,4 +116,82 @@ func TestServer_HandleConnection_AcceptsACommandInsideTheLimit(t *testing.T) {
 	}
 
 	server.wg.Wait()
+}
+
+// Every reply names the protocol the daemon speaks. The daemon refuses a command
+// that asks for a newer one or carries a field outside the contract, and never
+// runs it.
+func TestServer_HandleConnection_ChecksTheProtocol(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		request  string
+		wantCode string
+		wantRun  bool
+	}{
+		{"no protocol runs", `{"action":"ping"}`, CodeOK, true},
+		{"current protocol runs", `{"action":"ping","protocol":1}`, CodeOK, true},
+		{"protocol 2 is refused", `{"action":"ping","protocol":2}`, CodeVersionMismatch, false},
+		{"protocol -1 is refused", `{"action":"ping","protocol":-1}`, CodeInvalidInput, false},
+		{"unknown field is refused", `{"action":"ping","params":{}}`, CodeInvalidInput, false},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			accepted, dialed := connectedUnixPair(t)
+
+			ran := false
+			server := &Server{
+				logger: zap.NewNop(),
+				handler: func(_ context.Context, _ Command) Response {
+					ran = true
+
+					return Response{Success: true, Code: CodeOK}
+				},
+			}
+
+			server.wg.Add(1)
+
+			go server.handleConnection(accepted)
+
+			deadlineErr := dialed.SetDeadline(time.Now().Add(5 * time.Second))
+			if deadlineErr != nil {
+				t.Fatalf("SetDeadline() error = %v", deadlineErr)
+			}
+
+			_, writeErr := dialed.Write([]byte(testCase.request + "\n"))
+			if writeErr != nil {
+				t.Fatalf("Write() error = %v", writeErr)
+			}
+
+			var response Response
+
+			decodeErr := json.NewDecoder(dialed).Decode(&response)
+			if decodeErr != nil {
+				t.Fatalf("Decode() error = %v", decodeErr)
+			}
+
+			if response.Code != testCase.wantCode {
+				t.Errorf(
+					"code = %s (%q), want %s",
+					response.Code,
+					response.Message,
+					testCase.wantCode,
+				)
+			}
+
+			if response.Protocol != ProtocolVersion {
+				t.Errorf("protocol = %d, want %d", response.Protocol, ProtocolVersion)
+			}
+
+			server.wg.Wait()
+
+			if ran != testCase.wantRun {
+				t.Errorf("handler ran = %v, want %v", ran, testCase.wantRun)
+			}
+		})
+	}
 }

@@ -15,10 +15,10 @@ type atspiWindow struct {
 	valid bool
 	// focusedAppID and focusedTitle are the compositor's focused app_id and
 	// window title captured when this window was selected (empty on X11/GNOME).
-	// ClickableNodes compares both against the live values so a focus change
-	// between selection and the walk — including a switch to another window of
-	// the same application (same app_id, different title) — is detected and the
-	// stale frame is not walked or offset.
+	// ClickableNodes compares both against the live values, so it detects a
+	// focus change between selection and the walk and does not walk or offset
+	// the stale frame. That includes a switch to another window of the same
+	// application (same app_id, different title).
 	focusedAppID string
 	focusedTitle string
 }
@@ -29,10 +29,15 @@ func (w *atspiWindow) Role() string { return atspiRoleFrame }
 
 // atspiNode implements ax.Node for a clickable AT-SPI element.
 type atspiNode struct {
-	id    string
-	role  string
-	title string
-	rect  image.Rectangle
+	ref         accRef
+	id          string
+	role        string
+	title       string
+	description string
+	value       string
+	identifier  string
+	focused     bool
+	rect        image.Rectangle
 }
 
 func (n *atspiNode) ID() string { return n.id }
@@ -43,9 +48,13 @@ func (n *atspiNode) Role() string { return n.role }
 
 func (n *atspiNode) Title() string { return n.title }
 
-func (n *atspiNode) Description() string { return "" }
+func (n *atspiNode) Description() string { return n.description }
 
-func (n *atspiNode) Value() string { return "" }
+func (n *atspiNode) Value() string { return n.value }
+
+func (n *atspiNode) IsFocused() bool { return n.focused }
+
+func (n *atspiNode) Identifier() string { return n.identifier }
 
 func (n *atspiNode) IsClickable() bool { return true }
 

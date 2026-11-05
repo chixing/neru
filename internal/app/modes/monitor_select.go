@@ -28,7 +28,7 @@ type MonitorSelectMode struct {
 // NewMonitorSelectMode creates a new monitor_select mode implementation.
 func NewMonitorSelectMode(handler *handlerState) *MonitorSelectMode {
 	return &MonitorSelectMode{
-		baseMode: newBaseMode(handler, domain.ModeMonitorSelect, "MonitorSelectMode"),
+		baseMode: newBaseMode(handler, "MonitorSelectMode"),
 	}
 }
 
@@ -102,6 +102,8 @@ func (h *handlerState) activateMonitorSelectMode(_ modecmd.Activation) {
 		h.logger.Debug("Mode activation refused",
 			zap.String("mode", domain.ModeNameMonitorSelect), zap.Error(err))
 
+		h.activationRefusal = err
+
 		return
 	}
 
@@ -114,6 +116,8 @@ func (h *handlerState) activateMonitorSelectMode(_ modecmd.Activation) {
 		} else {
 			h.logger.Error("Failed to discover monitors for monitor_select", zap.Error(err))
 		}
+
+		h.activationRefusal = err
 
 		return
 	}
@@ -128,16 +132,18 @@ func (h *handlerState) activateMonitorSelectMode(_ modecmd.Activation) {
 			h.confirmMonitorSelect(&monitors[0])
 		} else {
 			h.logger.Warn("Monitor select activation skipped, no selectable monitors")
+
+			h.activationRefusal = derrors.New(derrors.CodeActionFailed, "no selectable monitors")
 		}
 
 		return
 	}
 
 	// Coming from another mode, the keyboard is handed over rather than given
-	// back: exit now, release at return if nothing is entered. Entering from
-	// idle takes the same pair — the exit is a no-op there and the release
-	// finds nothing to give back — because a picker that cannot draw returns
-	// through the same path either way.
+	// back. Exit now, release at return if nothing is entered. Entering from
+	// idle takes the same pair, because a picker that cannot draw returns
+	// through the same path either way. There the exit is a no-op and the
+	// release finds nothing to give back.
 	defer h.exitModeForTransition()()
 
 	h.monitorSelect = session
@@ -154,6 +160,8 @@ func (h *handlerState) activateMonitorSelectMode(_ modecmd.Activation) {
 		if derrors.IsNotSupported(err) {
 			h.reportMonitorSelectNotSupported()
 		}
+
+		h.activationRefusal = err
 
 		return
 	}
@@ -192,21 +200,33 @@ func (h *handlerState) confirmMonitorSelect(target *monitorSelectTarget) {
 	h.exitMode()
 
 	go func() {
-		if h.actionService == nil {
+		if h.actionService == nil || h.system == nil {
 			return
 		}
+
+		// Serialized with move_monitor, so their monitor_move events arrive
+		// in the order the moves applied.
+		h.outer.moveMonitorMu.Lock()
+		defer h.outer.moveMonitorMu.Unlock()
+
+		h.syncCursorPosition(h.ctx)
+		from, fromErr := h.system.ScreenBounds(h.ctx)
 
 		err := h.actionService.MoveCursorToPointAndWait(h.ctx, center, true)
 		if err != nil {
 			h.logger.Error("Failed to move cursor to selected monitor",
 				zap.Error(err),
 			)
+
+			return
 		}
+
+		h.publishMonitorMove(from, fromErr, bounds, target.Name)
 	}()
 }
 
 // cleanupMonitorSelectMode ends the picking session. The panels come off the
-// screen with the frame, in the common cleanup that follows this: they are the
+// screen with the frame, in the common cleanup that follows this. They are the
 // overlay's to take down, and a mode that took half of it down itself is how
 // one used to be left behind.
 func (h *handlerState) cleanupMonitorSelectMode() {
@@ -245,7 +265,7 @@ func (h *handlerState) reportMonitorSelectNotSupported() {
 	}
 
 	// This runs under h.mu, and showing a notification is a session-bus round
-	// trip on Linux — a blocking call the locking contract keeps off the lock.
+	// trip on Linux, a blocking call the locking contract keeps off the lock.
 	// The goroutine touches no handler state, only values read here, and a
 	// notification that cannot be shown is reported rather than dropped.
 	system, logger, ctx := h.system, h.logger, h.ctx

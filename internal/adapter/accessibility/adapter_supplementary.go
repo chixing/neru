@@ -15,15 +15,19 @@ const (
 	dockTreeDepth = 5
 	// stageManagerTreeDepth limits tree depth for the WindowManager app.
 	stageManagerTreeDepth = 4
+	// missionControlTreeDepth reaches the Spaces bar's desktop buttons, one level
+	// below Stage Manager's deepest item, in the WindowManager tree Mission
+	// Control draws into.
+	missionControlTreeDepth = 5
 	// flatAppTreeDepth limits tree depth for simple single-window apps like PIP and screen capture.
 	flatAppTreeDepth = 3
 	// menubarTreeDepth limits tree depth for the menu bar (AXMenuBar → AXMenuBarItem → AXMenuItem).
 	menubarTreeDepth = 3
 )
 
-// addMenubarElements adds menubar clickable elements.
-// Temporarily modifies clickable roles to include AXMenuBarItem, collects menubar elements,
-// and processes additional menubar targets from configuration.
+// addMenubarElements adds menubar clickable elements, then the elements of each
+// additional menubar target from configuration, read with the clickable roles
+// plus AXMenuBarItem and AXMenu.
 func (a *Adapter) addMenubarElements(
 	ctx context.Context,
 	elements []*element.Element,
@@ -36,7 +40,6 @@ func (a *Adapter) addMenubarElements(
 	menubarRoles[len(originalRoles)] = string(element.RoleMenuBarItem)
 	menubarRoles[len(originalRoles)+1] = string(element.RoleMenu)
 
-	// Get menubar elements
 	menubarNodes, menubarNodesErr := a.client.MenuBarClickableElements(ctx, menubarTreeDepth)
 	if menubarNodesErr != nil {
 		a.logger.Warn("Failed to get menubar elements", zap.Error(menubarNodesErr))
@@ -129,9 +132,8 @@ func (a *Adapter) addMenubarElements(
 	return elements
 }
 
-// addDockElements adds dock clickable elements.
-// Temporarily modifies clickable roles to include AXDockItem, finds the dock application,
-// validates it, and collects clickable elements from the dock tree.
+// addDockElements adds dock clickable elements, read from the dock application
+// with the clickable roles plus AXDockItem.
 func (a *Adapter) addDockElements(
 	ctx context.Context,
 	elements []*element.Element,
@@ -144,7 +146,6 @@ func (a *Adapter) addDockElements(
 	copy(dockRoles, originalRoles)
 	dockRoles[len(originalRoles)] = string(element.RoleDockItem)
 
-	// Get dock application by bundle ID
 	dockApp, dockAppErr := a.client.ApplicationByBundleID(ctx, dockBundleID)
 	if dockAppErr != nil || dockApp == nil {
 		a.logger.Warn("Dock application not found", zap.Error(dockAppErr))
@@ -168,8 +169,13 @@ func (a *Adapter) addDockElements(
 		return elements
 	}
 
-	// Build tree and find clickable elements
-	dockNodes, dockNodesErr := a.client.ClickableNodes(ctx, dockApp, dockRoles, dockTreeDepth)
+	dockNodes, dockNodesErr := a.client.ClickableNodes(
+		ctx,
+		dockApp,
+		dockRoles,
+		dockTreeDepth,
+		false,
+	)
 	if dockNodesErr != nil {
 		a.logger.Warn("Failed to get dock elements", zap.Error(dockNodesErr))
 
@@ -252,7 +258,6 @@ func (a *Adapter) addStageManagerElements(
 ) []*element.Element {
 	const wmBundleID = "com.apple.WindowManager"
 
-	// Get window manager application by bundle ID
 	wmApp, wmAppErr := a.client.ApplicationByBundleID(ctx, wmBundleID)
 	if wmAppErr != nil || wmApp == nil {
 		a.logger.Warn("Window manager application not found", zap.Error(wmAppErr))
@@ -276,8 +281,7 @@ func (a *Adapter) addStageManagerElements(
 		return elements
 	}
 
-	// Build tree and find clickable elements
-	wmNodes, wmNodesErr := a.client.ClickableNodes(ctx, wmApp, nil, stageManagerTreeDepth)
+	wmNodes, wmNodesErr := a.client.ClickableNodes(ctx, wmApp, nil, stageManagerTreeDepth, false)
 	if wmNodesErr != nil {
 		a.logger.Warn("Failed to get window manager elements", zap.Error(wmNodesErr))
 
@@ -383,6 +387,39 @@ func (a *Adapter) addScreenCaptureElements(
 	}
 
 	a.logger.Debug("Included Screen Capture elements", zap.Int("count", len(screenCaptureNodes)),
+		zap.Int("failed", failed))
+
+	return elements
+}
+
+// addMissionControlElements adds what Mission Control draws while it is up:
+// the current desktop's windows, and the Spaces bar while it is expanded.
+func (a *Adapter) addMissionControlElements(ctx context.Context) []*element.Element {
+	nodes, nodesErr := a.client.MissionControlClickableNodes(ctx, missionControlTreeDepth)
+	if nodesErr != nil {
+		a.logger.Warn("Failed to get Mission Control elements", zap.Error(nodesErr))
+
+		return nil
+	}
+
+	elements := make([]*element.Element, 0, len(nodes))
+	failed := 0
+
+	for _, node := range nodes {
+		converted, convertErr := a.convertToDomainElement(node)
+
+		node.Release()
+
+		if convertErr != nil {
+			failed++
+
+			continue
+		}
+
+		elements = append(elements, converted)
+	}
+
+	a.logger.Debug("Included Mission Control elements", zap.Int("count", len(nodes)),
 		zap.Int("failed", failed))
 
 	return elements

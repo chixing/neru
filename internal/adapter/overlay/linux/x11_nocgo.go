@@ -21,12 +21,12 @@ import (
 
 // x11Overlay is the no-cgo stand-in. Both twins keep their methods
 // per-backend rather than hoisting them onto a shared type the way the cgo
-// build does, deliberately: there is no shared implementation under them to
+// build does, deliberately. There is no shared implementation under them to
 // reach (every body is empty, so a hoist would deduplicate signatures and
 // nothing else), and a hoist would break them outright. Their constructors
 // always return nil, so the manager only ever dispatches on a nil pointer and
-// these bodies exist precisely to be reached on a nil receiver — which a
-// promoted method cannot be (../AGENTS.md).
+// these bodies exist to be reached on a nil receiver, which a promoted method
+// cannot be (../AGENTS.md).
 type x11Overlay struct {
 	sublayerKeys string
 }
@@ -98,3 +98,6 @@ func (o *x11Overlay) DrawMouseActionIndicator(image.Point, ports.MouseActionIndi
 
 func (o *x11Overlay) cancelAnimation()          {}
 func (o *x11Overlay) setRenderMu(_ *sync.Mutex) {}
+
+// withBlanked runs capture as it is, because this build draws no overlay.
+func (o *x11Overlay) withBlanked(capture func() error) error { return capture() }

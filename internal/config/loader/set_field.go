@@ -7,8 +7,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/derrors"
+	"github.com/y3owk1n/neru/internal/domain/parity"
 )
 
 // SetField sets a field on a Config by dotted path (e.g. "hints.hint_characters").
@@ -32,6 +35,10 @@ func SetField(cfg *config.Config, path, value string) error {
 		}
 
 		if partIdx == len(parts)-1 {
+			if field.Type().Implements(perPlatformType) {
+				return setEveryPlatform(field, value)
+			}
+
 			return setLeafValue(field, value)
 		}
 
@@ -42,6 +49,22 @@ func SetField(cfg *config.Config, path, value string) error {
 				"%q in path %q is not a struct",
 				part, path,
 			)
+		}
+	}
+
+	return nil
+}
+
+// perPlatformType is what every config.PerPlatform option implements.
+var perPlatformType = reflect.TypeFor[interface{ PlatformValueType() reflect.Type }]()
+
+// setEveryPlatform gives each platform of a PerPlatform option the one value,
+// as the single-value form in a config file does.
+func setEveryPlatform(field reflect.Value, value string) error {
+	for _, platform := range []parity.Platform{parity.Darwin, parity.Linux, parity.Windows} {
+		err := setLeafValue(findFieldByTomlTag(field, string(platform)), value)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -100,7 +123,7 @@ func derefStruct(field reflect.Value) reflect.Value {
 }
 
 // setLeafValue handles only config-relevant reflect.Kind variants (String,
-// Int, Float, Bool, Slice, Struct); all others are unreachable in valid config
+// Int, Float, Bool, Slice, Struct). All others are unreachable in valid config
 // paths. The exhaustive linter is suppressed because adding every Kind would be
 // noise.
 //
@@ -137,7 +160,15 @@ func setLeafValue(field reflect.Value, value string) error {
 		field.SetBool(b)
 
 	case reflect.Slice:
-		if field.Type().Elem().Kind() == reflect.String {
+		switch {
+		case field.Type() == reflect.TypeFor[config.StringOrStringArray]():
+			steps, err := parseSteps(value)
+			if err != nil {
+				return err
+			}
+
+			field.Set(reflect.ValueOf(steps))
+		case field.Type().Elem().Kind() == reflect.String:
 			items := parseStringSlice(value)
 
 			sl := reflect.MakeSlice(field.Type(), len(items), len(items))
@@ -146,7 +177,7 @@ func setLeafValue(field reflect.Value, value string) error {
 			}
 
 			field.Set(sl)
-		} else {
+		default:
 			return derrors.Newf(
 				derrors.CodeInvalidConfig,
 				"unsupported slice element type for %s",
@@ -155,17 +186,15 @@ func setLeafValue(field reflect.Value, value string) error {
 		}
 
 	case reflect.Struct:
-		if field.Type().Name() == "Color" {
-			c := parseColorValue(value)
-
-			field.Set(reflect.ValueOf(c))
-		} else {
+		if field.Type().Name() != "Color" {
 			return derrors.Newf(
 				derrors.CodeInvalidConfig,
 				"cannot set struct field %q directly; use a dotted path to a leaf field or provide a JSON object",
 				field.Type().Name(),
 			)
 		}
+
+		field.Set(reflect.ValueOf(parseColorValue(value)))
 
 	default:
 		return derrors.Newf(
@@ -176,6 +205,36 @@ func setLeafValue(field reflect.Value, value string) error {
 	}
 
 	return nil
+}
+
+// parseSteps reads a list of binding steps the way the config file does: one
+// step, or a TOML array of them. Unlike other string lists it never splits on a
+// comma, because a step is a command line that can contain one. A step starts
+// with its command word, so only an array starts with "[".
+func parseSteps(value string) (config.StringOrStringArray, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+
+	if !strings.HasPrefix(value, "[") {
+		return config.StringOrStringArray{value}, nil
+	}
+
+	var holder struct {
+		Steps config.StringOrStringArray `toml:"steps"`
+	}
+
+	_, err := toml.Decode("steps = "+value, &holder)
+	if err != nil {
+		return nil, derrors.Wrap(
+			err,
+			derrors.CodeInvalidConfig,
+			"cannot parse steps as a TOML array",
+		)
+	}
+
+	return holder.Steps, nil
 }
 
 func parseStringSlice(value string) []string {
@@ -228,23 +287,13 @@ func parseColorValue(value string) config.Color {
 	return config.Color{Light: value, Dark: value}
 }
 
-// ValidateConfigSetField validates a config path is settable and value is valid
-// by performing the mutation on a throwaway copy. Used by the CLI to validate
-// before sending to the daemon.
+// ValidateConfigSetField checks that path names a settable field and that
+// value parses as its type, by performing the mutation on a throwaway copy.
+// The CLI runs it before sending a change to the daemon. It skips the full
+// validation, because that depends on the user's other settings. Only the
+// daemon has those, and it validates the merged config itself.
 func ValidateConfigSetField(path, value string) error {
-	cfg := config.DefaultConfig()
-
-	err := SetField(cfg, path, value)
-	if err != nil {
-		return err
-	}
-
-	err = cfg.Validate()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return SetField(config.DefaultConfig(), path, value)
 }
 
 // unknownField is returned by ConfigFieldType when the path cannot be resolved.

@@ -19,7 +19,7 @@ const (
 )
 
 // TestActionFlagSupport_CoversEveryParsedFlag is the guard that keeps flag
-// validation fail-closed: a flag the parser understands but no action declares
+// validation fail-closed. A flag the parser understands but no action declares
 // would be accepted everywhere and silently ignored.
 func TestActionFlagSupport_CoversEveryParsedFlag(t *testing.T) {
 	declared := map[string]bool{}
@@ -41,7 +41,7 @@ func TestActionFlagSupport_CoversEveryParsedFlag(t *testing.T) {
 	}
 }
 
-// TestActionFlagSupport_DeclaresOnlyParsedFlags catches the reverse typo: a
+// TestActionFlagSupport_DeclaresOnlyParsedFlags catches the reverse typo. A
 // table entry naming a flag the parser never produces would silently never
 // match.
 func TestActionFlagSupport_DeclaresOnlyParsedFlags(t *testing.T) {
@@ -66,10 +66,10 @@ func TestActionFlagSupport_NamesAreKnownActions(t *testing.T) {
 
 // TestActionFlagSupport_CoversEveryDispatchableAction lists the actions that
 // reach flag parsing. An action missing from actionFlagSupport is not rejected
-// (unknown names are left to the dispatcher), so it would accept every flag —
-// this test is what forces a new action to declare its flags.
+// (unknown names are left to the dispatcher), so it would accept every flag.
+// This test is what forces a new action to declare its flags.
 //
-// feed and sleep are intentionally absent: both consume their raw arguments
+// feed and sleep are intentionally absent, because both consume their raw arguments
 // before flag parsing runs.
 func TestActionFlagSupport_CoversEveryDispatchableAction(t *testing.T) {
 	dispatchable := []action.Name{
@@ -88,7 +88,7 @@ func TestActionFlagSupport_CoversEveryDispatchableAction(t *testing.T) {
 		action.NameGoTop, action.NameGoBottom,
 		action.NamePageUp, action.NamePageDown,
 		action.NameReset, action.NameBackspace,
-		action.NameCycleHint, action.NameSearchHints,
+		action.NameCycleHint, action.NameSearchHints, action.NameRefreshHints, action.NameSnap,
 		action.NameWaitForModeExit,
 		action.NameSaveCursorPos, action.NameRestoreCursorPos,
 		action.NameHideCursor, action.NameShowCursor,
@@ -178,7 +178,7 @@ func TestRejectUnsupportedFlags_RejectsFlagsAnActionDoesNotDeclare(t *testing.T)
 	}
 }
 
-// TestRejectUnsupportedFlags_AcceptsDeclaredFlags is the other half: a declared
+// TestRejectUnsupportedFlags_AcceptsDeclaredFlags is the other half. A declared
 // flag must pass.
 func TestRejectUnsupportedFlags_AcceptsDeclaredFlags(t *testing.T) {
 	for name, allowed := range actionFlagSupport {
@@ -235,12 +235,17 @@ func TestRejectUnsupportedFlags_IgnoresUnknownActions(t *testing.T) {
 }
 
 // TestHandleAction_RejectsFlagsThatUsedToBeIgnored pins the drift this
-// restructure fixes: these flags were silently accepted before, because each
-// handler kept its own hand-written reject list.
+// restructure fixes. These flags were silently accepted before, because each
+// handler kept its own hand-written reject list. A row with a wantMessage also
+// checks the exact message the user sees, spelled out here instead of looked
+// up in the table.
 func TestHandleAction_RejectsFlagsThatUsedToBeIgnored(t *testing.T) {
+	const previousOnlyOnMoveMonitor = "--previous is only supported with move_monitor"
+
 	tests := []struct {
-		name string
-		args []string
+		name        string
+		args        []string
+		wantMessage string
 	}{
 		{name: "backspace with steps", args: []string{backspaceAction, stepsThree}},
 		{name: "backspace with toggle", args: []string{backspaceAction, flagToggle}},
@@ -252,6 +257,40 @@ func TestHandleAction_RejectsFlagsThatUsedToBeIgnored(t *testing.T) {
 		{name: "save_cursor_pos with toggle", args: []string{"save_cursor_pos", flagToggle}},
 		{name: "page_up with steps", args: []string{"page_up", stepsThree}},
 		{name: "move_mouse with dx", args: []string{moveMouse, "--dx=10", "--dy=10"}},
+		{name: "move_mouse with count", args: []string{moveMouse, "--x=1", "--y=1", "--count=2"}},
+		{name: "left_click with bail", args: []string{leftClick, flagBail}},
+		{name: "left_click with direction", args: []string{leftClick, directionLeft}},
+		{
+			name:        "move_monitor with x",
+			args:        []string{moveMonitor, "--x=100"},
+			wantMessage: "--x is only supported with move_mouse",
+		},
+		{
+			name:        "move_monitor with selection",
+			args:        []string{moveMonitor, "--selection"},
+			wantMessage: "--selection is only supported with move_mouse, scroll, and mouse button actions",
+		},
+		{
+			name:        "left_click with previous",
+			args:        []string{leftClick, flagPrevious},
+			wantMessage: previousOnlyOnMoveMonitor,
+		},
+		{
+			name:        "scroll_down with previous",
+			args:        []string{"scroll_down", flagPrevious},
+			wantMessage: previousOnlyOnMoveMonitor,
+		},
+		{
+			name:        "reset with name",
+			args:        []string{resetAction, flagName + "=DELL"},
+			wantMessage: "--name is only supported with move_monitor",
+		},
+		{
+			name: "scroll_up with state",
+			args: []string{scrollUp, flagStateDown},
+			wantMessage: "--state and --toggle are only supported with " +
+				"left_click, right_click, and middle_click",
+		},
 	}
 
 	for _, testCase := range tests {
@@ -270,12 +309,16 @@ func TestHandleAction_RejectsFlagsThatUsedToBeIgnored(t *testing.T) {
 			if resp.Code != ipc.CodeInvalidInput {
 				t.Fatalf("code = %q, want %q", resp.Code, ipc.CodeInvalidInput)
 			}
+
+			if testCase.wantMessage != "" && resp.Message != testCase.wantMessage {
+				t.Fatalf("message = %q, want %q", resp.Message, testCase.wantMessage)
+			}
 		})
 	}
 }
 
 // TestRejectUnsupportedFlags_ChainsDoNotMutateTheTable guards the aliasing
-// hazard in chain handling: the table's flag slices are shared between actions,
+// hazard in chain handling. The table's flag slices are shared between actions,
 // so narrowing them for a chain must work on a copy.
 func TestRejectUnsupportedFlags_ChainsDoNotMutateTheTable(t *testing.T) {
 	before := slices.Clone(actionFlagSupport[string(action.NameLeftClick)])

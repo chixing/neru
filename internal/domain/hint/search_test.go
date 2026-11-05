@@ -8,7 +8,7 @@ import (
 	"github.com/y3owk1n/neru/internal/domain/hint"
 )
 
-func TestFilterByText_ContainsFirstThenFuzzy(t *testing.T) {
+func TestFilterBySearch_ContainsFirstThenFuzzy(t *testing.T) {
 	t.Parallel()
 
 	const batchTitle = "Batch Mode"
@@ -36,19 +36,19 @@ func TestFilterByText_ContainsFirstThenFuzzy(t *testing.T) {
 
 	collection := hint.NewCollection(hints)
 
-	got := collection.FilterByText("mode").All()
+	got := collection.FilterBySearch("mode").All()
 	if len(got) != 2 || got[0].Element().Title() != batchTitle ||
 		got[1].Element().Title() != "Mode" {
 		t.Fatalf("contains matches = %v", titles(got))
 	}
 
-	got = collection.FilterByText("bmode").All()
+	got = collection.FilterBySearch("bmode").All()
 	if len(got) != 1 || got[0].Element().Title() != batchTitle {
 		t.Fatalf("fuzzy matches = %v", titles(got))
 	}
 
 	// Two-letter queries stay literal, or they would match nearly everything.
-	if got = collection.FilterByText("bo").All(); len(got) != 0 {
+	if got = collection.FilterBySearch("bo").All(); len(got) != 0 {
 		t.Fatalf("short fuzzy matches = %v", titles(got))
 	}
 }

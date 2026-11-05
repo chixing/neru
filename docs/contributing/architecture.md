@@ -9,11 +9,18 @@ implementation.
 
 Neru is a **daemon plus a thin CLI**. `neru launch` starts the daemon. The
 other commands (`neru hints`, `neru action left_click`, `neru config reload`)
-dial a Unix domain socket or a Windows named pipe. The transport is in
-`internal/adapter/ipc` and the command handlers in `internal/app/ipcctrl`.
+dial a Unix domain socket or a Windows named pipe. The endpoint lookup is in
+`internal/ipcendpoint`, the server and the CLI's client in
+`internal/adapter/ipc`, and the command handlers in `internal/app/ipcctrl`.
+`client` is the public Go client, and it reaches the endpoint through the
+same lookup. It may import only the standard library, `internal/derrors`,
+`internal/ipcendpoint` and the Windows pipe libraries, which
+[client_package_test.go](../../internal/architecture/client_package_test.go)
+pins. The wire protocol carries a protocol number and breaks only at a major release
+([ADR 0015](../adr/0015-the-wire-protocol-breaks-only-at-a-major.md)).
 
-The endpoint is scoped to one user, in where it lives and in what the daemon
-checks before serving a connection. Its paths are in
+The endpoint is scoped to one user by where it lives and by what the daemon
+checks before it serves a connection. Its paths are in
 [IPC protocol](../reference/ipc.md#endpoint).
 
 - **Unix socket**: mode 0600 inside a 0700 directory the daemon creates and
@@ -130,7 +137,7 @@ Follow one event from the OS to the user-visible action:
 5. **Keyboard layout changes**: on macOS the mode-level CGEventTap rebuilds its
    key-name tables on a layout switch (`NeruSetKeymapLayoutChangeCallback` in
    [keymap_darwin.m](../../internal/adapter/platform/darwin/keymap_darwin.m)).
-   Per-hotkey CGEventTaps re-register too
+   Global hotkeys re-register too
    (`NeruSetKeymapLayoutChangeCallback2`), because `NeruKeyNameToCode` maps key
    names to layout-aware keycodes.
 
@@ -138,6 +145,28 @@ Follow one event from the OS to the user-visible action:
 
 Input follows the path in [Codebase navigation guide](#codebase-navigation-guide):
 event tap, handler, active mode, service, adapter, native API.
+
+The daemon publishes what happens on the event bus (`internal/domain/event`):
+
+- **The mode handler** publishes mode changes, selects (each step that moves a
+  mode's target, in `internal/app/modes/mode_handlers.go`), sticky modifiers
+  and monitor moves.
+- **The app state** publishes the scroll-invert and screen-share switches.
+- **The cursor slots** publish their saves and restores.
+- **The app** publishes focus, pause, reload, screen change, Mission Control,
+  ready and quit events.
+
+Publishing never blocks, so it is safe under the handler's lock and on the
+macOS main queue.
+
+Each subscriber reads a channel of its own. The hook runner
+(`internal/app/hooks.go`) runs the `[hooks]` steps through the sequence
+executor on its own goroutines, apart from key handling. It skips the quit
+event. Shutdown runs the quit hook itself, with a one-second bound, before it
+cancels the root context. The IPC watch stream
+(`internal/app/ipcctrl/watch.go`) serves `neru watch`. It subscribes through
+`event.Bus.SubscribeTo`, so the bus offers it only the events its client named
+with `--event`, or every event when the client named none.
 
 ### Overlay rendering
 
@@ -175,10 +204,9 @@ All shared code uses one global coordinate system:
 - **Y-axis**: increases downwards
 - **Units**: screen pixels, unscaled
 
-Cocoa's bottom-left origin is inverted at each darwin adapter site that needs
-it, such as
-[accessibility_screen_darwin.m](../../internal/adapter/platform/darwin/accessibility_screen_darwin.m),
-and never reaches shared Go. `internal/domain/geometry` holds no flip. It
+Each darwin adapter site that needs it inverts Cocoa's bottom-left origin, as
+[accessibility_screen_darwin.m](../../internal/adapter/platform/darwin/accessibility_screen_darwin.m)
+does, and the flip never reaches shared Go. `internal/domain/geometry` holds no flip. It
 translates origins, rescales and clamps, preserves the sign of Y, and Linux
 imports it too.
 
@@ -238,7 +266,7 @@ The code says "bundle ID" for whatever identifier the platform uses, which
    and heavy work runs in goroutines.
 2. **Bounded accessibility walks**: the macOS walk has `maxDepth`
    ([ax.go](../../internal/adapter/accessibility/ax/ax.go)), and the Linux
-   AT-SPI walk has `atspiMaxDepth` and `atspiMaxNodes`
+   AT-SPI walk takes the same `hints.max_depth` plus `atspiMaxNodes`
    ([atspi/client.go](../../internal/adapter/accessibility/atspi/client.go)).
 3. **Caching**: a TTL/LRU cache holds computed grid layouts
    ([grid/cache.go](../../internal/domain/grid/cache.go)), and another holds C

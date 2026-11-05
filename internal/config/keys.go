@@ -1,12 +1,15 @@
 package config
 
 import (
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
 
 	"github.com/y3owk1n/neru/internal/derrors"
+	"github.com/y3owk1n/neru/internal/domain/action"
 	"github.com/y3owk1n/neru/internal/domain/keyvocab"
+	"github.com/y3owk1n/neru/internal/domain/parity"
 )
 
 // StringOrStringArray is a type that can unmarshal from either a TOML string
@@ -52,7 +55,7 @@ func IsValidNamedKey(key string) bool {
 }
 
 // CanonicalNamedKeyForm returns the canonical display form of a named key
-// (e.g. "pagedown" → "PageDown", "UP" → "Up", "f1" → "F1").
+// (e.g. "pagedown" becomes "PageDown", "UP" becomes "Up", "f1" becomes "F1").
 // If the key is not a recognized named key, it returns the input unchanged
 // and false as the second return value.
 func CanonicalNamedKeyForm(key string) (string, bool) {
@@ -62,10 +65,22 @@ func CanonicalNamedKeyForm(key string) (string, bool) {
 // NormalizeKeyForComparison puts escape sequences and key names into one form,
 // so "\x1b" and "escape" are the same key and "q" matches "Q".
 //
-// On macOS "backspace" and "delete" are both the DEL key (\x7f). Named keys —
-// arrows, function keys, nav keys — become their lowercase form.
+// On macOS "backspace" and "delete" are both the DEL key (\x7f). Named keys,
+// such as arrows, function keys and nav keys, become their lowercase form.
 // Also normalizes fullwidth CJK characters to their halfwidth ASCII equivalents.
+// Primary resolves to the modifier UsePrimaryModifier published.
 func NormalizeKeyForComparison(key string) string {
+	return normalizeKey(key, publishedPrimaryToken())
+}
+
+// NormalizeKey is NormalizeKeyForComparison with Primary resolved by this
+// table rather than the published one, for comparing the keys of a
+// configuration while it is being loaded or validated.
+func (p PrimaryModifierConfig) NormalizeKey(key string) string {
+	return normalizeKey(key, p.token(runtime.GOOS))
+}
+
+func normalizeKey(key, primary string) string {
 	// Normalize fullwidth CJK characters first, before lowercasing and canonical matching.
 	// So a fullwidth space (U+3000) becomes " " becomes "space" in one pass.
 	key = normalizeFullwidthChars(key)
@@ -82,9 +97,8 @@ func NormalizeKeyForComparison(key string) string {
 	case " ":
 		return KeyNameSpace
 	case "\x08", "\x7f":
-		// On macOS, the Delete key (above Return) sends \x7f.
-		// \x08 is the ASCII BS control character (rarely generated on macOS but included for completeness).
-		// Treat \x7f and \x08 as synonyms of "delete" for user-friendly matching.
+		// On macOS the Delete key (above Return) sends \x7f. \x08 is the ASCII
+		// BS control character. Both match "delete".
 		return KeyNameDelete
 	}
 
@@ -95,7 +109,7 @@ func NormalizeKeyForComparison(key string) string {
 
 	// Normalize modifier aliases like "Primary" to the platform-native token
 	// so shared config can map to Cmd on macOS and Ctrl elsewhere.
-	key = normalizeModifierAliasesInCombo(key, runtime.GOOS)
+	key = normalizeModifierAliasesInCombo(key, primary)
 
 	// All other keys (named keys, plain characters, modifier combos) are already
 	// lowercased by strings.ToLower above and pass through as-is.
@@ -122,18 +136,69 @@ func HasPassthroughModifier(key string) bool {
 	return false
 }
 
-func primaryModifierTokenForOS(goos string) string {
-	if goos == "darwin" {
-		return "cmd"
+// UsePrimaryModifier makes table what Primary means in this process, for
+// hotkeys and action modifiers alike. The daemon calls it whenever it adopts a
+// configuration. The value lives in internal/domain/action, the lowest layer
+// that reads it, so there is one copy.
+func UsePrimaryModifier(table PrimaryModifierConfig) {
+	switch table.token(runtime.GOOS) {
+	case modifierNameCmd:
+		action.UsePrimaryModifier(action.ModCmd)
+	case modifierNameAlt:
+		action.UsePrimaryModifier(action.ModAlt)
+	default:
+		action.UsePrimaryModifier(action.ModCtrl)
+	}
+}
+
+// publishedPrimaryToken is the comparison token of the modifier
+// UsePrimaryModifier published.
+func publishedPrimaryToken() string {
+	mod := action.PrimaryModifier()
+	if mod == action.ModCmd {
+		return modifierNameCmd
+	}
+
+	if mod == action.ModAlt {
+		return modifierNameAlt
 	}
 
 	return modifierNameCtrl
 }
 
-func normalizeModifierTokenForOS(token, goos string) string {
+// ForOS returns the modifier written for goos.
+func (p PrimaryModifierConfig) ForOS(goos string) string {
+	return PerPlatform[string](p).ForOS(goos)
+}
+
+// PlatformValueType is the type of one platform's modifier name.
+func (p PrimaryModifierConfig) PlatformValueType() reflect.Type {
+	return PerPlatform[string](p).PlatformValueType()
+}
+
+// UnmarshalTOML reads the table as PerPlatform does.
+func (p *PrimaryModifierConfig) UnmarshalTOML(data any) error {
+	return (*PerPlatform[string])(p).UnmarshalTOML(data)
+}
+
+// token is the comparison token of the modifier written for goos. An empty
+// entry, which validation refuses in a file, reads as the default, so a Config
+// built in code without the table resolves Primary as it always has.
+func (p PrimaryModifierConfig) token(goos string) string {
+	name := p.ForOS(goos)
+	if strings.TrimSpace(name) == "" {
+		name = defaultPrimaryModifier().ForOS(goos)
+	}
+
+	return normalizeModifierToken(name, "")
+}
+
+// normalizeModifierToken resolves a modifier name to its comparison token,
+// with Primary resolving to primary.
+func normalizeModifierToken(token, primary string) string {
 	switch strings.TrimSpace(strings.ToLower(token)) {
 	case "primary":
-		return primaryModifierTokenForOS(goos)
+		return primary
 	case modifierNameCmd, "command", "super", "meta", "rightcmd", "leftcmd":
 		return modifierNameCmd
 	case modifierNameCtrl, "control", "rightctrl", "leftctrl":
@@ -148,18 +213,18 @@ func normalizeModifierTokenForOS(token, goos string) string {
 }
 
 // normalizeKeyAliases resolves a key-name alias to the key it means, in the
-// lowercase comparison form: "enter" → "return", "cmd+backspace" →
-// "cmd+delete", "esc" → "escape". The aliases are keyvocab's, so config does
+// lowercase comparison form. "enter" becomes "return", "cmd+backspace" becomes
+// "cmd+delete", and "esc" becomes "escape". The aliases are keyvocab's, so config does
 // not carry a second list of them.
 //
-// Only the base key — the segment after the last "+", or the whole string when
-// there is none — is a candidate. A modifier name is never an alias, and
+// Only the base key is a candidate, which is the segment after the last "+",
+// or the whole string when there is none. A modifier name is never an alias, and
 // splitting on the last "+" keeps a canonical form from being mangled into one
 // that shares its prefix ("escape" vs "esc").
 //
-// This is a deliberate near-miss of keyvocab.NormalizeKey (ADR 0007): both
+// This is a deliberate near-miss of keyvocab.NormalizeKey (ADR 0007). Both
 // resolve the same aliases from the same declaration, but they canonicalize to
-// different forms — NormalizeKey produces the display spelling a tap emits,
+// different forms. NormalizeKey produces the display spelling a tap emits, and
 // this produces the lowercase form a keystroke is matched in. Calling
 // NormalizeKey and lowercasing would also trim the key, which comparison must
 // not do.
@@ -178,7 +243,7 @@ func normalizeKeyAliases(key string) string {
 // and sorts the modifiers. Each tap spells modifiers in its own order, so the
 // sort makes "Primary+Shift+C" from config match "Shift+Ctrl+c" from the Linux
 // tap. A combo with a segment that is not a modifier ("ctrl++") keeps its order.
-func normalizeModifierAliasesInCombo(key, goos string) string {
+func normalizeModifierAliasesInCombo(key, primary string) string {
 	parts := strings.Split(key, "+")
 	if len(parts) < minimumModifierParts {
 		return key
@@ -187,7 +252,7 @@ func normalizeModifierAliasesInCombo(key, goos string) string {
 	allModifiers := true
 
 	for idx := range len(parts) - 1 {
-		parts[idx] = normalizeModifierTokenForOS(parts[idx], goos)
+		parts[idx] = normalizeModifierToken(parts[idx], primary)
 
 		switch parts[idx] {
 		case modifierNameCmd, modifierNameCtrl, modifierNameAlt, modifierNameShift:
@@ -206,15 +271,15 @@ func normalizeModifierAliasesInCombo(key, goos string) string {
 func displayModifierTokenForOS(token, goos string) string {
 	switch token {
 	case modifierNameCmd:
-		if goos == "darwin" {
-			return "Cmd"
+		if parity.Platform(goos) == parity.Darwin {
+			return modifierDisplayCmd
 		}
 
-		return "Super"
+		return modifierDisplaySuper
 	case modifierNameCtrl:
-		return "Ctrl"
+		return modifierDisplayCtrl
 	case modifierNameAlt:
-		return "Alt"
+		return modifierDisplayAlt
 	case modifierNameShift:
 		return "Shift"
 	default:
@@ -225,10 +290,10 @@ func displayModifierTokenForOS(token, goos string) string {
 // CanonicalHotkeyForPlatform rewrites shared modifier aliases like "Primary"
 // into the concrete tokens expected by the current platform backend.
 func CanonicalHotkeyForPlatform(hotkey string) string {
-	return canonicalHotkeyForOS(hotkey, runtime.GOOS)
+	return canonicalHotkey(hotkey, publishedPrimaryToken(), runtime.GOOS)
 }
 
-func canonicalHotkeyForOS(hotkey, goos string) string {
+func canonicalHotkey(hotkey, primary, goos string) string {
 	if hotkey == "" {
 		return hotkey
 	}
@@ -236,7 +301,7 @@ func canonicalHotkeyForOS(hotkey, goos string) string {
 	parts := strings.Split(hotkey, "+")
 
 	for idx := range len(parts) - 1 {
-		parts[idx] = displayModifierTokenForOS(normalizeModifierTokenForOS(parts[idx], goos), goos)
+		parts[idx] = displayModifierTokenForOS(normalizeModifierToken(parts[idx], primary), goos)
 	}
 
 	last := strings.TrimSpace(parts[len(parts)-1])
@@ -251,8 +316,8 @@ func canonicalHotkeyForOS(hotkey, goos string) string {
 
 // normalizeFullwidthChars converts fullwidth CJK characters (U+FF01-U+FF5E)
 // to their halfwidth ASCII equivalents (U+0021-U+007E).
-// Without it, keys misfire under CJK input methods.
-// Uses strings.Map for efficiency - only allocates when transformation occurs.
+// Without it, keys misfire under CJK input methods. strings.Map only allocates
+// when a character changes.
 func normalizeFullwidthChars(key string) string {
 	const (
 		fullwidthStart  = 0xFF01 // Fullwidth exclamation mark
@@ -264,13 +329,10 @@ func normalizeFullwidthChars(key string) string {
 	return strings.Map(func(char rune) rune {
 		switch {
 		case char >= fullwidthStart && char <= fullwidthEnd:
-			// Convert fullwidth to halfwidth
 			return char - halfwidthOffset
 		case char == fullwidthSpace:
-			// Fullwidth space -> regular space
 			return ' '
 		default:
-			// Return unchanged (strings.Map optimizes this case)
 			return char
 		}
 	}, key)

@@ -62,8 +62,8 @@ type InfoHandler struct {
 
 // InfoHandlerDeps collects everything NewInfoHandler needs.
 //
-// The reasoning matches Deps: the positional list had reached fourteen
-// arguments, several nil at any given call site. Zero values are valid — a nil
+// The reasoning matches Deps. The positional list had reached fourteen
+// arguments, several nil at any given call site. Zero values are valid. A nil
 // service means the commands that need it report it as unavailable, and
 // EventTap and IPCServer are nil until initialization phase 8.
 type InfoHandlerDeps struct {
@@ -124,6 +124,10 @@ func (h *InfoHandler) RegisterHandlers(
 	handlers[domain.CommandReloadConfig] = h.handleReloadConfig
 	handlers[domain.CommandHealth] = h.handleHealth
 	handlers[domain.CommandConfigSet] = h.handleConfigSet
+	handlers[domain.CommandQueryDisplays] = h.handleQueryDisplays
+	handlers[domain.CommandQueryCursor] = h.handleQueryCursor
+	handlers[domain.CommandQueryWindow] = h.handleQueryWindow
+	handlers[domain.CommandQueryApp] = h.handleQueryApp
 }
 
 // ResolveConfigPath determines the configuration file path for status reporting.
@@ -165,34 +169,11 @@ func (h *InfoHandler) configSnapshot() *config.Config {
 }
 
 func (h *InfoHandler) handleStatus(_ context.Context, _ ipc.Command) ipc.Response {
-	configPath := h.ResolveConfigPath()
-
-	cfg := h.configSnapshot()
-
-	if cfg == nil {
+	status, ok := h.statusData()
+	if !ok {
 		h.logger.Debug("Config is nil in handleStatus")
 
 		return h.configNotAvailableResponse()
-	}
-
-	status := map[string]any{
-		"enabled":                h.appState.IsEnabled(),
-		"mode":                   h.appState.ModeName(),
-		"config":                 configPath,
-		"hints_enabled":          cfg.Hints.Enabled,
-		"grid_enabled":           cfg.Grid.Enabled,
-		"recursive_grid_enabled": cfg.RecursiveGrid.Enabled,
-		"bisect_enabled":         cfg.Bisect.Enabled,
-		"capabilities":           capabilitiesMap(h.systemCapabilities()),
-		"profile":                profileMap(platform.CurrentProfile()),
-
-		// The runtime toggles. They are reported under the names the
-		// corresponding toggle-* command reports, so a caller can set one with
-		// --state and read back the field it just named.
-		"scroll_inverted":         h.appState.IsScrollInverted(),
-		"hidden_for_screen_share": h.appState.IsHiddenForScreenShare(),
-		"cursor_follow_selection": h.cursorFollowSelection(),
-		"saved_cursor_slots":      h.savedCursorSlots(),
 	}
 
 	return ipc.Response{
@@ -203,11 +184,52 @@ func (h *InfoHandler) handleStatus(_ context.Context, _ ipc.Command) ipc.Respons
 	}
 }
 
+// statusData is the object `neru status --json` prints, and false while no
+// configuration is loaded. The watch stream opens with it too, so the two read
+// the same fields.
+func (h *InfoHandler) statusData() (ipc.StatusData, bool) {
+	cfg := h.configSnapshot()
+	if cfg == nil {
+		return ipc.StatusData{}, false
+	}
+
+	return ipc.StatusData{
+		Enabled:              h.appState.IsEnabled(),
+		Mode:                 h.appState.ModeName(),
+		Config:               h.ResolveConfigPath(),
+		HintsEnabled:         cfg.Hints.Enabled,
+		GridEnabled:          cfg.Grid.Enabled,
+		RecursiveGridEnabled: cfg.RecursiveGrid.Enabled,
+		BisectEnabled:        cfg.Bisect.Enabled,
+		Capabilities:         capabilitiesMap(h.systemCapabilities()),
+		Profile:              profileMap(platform.CurrentProfile()),
+
+		// The runtime toggles. They are reported under the names the
+		// corresponding toggle-* command reports, so a caller can set one with
+		// --state and read back the field it just named.
+		ScrollInverted:        h.appState.IsScrollInverted(),
+		HiddenForScreenShare:  h.appState.IsHiddenForScreenShare(),
+		CursorFollowSelection: h.cursorFollowSelection(),
+		SavedCursorSlots:      h.savedCursorSlots(),
+		StickyModifiers:       h.stickyModifiers(),
+	}, true
+}
+
+// stickyModifiers reports the sticky modifiers held, as the sticky_modifiers
+// event names them.
+func (h *InfoHandler) stickyModifiers() string {
+	if h.modes == nil {
+		return ""
+	}
+
+	return h.modes.StickyModifiers().Canonical()
+}
+
 // cursorFollowSelection reports the active mode's cursor-follow-selection
 // preference, or nil when no mode carries one.
 //
 // It is null rather than false in that case because the two are different
-// answers: false means a running mode is not following the selection, and null
+// answers. False means a running mode is not following the selection, and null
 // means there is nothing to follow it with. A caller that treated the absence
 // as false would think it had read a state it can in fact only set once a mode
 // is running.
@@ -228,18 +250,18 @@ func (h *InfoHandler) cursorFollowSelection() *bool {
 // holds, as an object keyed by slot name.
 //
 // The points are re-keyed to lowercase x and y rather than encoded straight
-// from image.Point, whose fields marshal as X and Y — the rest of this payload
+// from image.Point, whose fields marshal as X and Y. The rest of this payload
 // is snake_case, and the shape a script reads should not depend on how the
 // position happens to be stored.
-func (h *InfoHandler) savedCursorSlots() map[string]map[string]int {
-	slots := map[string]map[string]int{}
+func (h *InfoHandler) savedCursorSlots() map[string]ipc.CursorSlotData {
+	slots := map[string]ipc.CursorSlotData{}
 
 	if h.cursorSlots == nil {
 		return slots
 	}
 
 	for name, pos := range h.cursorSlots.Snapshot() {
-		slots[name] = map[string]int{"x": pos.X, "y": pos.Y}
+		slots[name] = ipc.CursorSlotData{X: pos.X, Y: pos.Y}
 	}
 
 	return slots
@@ -270,7 +292,7 @@ func (h *InfoHandler) handleConfig(ctx context.Context, cmd ipc.Command) ipc.Res
 		}
 	}
 
-	// Default: dump the full config.
+	// Default: dump the full config, as config.toml writes it.
 	cfg := h.configSnapshot()
 	if cfg == nil {
 		h.logger.Debug("Config is nil in handleConfig")
@@ -280,7 +302,7 @@ func (h *InfoHandler) handleConfig(ctx context.Context, cmd ipc.Command) ipc.Res
 
 	return ipc.Response{
 		Success: true,
-		Data:    cfg,
+		Data:    config.Document(cfg),
 		Code:    ipc.CodeOK,
 	}
 }

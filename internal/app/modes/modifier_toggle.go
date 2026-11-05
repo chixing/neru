@@ -6,6 +6,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/y3owk1n/neru/internal/domain/action"
+	"github.com/y3owk1n/neru/internal/domain/event"
 	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 )
 
@@ -236,7 +237,7 @@ func (h *handlerState) scheduleModifierToggle(mod action.Modifiers, downTime tim
 		// path (cancelPendingModifierToggle via setAppMode) already
 		// stops timers and nils pendingModifierKeys, but this check provides
 		// defense-in-depth in case a timer fires between the mode exit and the
-		// cancel — matching the pattern used by refreshHintsTimer.
+		// cancel, matching the pattern refreshHintsTimer uses.
 		if h.modeSession != timerSession {
 			delete(h.pendingModifierTimers, mod)
 
@@ -265,6 +266,7 @@ func (h *handlerState) scheduleModifierToggle(mod action.Modifiers, downTime tim
 		delete(h.pendingModifierTimers, mod)
 		newModifiers := h.modifierState.Toggle(mod)
 		isDownNow := newModifiers.Has(mod)
+		h.publishStickyModifiers(newModifiers)
 
 		modName := ""
 		switch mod {
@@ -334,6 +336,16 @@ func (h *handlerState) clearStickyModifiers() {
 
 	h.modifierState.Reset()
 	h.heldModifiers = 0
+
+	if mods != 0 {
+		h.publishStickyModifiers(0)
+	}
+}
+
+// publishStickyModifiers reports the sticky modifiers now held. Caller holds
+// h.mu, which orders the reports as the changes applied.
+func (h *handlerState) publishStickyModifiers(mods action.Modifiers) {
+	h.events.Publish(event.Event{Name: event.StickyModifiers, Modifiers: mods.Canonical()})
 }
 
 func (h *handlerState) cancelPendingModifierToggle() {
@@ -377,7 +389,7 @@ func (h *Handler) SuppressModifiersUntilReleased(mods action.Modifiers) {
 		if mods.Has(mod) {
 			delete(h.pendingModifierKeys, mod)
 			h.stopPendingModifierTimer(mod)
-			// Don't clear usedInChordModifiers here — it may have been
+			// Don't clear usedInChordModifiers here. It may have been
 			// set by SuppressModifiersForHotkey (called from the global
 			// hotkey dispatch path) before the async mode-action path
 			// reaches us. Clearing it would let a modifier UP event
@@ -410,8 +422,8 @@ func (h *Handler) SuppressModifiersForHotkey(mods action.Modifiers) {
 	for _, mod := range allStickyModifiers {
 		if mods.Has(mod) {
 			// Clean up any modifierFreshPress state from a previous suppressed
-			// DOWN handler invocation — this prevents stale fresh-press flags
-			// from triggering spurious sticky toggles on the next cycle.
+			// DOWN handler invocation, so stale fresh-press flags cannot
+			// trigger spurious sticky toggles on the next cycle.
 			delete(h.modifierFreshPress, mod)
 			delete(h.pendingModifierKeys, mod)
 			h.stopPendingModifierTimer(mod)

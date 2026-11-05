@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -18,6 +19,8 @@ const (
 	testResponseMessage = "test response"
 	testCommandAction   = "test"
 	testMapKey          = "key"
+	testMapValue        = "value"
+	testWireVersion     = "1.2.3"
 )
 
 func TestSocketPath(t *testing.T) {
@@ -27,7 +30,6 @@ func TestSocketPath(t *testing.T) {
 		t.Error("SocketPath() returned empty string")
 	}
 
-	// Verify path contains expected components
 	if len(path) < 10 {
 		t.Errorf("SocketPath() returned suspiciously short path: %s", path)
 	}
@@ -132,7 +134,6 @@ func TestNewServer(t *testing.T) {
 				t.Error("NewServer() returned nil server")
 			}
 
-			// Clean up
 			if server != nil {
 				_ = server.Stop()
 			}
@@ -155,18 +156,15 @@ func TestServerStartStop(t *testing.T) {
 		t.Fatalf("NewServer() failed: %v", serverErr)
 	}
 
-	// Start server
 	server.Start()
 
 	// Give server time to start
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify server is running
 	if !ipc.IsServerRunning() {
 		t.Error("Server should be running after Start()")
 	}
 
-	// Stop server
 	serverErr = server.Stop()
 	if serverErr != nil {
 		t.Errorf("Stop() failed: %v", serverErr)
@@ -175,7 +173,6 @@ func TestServerStartStop(t *testing.T) {
 	// Give server time to stop
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify server is not running
 	if ipc.IsServerRunning() {
 		t.Error("Server should not be running after Stop()")
 	}
@@ -184,7 +181,6 @@ func TestServerStartStop(t *testing.T) {
 func TestClientSend(t *testing.T) {
 	logger := zap.NewNop()
 
-	// Create test handler
 	handler := func(_ context.Context, cmd ipc.Command) ipc.Response {
 		return ipc.Response{
 			Success: true,
@@ -195,7 +191,6 @@ func TestClientSend(t *testing.T) {
 		}
 	}
 
-	// Start server
 	server, serverErr := ipc.NewServer(handler, logger)
 	if serverErr != nil {
 		t.Fatalf("NewServer() failed: %v", serverErr)
@@ -208,7 +203,6 @@ func TestClientSend(t *testing.T) {
 	server.Start()
 	time.Sleep(100 * time.Millisecond)
 
-	// Create client
 	client := ipc.NewClient()
 
 	tests := []struct {
@@ -251,14 +245,12 @@ func TestClientSend(t *testing.T) {
 func TestClientSendWithTimeout(t *testing.T) {
 	logger := zap.NewNop()
 
-	// Create slow handler
 	handler := func(_ context.Context, _ ipc.Command) ipc.Response {
 		time.Sleep(200 * time.Millisecond)
 
 		return ipc.Response{Success: true}
 	}
 
-	// Start server
 	server, serverErr := ipc.NewServer(handler, logger)
 	if serverErr != nil {
 		t.Fatalf("NewServer() failed: %v", serverErr)
@@ -306,74 +298,68 @@ func TestClientSendWithTimeout(t *testing.T) {
 	}
 }
 
+// TestCommandJSON pins the wire keys a Command marshals to. A newer CLI talks
+// to an older daemon over this format, so a renamed json tag must fail here
+// rather than round-trip cleanly through the same struct.
 func TestCommandJSON(t *testing.T) {
 	cmd := ipc.Command{
-		Action: testCommandAction,
-		Params: map[string]any{
-			testMapKey: "value",
-		},
-		Args: []string{"arg1", "arg2"},
+		Version:  testWireVersion,
+		Protocol: ipc.ProtocolVersion,
+		Action:   testCommandAction,
+		Args:     []string{"arg1", "arg2"},
 	}
 
-	// Marshal
-	data, dataErr := json.Marshal(cmd)
-	if dataErr != nil {
-		t.Fatalf("json.Marshal() failed: %v", dataErr)
-	}
-
-	// Unmarshal
-	var decoded ipc.Command
-
-	dataErr = json.Unmarshal(data, &decoded)
-	if dataErr != nil {
-		t.Fatalf("json.Unmarshal() failed: %v", dataErr)
-	}
-
-	// Verify
-	if decoded.Action != cmd.Action {
-		t.Errorf("Action mismatch: got %s, want %s", decoded.Action, cmd.Action)
-	}
-
-	if len(decoded.Args) != len(cmd.Args) {
-		t.Errorf("Args length mismatch: got %d, want %d", len(decoded.Args), len(cmd.Args))
-	}
+	assertWireKeys(t, cmd, map[string]any{
+		"version":  testWireVersion,
+		"protocol": float64(ipc.ProtocolVersion),
+		"action":   testCommandAction,
+		"args":     []any{"arg1", "arg2"},
+	})
 }
 
+// TestResponseJSON pins the wire keys a Response marshals to, for the same
+// cross-version reason as TestCommandJSON.
 func TestResponseJSON(t *testing.T) {
 	response := ipc.Response{
-		Success: true,
-		Message: "test message",
-		Code:    "success",
+		Version:  testWireVersion,
+		Protocol: ipc.ProtocolVersion,
+		Success:  true,
+		Message:  "test message",
+		Code:     ipc.CodeOK,
 		Data: map[string]string{
-			testMapKey: "value",
+			testMapKey: testMapValue,
 		},
 	}
 
-	// Marshal
-	data, dataErr := json.Marshal(response)
-	if dataErr != nil {
-		t.Fatalf("json.Marshal() failed: %v", dataErr)
+	assertWireKeys(t, response, map[string]any{
+		"version":  testWireVersion,
+		"protocol": float64(ipc.ProtocolVersion),
+		"success":  true,
+		"message":  "test message",
+		"code":     ipc.CodeOK,
+		"data":     map[string]any{testMapKey: testMapValue},
+	})
+}
+
+// assertWireKeys marshals value and checks the decoded JSON object holds
+// exactly the want keys with the want values.
+func assertWireKeys(t *testing.T, value any, want map[string]any) {
+	t.Helper()
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal() failed: %v", err)
 	}
 
-	// Unmarshal
-	var decoded ipc.Response
+	var got map[string]any
 
-	dataErr = json.Unmarshal(data, &decoded)
-	if dataErr != nil {
-		t.Fatalf("json.Unmarshal() failed: %v", dataErr)
+	err = json.Unmarshal(data, &got)
+	if err != nil {
+		t.Fatalf("json.Unmarshal() failed: %v", err)
 	}
 
-	// Verify
-	if decoded.Success != response.Success {
-		t.Errorf("Success mismatch: got %v, want %v", decoded.Success, response.Success)
-	}
-
-	if decoded.Message != response.Message {
-		t.Errorf("Message mismatch: got %s, want %s", decoded.Message, response.Message)
-	}
-
-	if decoded.Code != response.Code {
-		t.Errorf("Code mismatch: got %s, want %s", decoded.Code, response.Code)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("wire JSON = %s, want keys and values %v", data, want)
 	}
 }
 
@@ -399,54 +385,6 @@ func TestClientSendWithTimeout_ServerNotRunning(t *testing.T) {
 	}
 }
 
-func TestCommand_EmptyAction(t *testing.T) {
-	cmd := ipc.Command{Action: ""}
-
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		t.Fatalf("json.Marshal() failed: %v", err)
-	}
-
-	var decoded ipc.Command
-
-	err = json.Unmarshal(data, &decoded)
-	if err != nil {
-		t.Fatalf("json.Unmarshal() failed: %v", err)
-	}
-
-	if decoded.Action != "" {
-		t.Errorf("Action mismatch: got %q, want empty string", decoded.Action)
-	}
-}
-
-func TestResponse_EmptyFields(t *testing.T) {
-	response := ipc.Response{}
-
-	data, err := json.Marshal(response)
-	if err != nil {
-		t.Fatalf("json.Marshal() failed: %v", err)
-	}
-
-	var decoded ipc.Response
-
-	err = json.Unmarshal(data, &decoded)
-	if err != nil {
-		t.Fatalf("json.Unmarshal() failed: %v", err)
-	}
-
-	if decoded.Success != false {
-		t.Errorf("Success mismatch: got %v, want false", decoded.Success)
-	}
-
-	if decoded.Message != "" {
-		t.Errorf("Message mismatch: got %q, want empty string", decoded.Message)
-	}
-
-	if decoded.Code != "" {
-		t.Errorf("Code mismatch: got %q, want empty string", decoded.Code)
-	}
-}
-
 func TestClient_SocketPath(t *testing.T) {
 	client := ipc.NewClient()
 	path := client.SocketPath()
@@ -457,5 +395,87 @@ func TestClient_SocketPath(t *testing.T) {
 
 	if !filepath.IsAbs(path) {
 		t.Errorf("Client.SocketPath() returned relative path: %s", path)
+	}
+}
+
+// TestClient_Stream_EndsCleanlyWhenTheDaemonStops runs a stream over the real
+// transport, the Unix socket or the Windows named pipe, from the client's side.
+func TestClient_Stream_EndsCleanlyWhenTheDaemonStops(t *testing.T) {
+	if ipc.IsServerRunning() {
+		t.Skip("a neru daemon already owns the IPC socket")
+	}
+
+	const lines = 3
+
+	server, serverErr := ipc.NewServer(func(_ context.Context, _ ipc.Command) ipc.Response {
+		return ipc.Response{Success: false, Code: ipc.CodeUnknownCommand}
+	}, zap.NewNop())
+	if serverErr != nil {
+		t.Fatalf("NewServer() failed: %v", serverErr)
+	}
+
+	server.HandleStream(
+		testCommandAction,
+		func(ctx context.Context, _ ipc.Command, emit func(any) error) error {
+			for seq := 1; seq <= lines; seq++ {
+				emitErr := emit(map[string]int{"seq": seq})
+				if emitErr != nil {
+					return emitErr
+				}
+			}
+
+			<-ctx.Done()
+
+			return nil
+		},
+	)
+	server.Start()
+
+	received := make(chan json.RawMessage, lines)
+
+	type result struct {
+		response ipc.Response
+		err      error
+	}
+
+	done := make(chan result, 1)
+
+	go func() {
+		response, err := ipc.NewClient().Stream(
+			ipc.Command{Action: testCommandAction},
+			5*time.Second,
+			func(line json.RawMessage) error {
+				received <- line
+
+				return nil
+			},
+		)
+		done <- result{response, err}
+	}()
+
+	for range lines {
+		select {
+		case <-received:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a streamed line never arrived")
+		}
+	}
+
+	stopErr := server.Stop()
+	if stopErr != nil {
+		t.Fatalf("Stop() error = %v", stopErr)
+	}
+
+	select {
+	case got := <-done:
+		if got.err != nil || !got.response.Success {
+			t.Errorf(
+				"Stream() = %+v, %v after the daemon stopped, want the accepting reply and no error",
+				got.response,
+				got.err,
+			)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stream() kept running after the daemon stopped")
 	}
 }

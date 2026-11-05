@@ -26,6 +26,8 @@ func namedPredicates() []namedPredicate {
 		{action.NameMoveMonitor, action.IsMoveMonitorAction},
 		{action.NameCycleHint, action.IsCycleHintAction},
 		{action.NameSearchHints, action.IsSearchHintsAction},
+		{action.NameRefreshHints, action.IsRefreshHintsAction},
+		{action.NameSnap, action.IsSnapAction},
 		{action.NameFeed, action.IsFeedAction},
 	}
 }
@@ -35,11 +37,11 @@ func namedPredicates() []namedPredicate {
 // its own name and reject all others.
 //
 // The Is<X>Action helpers are the routing table for CLI and IPC action
-// dispatch: each one claims a single action name, and the caller runs whichever
-// branch says yes. They are one-liners, which is exactly why they were
-// untested — and exactly why a slip in one is invisible. An inverted comparison
-// makes a predicate answer "yes" for every action except its own, silently
-// routing every unrelated action into that branch.
+// dispatch. Each one claims a single action name, and the caller runs whichever
+// branch says yes. They are one-liners, which is why they went untested and why
+// a slip in one goes unnoticed. An inverted comparison makes a predicate answer
+// "yes" for every action except its own, and every unrelated action then takes
+// that branch.
 //
 // Testing them as a cross-product (each predicate against every name) pins both
 // halves of the contract: it matches its own name, and it matches nothing else.
@@ -86,8 +88,8 @@ func TestActionPredicates_MatchExactlyTheirOwnName(t *testing.T) {
 }
 
 // TestActionPredicates_AreMutuallyExclusive states the property the dispatch
-// code relies on directly: for any given action name at most one predicate
-// fires, so the dispatcher cannot take two branches for one action.
+// code relies on directly. For any action name at most one predicate fires, so
+// the dispatcher cannot take two branches for one action.
 func TestActionPredicates_AreMutuallyExclusive(t *testing.T) {
 	predicates := namedPredicates()
 
@@ -114,7 +116,7 @@ func TestActionPredicates_AreMutuallyExclusive(t *testing.T) {
 func TestIsScrollSubAction_CoversEveryScrollNameAndNothingElse(t *testing.T) {
 	for _, name := range action.KnownNames() {
 		// Every mode-compatible known name is by definition not a scroll
-		// sub-action; the doc comment on KnownNames draws exactly that line.
+		// sub-action. The doc comment on KnownNames draws that line.
 		if action.IsScrollSubAction(string(name)) {
 			t.Errorf("IsScrollSubAction(%q) = true, but %q is a mode-compatible known name",
 				name, name)
@@ -144,11 +146,11 @@ func TestIsScrollSubAction_CoversEveryScrollNameAndNothingElse(t *testing.T) {
 	}
 }
 
-// TestModeActionNamesString_ListsExactlyTheMouseButtonActions checks the help
+// TestModeActionNamesString_ListsExactlyTheModeActions checks the help
 // text stays derived from the same predicate the CLI validates against. If the
 // two drift, `neru mode --help` advertises actions that are then rejected, or
 // omits ones that work.
-func TestModeActionNamesString_ListsExactlyTheMouseButtonActions(t *testing.T) {
+func TestModeActionNamesString_ListsExactlyTheModeActions(t *testing.T) {
 	listed := strings.Split(action.ModeActionNamesString(), ", ")
 
 	inList := make(map[string]bool, len(listed))
@@ -171,10 +173,10 @@ func TestModeActionNamesString_ListsExactlyTheMouseButtonActions(t *testing.T) {
 
 	for _, name := range action.KnownNames() {
 		actionType, err := name.ToType()
-		wantListed := err == nil && actionType.IsMouseButton()
+		wantListed := err == nil && actionType.IsModeAction()
 
 		if gotListed := inList[string(name)]; gotListed != wantListed {
-			t.Errorf("action %q listed = %t, want %t (IsMouseButton = %t)",
+			t.Errorf("action %q listed = %t, want %t (IsModeAction = %t)",
 				name, gotListed, wantListed, wantListed)
 		}
 	}
@@ -189,7 +191,7 @@ func TestModeActionNamesString_ListsExactlyTheMouseButtonActions(t *testing.T) {
 
 // TestPrimaryModifier_MatchesThePlatformAccelerator pins the platform's default
 // accelerator. Getting it backwards would make every default binding fire on
-// the wrong modifier — Control on macOS, Command on Linux and Windows.
+// the wrong modifier, Control on macOS and Command on Linux and Windows.
 func TestPrimaryModifier_MatchesThePlatformAccelerator(t *testing.T) {
 	want := action.ModCtrl
 	if runtime.GOOS == "darwin" {

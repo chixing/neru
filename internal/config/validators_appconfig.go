@@ -47,7 +47,6 @@ func validateAppConfigsWithCallback(
 			return err
 		}
 
-		// Call mode-specific field validator if provided
 		if fieldValidator != nil {
 			err = fieldValidator(idx, &appConfig)
 			if err != nil {
@@ -139,13 +138,11 @@ func rejectModeSpecificFields(modeName string) AppConfigFieldValidator {
 // validateScrollAppConfigs validates per-app scroll configuration.
 func validateScrollAppConfigs(modeName string, appConfigs []AppConfig) error {
 	scrollFieldValidator := func(idx int, appConfig *AppConfig) error {
-		// First, reject hints fields
 		err := rejectHintsFields(modeName)(idx, appConfig)
 		if err != nil {
 			return err
 		}
 
-		// Then validate scroll fields
 		if appConfig.ScrollStep != nil {
 			err := validateMinValue(
 				*appConfig.ScrollStep,
@@ -202,12 +199,14 @@ func (c *Config) ValidateAppConfigs() error {
 			}
 
 			switch appConfig.Strategy {
-			case domain.StrategyAXTree, domain.StrategyVision, domain.StrategyContour, "":
+			case domain.StrategyAXTree, domain.StrategyVision, domain.StrategyContour,
+				domain.StrategySegment, "":
 			default:
 				return derrors.Newf(
 					derrors.CodeInvalidConfig,
-					"hints.app_configs[%d].strategy must be %q, %q, or %q",
+					"hints.app_configs[%d].strategy must be %q, %q, %q, or %q",
 					idx, domain.StrategyAXTree, domain.StrategyVision, domain.StrategyContour,
+					domain.StrategySegment,
 				)
 			}
 

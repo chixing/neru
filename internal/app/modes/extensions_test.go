@@ -23,7 +23,7 @@ type extensionAxis struct {
 }
 
 // allExtensions is every optional extension there is. A new one is added here
-// once; the matrix then asserts it for every mode.
+// once. The matrix then asserts it for every mode.
 var allExtensions = []extensionAxis{
 	{
 		name: extensionSelectionTracking,
@@ -113,13 +113,21 @@ var allExtensions = []extensionAxis{
 			return ok
 		},
 	},
+	{
+		name: extensionSelectionRegion,
+		carried: func(mode Mode) bool {
+			_, ok := mode.(selectionRegionReporter)
+
+			return ok
+		},
+	},
 }
 
 // modeExtensionMatrix states, per mode, every optional extension that mode
-// carries. Omission is a statement too: a mode listed with no extensions has
+// carries. Omission is a statement too. A mode listed with no extensions has
 // been considered on every axis and carries none.
 //
-// This table is what makes optional extensions safe; the modes area guide says
+// This table is what makes optional extensions safe. The modes area guide says
 // why the guarantee lives here rather than in the linter.
 var modeExtensionMatrix = map[domain.Mode][]extensionName{
 	domain.ModeHints: {
@@ -142,6 +150,7 @@ var modeExtensionMatrix = map[domain.Mode][]extensionName{
 		extensionThemeRefresh,
 		extensionScreenRefresh,
 		extensionScopeReport,
+		extensionSelectionRegion,
 	},
 	domain.ModeRecursiveGrid: {
 		extensionSelectionTracking,
@@ -153,6 +162,7 @@ var modeExtensionMatrix = map[domain.Mode][]extensionName{
 		extensionThemeRefresh,
 		extensionScreenRefresh,
 		extensionScopeReport,
+		extensionSelectionRegion,
 	},
 	domain.ModeBisect: {
 		extensionBisecting,
@@ -163,6 +173,7 @@ var modeExtensionMatrix = map[domain.Mode][]extensionName{
 		extensionThemeRefresh,
 		extensionScreenRefresh,
 		extensionScopeReport,
+		extensionSelectionRegion,
 	},
 	domain.ModeScroll: {
 		extensionHotkeyOverrides,
@@ -180,7 +191,7 @@ var modeExtensionMatrix = map[domain.Mode][]extensionName{
 // optional-extension axis.
 //
 // It builds a real handler so it reads the same mode map the daemon dispatches
-// through: a mode added to newModes appears here without anyone remembering to
+// through. A mode added to newModes appears here without anyone remembering to
 // list it, and fails until its row above is stated.
 func TestModeExtensionMatrix(t *testing.T) {
 	handler := NewHandler(HandlerDeps{})
@@ -206,19 +217,19 @@ func TestCheckModeExtensions_RejectsAModeThatStatesNothing(t *testing.T) {
 	}{
 		{
 			name:       "a registered mode with no row at all",
-			registered: map[domain.Mode]Mode{newMode: &stubMode{modeType: newMode}},
+			registered: map[domain.Mode]Mode{newMode: &stubMode{}},
 			matrix:     map[domain.Mode][]extensionName{},
 		},
 		{
 			name: "a mode carrying an extension its row does not state",
 			registered: map[domain.Mode]Mode{
-				newMode: &stubSelectionTrackingMode{stubMode{modeType: newMode}},
+				newMode: &stubSelectionTrackingMode{stubMode{}},
 			},
 			matrix: map[domain.Mode][]extensionName{newMode: {}},
 		},
 		{
 			name:       "a mode whose row claims an extension it does not carry",
-			registered: map[domain.Mode]Mode{newMode: &stubMode{modeType: newMode}},
+			registered: map[domain.Mode]Mode{newMode: &stubMode{}},
 			matrix:     map[domain.Mode][]extensionName{newMode: {extensionCellNavigation}},
 		},
 		{
@@ -246,7 +257,7 @@ func TestCheckModeExtensions_AcceptsAFullyStatedMode(t *testing.T) {
 
 	problems := checkModeExtensions(
 		map[domain.Mode]Mode{
-			newMode: &stubSelectionTrackingMode{stubMode{modeType: newMode}},
+			newMode: &stubSelectionTrackingMode{stubMode{}},
 		},
 		map[domain.Mode][]extensionName{newMode: {extensionSelectionTracking}},
 	)
@@ -256,7 +267,7 @@ func TestCheckModeExtensions_AcceptsAFullyStatedMode(t *testing.T) {
 }
 
 // TestActiveModeEffect_DeclinedEffectIsDiagnosable pins the half of the absence
-// semantics a user can feel: pressing backspace in a mode that does not edit
+// semantics a user can feel. Pressing backspace in a mode that does not edit
 // input does nothing, and "nothing happened" has to be answerable from a debug
 // log rather than by reading the dispatch.
 //
@@ -293,7 +304,7 @@ func TestActiveModeEffect_DeclinedEffectIsDiagnosable(t *testing.T) {
 	}
 }
 
-// TestActiveModeExtension_AbsentGetterStaysSilent pins the other half: a getter
+// TestActiveModeExtension_AbsentGetterStaysSilent pins the other half. A getter
 // the active mode does not carry answers with its zero value and says nothing,
 // because the caller asked a question rather than for an effect.
 func TestActiveModeExtension_AbsentGetterStaysSilent(t *testing.T) {
@@ -380,14 +391,11 @@ func checkModeExtensions(
 }
 
 // stubMode is a mode carrying no optional extension at all.
-type stubMode struct {
-	modeType domain.Mode
-}
+type stubMode struct{}
 
 func (m *stubMode) Activate(modecmd.Activation)                            {}
 func (m *stubMode) HandleKey(string)                                       {}
 func (m *stubMode) Exit()                                                  {}
-func (m *stubMode) ModeType() domain.Mode                                  { return m.modeType }
 func (m *stubMode) RefreshForMonitorMove(context.Context, image.Rectangle) {}
 
 // stubSelectionTrackingMode is a mode carrying exactly one of them.
@@ -399,7 +407,11 @@ func (m *stubSelectionTrackingMode) SelectionPoint() (image.Point, bool) {
 	return image.Point{}, false
 }
 
+func (m *stubSelectionTrackingMode) SelectionWrites() uint64 { return 0 }
+
 func (m *stubSelectionTrackingMode) ClearSelectionPoint() bool { return false }
+
+func (m *stubSelectionTrackingMode) PlaceSelectionPoint(image.Point) {}
 
 func (m *stubSelectionTrackingMode) SelectionAnchor() (image.Point, bool) {
 	return image.Point{}, false

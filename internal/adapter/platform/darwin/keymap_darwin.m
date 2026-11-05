@@ -35,6 +35,9 @@ static TISInputSourceRef gReferenceInputSource = nil;
 static BOOL gUsesCurrentLayoutFallback = NO;
 /// whether the configured layout ID was resolved successfully (or no explicit ID was set)
 static BOOL gConfiguredInputSourceResolved = YES;
+/// layout ID the latest NeruSetReferenceKeyboardLayout call asked for, recorded
+/// before its apply is queued, so it can differ from gConfiguredInputSourceID
+static NSString *gRequestedInputSourceID = nil;
 
 /// cached keycode-to-char maps for common modifier combinations (shift, caps, shift+caps)
 /// to avoid UCKeyTranslate calls during key event handling
@@ -46,11 +49,10 @@ static NSDictionary<NSNumber *, NSString *> *gKeyCodeToCharShiftedCaps = nil;
 /// debounce timer for keyboard layout change notifications
 static dispatch_block_t gLayoutChangeDebounceBlock = nil;
 
-/// optional callback invoked after layout maps are rebuilt
 /// empty layout-change callback slot
 ///
-/// Spelled as a cast rather than NULL: Apple clang 15 — the newest toolchain
-/// available on macOS 14.4 and earlier — rejects NULL, 0 and nil alike as
+/// Spelled as a cast rather than NULL, because Apple clang 15, the newest toolchain
+/// available on macOS 14.4 and earlier, rejects NULL, 0 and nil alike as
 /// compile-time constant initializers for an _Atomic function pointer. A cast
 /// to the pointer type is accepted by every clang, so this builds on old and
 /// new toolchains both.
@@ -273,7 +275,7 @@ static TISInputSourceRef copyResolvedReferenceInputSource(
 	// 2. Current ASCII-capable keyboard layout (if it has Unicode layout data)
 	// 3. Preferred stable Latin layouts (ABC, US)
 	// 4. First English keyboard layout
-	// 5. Current layout (fallback — unstable across layout switches)
+	// 5. Current layout (fallback, unstable across layout switches)
 	NSArray<NSString *> *preferredIDs = @[
 		@"com.apple.keylayout.ABC",
 		@"com.apple.keylayout.US",
@@ -678,7 +680,7 @@ static void initializeSpecialKeyMaps(void) {
 
 	// Numpad keys with a named-key equivalent fold to it (issue #1372), the
 	// way the Wayland keymap folds KP_Enter -> Return. Only the code-to-name
-	// direction learns them: name-to-code must keep resolving "Return" to the
+	// direction learns them, because name-to-code must keep resolving "Return" to the
 	// main Return key for key synthesis.
 	codeToName[@(kKeyCodeNumpadEnter)] = @"Return";
 	codeToName[@(kKeyCodeNumpadClear)] = @"Clear";
@@ -711,7 +713,7 @@ static void buildLayoutMaps(void) {
 		TISInputSourceRef inputSource = copyResolvedReferenceInputSource(NULL, NULL);
 
 		if (!inputSource) {
-			// No usable layout source — populate with QWERTY fallback so special
+			// No usable layout source. Populate with QWERTY fallback so special
 			// keys and basic key lookups still work.
 			buildQWERTYNameMaps(nameToCode, codeToName);
 			buildQWERTYCharMaps(unshifted, shifted, caps, shiftedCaps);
@@ -730,7 +732,7 @@ static void buildLayoutMaps(void) {
 		CFDataRef layoutData = (CFDataRef)TISGetInputSourceProperty(inputSource, kTISPropertyUnicodeKeyLayoutData);
 
 		if (!layoutData) {
-			// Layout source exists but has no uchr data — populate with QWERTY fallback.
+			// Layout source exists but has no uchr data, so populate with QWERTY fallback.
 			// Keep previous gCurrentInputSource/gCurrentKeyboardLayout if we had one
 			// so live UCKeyTranslate fallback remains valid.
 			CFRelease(inputSource);
@@ -761,7 +763,7 @@ static void buildLayoutMaps(void) {
 
 			NSString *ch = translateKeyCodeViaLayout(keyboardLayout, keyCode, 0);
 			if (!ch || ch.length == 0) {
-				// UCKeyTranslate failed — use QWERTY fallback
+				// UCKeyTranslate failed, so use QWERTY fallback
 				ch = keyCodeToNameQWERTY(keyCode);
 				if (!ch)
 					continue;
@@ -1067,9 +1069,9 @@ NSString *NeruKeyCodeToCharacter(CGKeyCode keyCode, CGEventFlags flags) {
 
 	// Numpad keys are layout-independent. Keys with a named-key equivalent
 	// fold to it, the way the Wayland keymap folds KP_Enter -> Return
-	// (wayland_keymap.c) — a raw control character here would either match
+	// (wayland_keymap.c). A raw control character here would either match
 	// no binding ("\x03") or impersonate the Delete key ("\x7f"). "Clear"
-	// is not a bindable named key; it deliberately matches nothing.
+	// is not a bindable named key, so it deliberately matches nothing.
 	case kKeyCodeNumpadDot:
 		return @".";
 	case kKeyCodeNumpadMultiply:
@@ -1202,67 +1204,106 @@ void NeruRefreshKeyboardLayoutMaps(void) {
 	}
 }
 
-char *NeruCopyKeyboardLayoutIDs(void) {
-	NSDictionary *filter =
-	    @{(__bridge NSString *)kTISPropertyInputSourceType : (__bridge NSString *)kTISTypeKeyboardLayout};
-	CFArrayRef inputSourceList = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, false);
-	if (!inputSourceList) {
-		return NULL;
-	}
+void NeruCopyKeyboardLayouts(char **layoutIDsOut, char **referenceIDOut, int *resolvedOut) {
+	*layoutIDsOut = NULL;
+	*referenceIDOut = NULL;
 
-	NSMutableArray<NSString *> *ids = [NSMutableArray array];
-	CFIndex sourceCount = CFArrayGetCount(inputSourceList);
-	for (CFIndex i = 0; i < sourceCount; i++) {
-		TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(inputSourceList, i);
-		NSString *sourceID = (__bridge NSString *)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
-		if (sourceID && inputSourceHasUnicodeLayoutData(source)) {
-			[ids addObject:sourceID];
+	__block NSString *layoutIDs = nil;
+	__block NSString *referenceID = nil;
+	__block BOOL resolved = YES;
+
+	void (^readLayouts)(void) = ^{
+		@autoreleasepool {
+			NSDictionary *filter =
+			    @{(__bridge NSString *)kTISPropertyInputSourceType : (__bridge NSString *)kTISTypeKeyboardLayout};
+			CFArrayRef inputSourceList = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, false);
+			if (inputSourceList) {
+				NSMutableArray<NSString *> *ids = [NSMutableArray array];
+				CFIndex sourceCount = CFArrayGetCount(inputSourceList);
+				for (CFIndex i = 0; i < sourceCount; i++) {
+					TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(inputSourceList, i);
+					NSString *sourceID =
+					    (__bridge NSString *)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
+					if (sourceID && inputSourceHasUnicodeLayoutData(source)) {
+						[ids addObject:sourceID];
+					}
+				}
+				CFRelease(inputSourceList);
+				layoutIDs = [ids componentsJoinedByString:@"\n"];
+			}
+
+			TISInputSourceRef reference = copyResolvedReferenceInputSource(&resolved, NULL);
+			if (reference) {
+				referenceID =
+				    [(__bridge NSString *)TISGetInputSourceProperty(reference, kTISPropertyInputSourceID) copy];
+				CFRelease(reference);
+			}
+		}
+	};
+
+	if ([NSThread isMainThread]) {
+		readLayouts();
+	} else {
+		// TIS must run on the main thread, so the read never falls back to
+		// this one. A main queue that does not answer in time leaves the read
+		// queued, and nobody reads its late results. The resolved flag the main
+		// thread last recorded needs no TIS, so the call still reports it.
+		dispatch_semaphore_t completed = dispatch_semaphore_create(0);
+		dispatch_async(dispatch_get_main_queue(), ^{
+			readLayouts();
+			dispatch_semaphore_signal(completed);
+		});
+
+		dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC));
+		if (dispatch_semaphore_wait(completed, timeout) != 0) {
+			NeruLog(NeruLogLevelWarn, @"Timed out waiting for the main queue, keyboard layouts not read", @"500ms");
+
+			// The flag belongs to the configured layout. While an apply for
+			// another layout is still queued it says nothing about the one
+			// requested, so the call reports that one as not unmatched.
+			[gKeymapLock lock];
+			BOOL applied = gRequestedInputSourceID == gConfiguredInputSourceID ||
+			               [gRequestedInputSourceID isEqualToString:gConfiguredInputSourceID];
+			*resolvedOut = (!applied || gConfiguredInputSourceResolved) ? 1 : 0;
+			[gKeymapLock unlock];
+
+			return;
 		}
 	}
-	CFRelease(inputSourceList);
 
-	return strdup([[ids componentsJoinedByString:@"\n"] UTF8String]);
-}
-
-int NeruReferenceKeyboardLayoutResolved(void) {
-	BOOL resolved = YES;
-	TISInputSourceRef source = copyResolvedReferenceInputSource(&resolved, NULL);
-	if (source) {
-		CFRelease(source);
+	@autoreleasepool {
+		if (layoutIDs) {
+			*layoutIDsOut = strdup([layoutIDs UTF8String]);
+		}
+		if (referenceID) {
+			*referenceIDOut = strdup([referenceID UTF8String]);
+		}
+		*resolvedOut = resolved ? 1 : 0;
 	}
-
-	return resolved ? 1 : 0;
-}
-
-char *NeruCopyReferenceKeyboardLayoutID(void) {
-	TISInputSourceRef source = copyResolvedReferenceInputSource(NULL, NULL);
-	if (!source) {
-		return NULL;
-	}
-
-	NSString *sourceID = (__bridge NSString *)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
-	char *copied = sourceID ? strdup([sourceID UTF8String]) : NULL;
-	CFRelease(source);
-
-	return copied;
 }
 
 int NeruSetReferenceKeyboardLayout(const char *inputSourceID) {
-	// Normalise input — treat empty string as nil (auto-detect)
+	// Normalise input, treating an empty string as nil (auto-detect)
 	NSString *trimmedInputSourceID = nil;
 	if (inputSourceID) {
-		trimmedInputSourceID =
-		    [@(inputSourceID) stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+		@autoreleasepool {
+			trimmedInputSourceID =
+			    [@(inputSourceID) stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+		}
 		if (trimmedInputSourceID.length == 0) {
 			trimmedInputSourceID = nil;
 		}
 	}
 
+	initializeKeyMaps();
+
+	[gKeymapLock lock];
+	gRequestedInputSourceID = [trimmedInputSourceID copy];
+	[gKeymapLock unlock];
+
 	__block BOOL configuredResolved = YES;
 
 	void (^applyReferenceLayout)(void) = ^{
-		initializeKeyMaps();
-
 		[gKeymapLock lock];
 		gConfiguredInputSourceID = [trimmedInputSourceID copy];
 		clearResolvedReferenceInputSourceLocked();
@@ -1289,41 +1330,36 @@ int NeruSetReferenceKeyboardLayout(const char *inputSourceID) {
 	if ([NSThread isMainThread]) {
 		applyReferenceLayout();
 	} else {
-		// Dispatch to main thread and wait, with a once-guard to prevent double execution
-		NSLock *applyLock = [[NSLock alloc] init];
-		__block BOOL didApply = NO;
+		// TIS must run on the main thread, so the apply never falls back to
+		// this one. A main queue that does not answer in time keeps it queued.
+		// The compare-and-swap decides who reports the outcome. The caller
+		// returns it when the apply finished in time, else the apply logs it.
+		enum { applyPending, applyFinished, applyAbandoned };
 
-		void (^applyReferenceLayoutOnce)(void) = ^{
-			[applyLock lock];
-			BOOL shouldApply = !didApply;
-			if (shouldApply) {
-				didApply = YES;
-			}
-			[applyLock unlock];
-
-			if (shouldApply) {
-				applyReferenceLayout();
-			}
-		};
+		__block _Atomic(int) applyState = applyPending;
 
 		dispatch_semaphore_t completed = dispatch_semaphore_create(0);
 		dispatch_async(dispatch_get_main_queue(), ^{
-			applyReferenceLayoutOnce();
+			applyReferenceLayout();
+
+			int expected = applyPending;
+			if (!atomic_compare_exchange_strong(&applyState, &expected, applyFinished) && !configuredResolved) {
+				NeruLog(
+				    NeruLogLevelWarn, @"Configured keyboard layout was not found, using automatic fallback",
+				    trimmedInputSourceID);
+			}
 			dispatch_semaphore_signal(completed);
 		});
 
 		dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC));
 		if (dispatch_semaphore_wait(completed, timeout) != 0) {
-			// In tests/CLI runs the main queue may not be pumping — run directly
-			applyReferenceLayoutOnce();
+			int expected = applyPending;
+			if (atomic_compare_exchange_strong(&applyState, &expected, applyAbandoned)) {
+				NeruLog(
+				    NeruLogLevelWarn, @"Timed out waiting for the main queue, keyboard layout stays queued", @"500ms");
+				return 1;
+			}
 		}
-
-		// Re-read the authoritative value under lock to avoid a data race:
-		// the __block configuredResolved variable may be concurrently written
-		// by the main queue thread and read here without synchronization.
-		[gKeymapLock lock];
-		configuredResolved = gConfiguredInputSourceResolved;
-		[gKeymapLock unlock];
 	}
 
 	return configuredResolved ? 1 : 0;

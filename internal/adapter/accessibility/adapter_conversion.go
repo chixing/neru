@@ -22,7 +22,6 @@ func (a *Adapter) convertToDomainElement(node ax.Node) (*element.Element, error)
 		searchText = provider.SearchText()
 	}
 
-	// Create element with options
 	domElement, elementErr := element.NewElement(
 		elementID,
 		bounds,
@@ -32,6 +31,8 @@ func (a *Adapter) convertToDomainElement(node ax.Node) (*element.Element, error)
 		element.WithDescription(node.Description()),
 		element.WithValue(node.Value()),
 		element.WithSearchText(searchText),
+		element.WithFocused(node.IsFocused()),
+		element.WithIdentifier(node.Identifier()),
 	)
 	if elementErr != nil {
 		return nil, derrors.Wrap(

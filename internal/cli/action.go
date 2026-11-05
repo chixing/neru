@@ -25,8 +25,9 @@ Available subcommands:
   Click actions:    left_click, right_click, middle_click
   Scroll actions:   scroll_up, scroll_down, scroll_left, scroll_right,
                     go_top, go_bottom, page_up, page_down
-  Mouse movement:   move_mouse, move_mouse_relative, move_monitor
-  Mode control:     reset, backspace, move_cell, bisect, wait_for_mode_exit, cycle_hint
+  Mouse movement:   move_mouse, move_mouse_relative, move_monitor, snap
+  Mode control:     reset, backspace, move_cell, bisect, wait_for_mode_exit, cycle_hint,
+                    refresh_hints
   Cursor saving:    save_cursor_pos, restore_cursor_pos
   Cursor visibility: hide_cursor, show_cursor
   Key injection:    feed
@@ -139,7 +140,7 @@ single key.`,
 //
 // The flag form (left_click --state down) is the documented spelling, but the
 // action names are what a mode --action takes, and hotkey action strings reach
-// the daemon without passing through Cobra — so "action right_mouse_down" in a
+// the daemon without passing through Cobra, so "action right_mouse_down" in a
 // config already works. These keep `neru action right_mouse_down` working too,
 // so a string that works in one place works everywhere. Hidden, so that help
 // output still steers people to the flags.
@@ -199,8 +200,8 @@ func clickFlagSpelling(button action.MouseButton, phase action.MousePhase) strin
 }
 
 // buildDeprecatedMouseButtonCommand builds one of the original left-button
-// press/release commands. They still work, but warn on stderr — stdout stays
-// clean for scripts — pointing at the --state spelling that also covers the
+// press/release commands. They still work, but warn on stderr (stdout stays
+// clean for scripts), pointing at the --state spelling that also covers the
 // right and middle buttons.
 func buildDeprecatedMouseButtonCommand(
 	use, short, long, param, replacement string,
@@ -290,7 +291,7 @@ const actionCmdName = "action"
 // save_cursor_pos or restore_cursor_pos, whose only flag is --slot.
 //
 // It does not go through buildActionCommand because that one always offers
-// --modifier, which the daemon rejects for these two actions: a command should
+// --modifier, which the daemon rejects for these two actions. A command should
 // not advertise a flag its own daemon refuses.
 func BuildCursorSlotActionCommand(use, short, long string, params []string) *cobra.Command {
 	var slot string
@@ -465,6 +466,23 @@ at the current cursor location.`,
 // ActionCycleHintCmd cycles through visible hints in hints mode.
 var ActionCycleHintCmd = BuildCycleHintCommand()
 
+// ActionRefreshHintsCmd rescans the open hints session with its own flags.
+var ActionRefreshHintsCmd = BuildActionCommand(
+	"refresh_hints",
+	"Rescan hints with the current session's flags",
+	`Rescan the elements in hints mode and redraw the labels, keeping the flags the
+session was activated with. A --strategy or --capture-scope cycle stays on the
+entry in use, and the filters, action and --on-exit steps carry over.
+
+Requires hints mode to be active. It refuses a session started with --targets,
+since there is nothing to rescan. If the rescan finds nothing, hints mode exits.`,
+	[]string{"refresh_hints"},
+	false,
+)
+
+// ActionSnapCmd moves the cursor onto the nearest clickable element.
+var ActionSnapCmd = BuildSnapCommand()
+
 // ActionMoveCellCmd moves the active mode's selection to a neighboring cell.
 var ActionMoveCellCmd = BuildMoveCellCommand()
 
@@ -500,6 +518,8 @@ func init() {
 	ActionCmd.AddCommand(ActionPageUpCmd)
 	ActionCmd.AddCommand(ActionPageDownCmd)
 	ActionCmd.AddCommand(ActionCycleHintCmd)
+	ActionCmd.AddCommand(ActionRefreshHintsCmd)
+	ActionCmd.AddCommand(ActionSnapCmd)
 	ActionCmd.AddCommand(ActionMoveCellCmd)
 	ActionCmd.AddCommand(ActionBisectCmd)
 	ActionCmd.AddCommand(ActionHideCursorCmd)

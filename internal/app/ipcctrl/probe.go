@@ -4,22 +4,24 @@ import (
 	"context"
 
 	"github.com/y3owk1n/neru/internal/adapter/ipc"
+	"github.com/y3owk1n/neru/internal/domain/element"
 	"github.com/y3owk1n/neru/internal/domain/modecmd"
 )
 
 // probeOptions is what a hints probe needs to answer.
 //
 // It is deliberately not an activation. A probe draws nothing and enters
-// nothing, so the flags that describe an activation — the pending action, the
-// modifiers held during it, toggling, repeating, what runs on exit — mean
-// nothing here. Only the four that shape which elements get collected carry
-// over, which is why the probe reads its own request rather than a mode
-// command.
+// nothing, so the flags that describe an activation mean nothing here. Those
+// are the pending action, the modifiers held during it, toggling, repeating,
+// and what runs on exit. Only the flags that shape which elements get collected carry
+// over, plus --label-direction, which shapes the labels the probe reports.
+// That is why the probe reads its own request rather than a mode command.
 type probeOptions struct {
 	FilterRoles        []string
 	FilterTextContains []string
 	Strategy           string
 	CaptureScope       string
+	LabelDirection     string
 	SplitWord          bool
 }
 
@@ -27,8 +29,8 @@ type probeOptions struct {
 //
 // Anything outside the probe's own vocabulary is refused rather than ignored,
 // so a caller that sends an activation flag learns it had no effect instead of
-// assuming it did. The four flags are named and spelled from the mode-command
-// grammar even so: a probe is written with the same words as the mode it
+// assuming it did. The flags are named and spelled from the mode-command
+// grammar even so. A probe is written with the same words as the mode it
 // reports on.
 func (h *ModesHandler) extractProbeOptions(cmd ipc.Command) (probeOptions, *ipc.Response) {
 	var opts probeOptions
@@ -83,6 +85,21 @@ func readProbeFlag(args *probeArgs, opts *probeOptions) *ipc.Response {
 
 		return nil
 
+	case args.is(modecmd.FlagLabelDirection):
+		value, resp := args.take(valueMessage(modecmd.FlagLabelDirection))
+		if resp != nil {
+			return resp
+		}
+
+		direction, err := modecmd.ParseLabelDirection(value)
+		if err != nil {
+			return refuse(valueMessage(modecmd.FlagLabelDirection))
+		}
+
+		opts.LabelDirection = direction
+
+		return nil
+
 	case args.is(modecmd.FlagSplitWord):
 		opts.SplitWord = true
 
@@ -91,6 +108,18 @@ func readProbeFlag(args *probeArgs, opts *probeOptions) *ipc.Response {
 	default:
 		return refuse("unexpected argument for a hints probe: " + args.arg())
 	}
+}
+
+// roleEntry spells a native role the way --role takes it, with this
+// platform's vocabulary prefix, so a role read from the query can be written
+// back as a filter.
+func roleEntry(role element.Role) string {
+	vocab, ok := element.CurrentVocabulary()
+	if !ok || role == "" {
+		return string(role)
+	}
+
+	return string(vocab) + ":" + string(role)
 }
 
 // readProbeList appends a comma-separated filter. The flag is repeatable, so
@@ -124,9 +153,9 @@ func valueMessage(flag modecmd.Flag) string {
 	return descriptor.ValueMessage()
 }
 
-// handleHintsProbe answers what hints mode would target for the focused
-// window, without drawing an overlay or entering a mode.
-func (h *ModesHandler) handleHintsProbe(ctx context.Context, cmd ipc.Command) ipc.Response {
+// handleQueryHints answers `neru query hints`: what hints mode would label in
+// the focused window, without drawing an overlay or entering a mode.
+func (h *ModesHandler) handleQueryHints(ctx context.Context, cmd ipc.Command) ipc.Response {
 	if h.modes == nil {
 		return h.modesUnavailableResponse()
 	}
@@ -136,21 +165,38 @@ func (h *ModesHandler) handleHintsProbe(ctx context.Context, cmd ipc.Command) ip
 		return *errResp
 	}
 
-	summary, probeErr := h.modes.DebugProbeHints(
+	hints, probeErr := h.modes.ProbeHints(
 		ctx,
 		opts.FilterRoles,
 		opts.FilterTextContains,
 		opts.Strategy,
 		opts.CaptureScope,
+		opts.LabelDirection,
 		opts.SplitWord,
 	)
 	if probeErr != nil {
-		return ipc.Response{
-			Success: false,
-			Message: "hints probe failed: " + probeErr.Error(),
-			Code:    ipc.CodeActionFailed,
+		return queryFailedResponse("hints", probeErr)
+	}
+
+	data := ipc.HintsData{Hints: make([]ipc.HintData, len(hints))}
+	for idx, hint := range hints {
+		elem := hint.Element()
+		bounds := elem.Bounds()
+		data.Hints[idx] = ipc.HintData{
+			Label:       hint.Label(),
+			Role:        roleEntry(elem.Role()),
+			Title:       elem.Title(),
+			Description: elem.Description(),
+			Value:       elem.Value(),
+			Source:      string(elem.Source()),
+			Identifier:  elem.Identifier(),
+			Focused:     elem.IsFocused(),
+			X:           bounds.Min.X,
+			Y:           bounds.Min.Y,
+			Width:       bounds.Dx(),
+			Height:      bounds.Dy(),
 		}
 	}
 
-	return ipc.Response{Success: true, Message: summary, Code: ipc.CodeOK}
+	return ipc.Response{Success: true, Message: "hints retrieved", Data: data, Code: ipc.CodeOK}
 }

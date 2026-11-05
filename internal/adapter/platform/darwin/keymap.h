@@ -191,31 +191,33 @@ void NeruRefreshKeyboardLayoutMaps(void);
 /// 4) current keyboard layout (last-resort)
 /// Returns 1 when the explicit layout ID is resolved (or auto mode is used),
 /// and 0 when an explicit ID was provided but could not be resolved.
+/// Off the main thread the call applies the layout on the main queue. When that
+/// queue does not answer within 500ms the call returns 1 and the layout
+/// applies once the main run loop runs it, logging a warning if it is missing.
 int NeruSetReferenceKeyboardLayout(const char *inputSourceID);
 
-/// NeruCopyKeyboardLayoutIDs returns the input source IDs of the enabled
-/// keyboard layouts, one per line, or NULL. The caller frees it.
-char *NeruCopyKeyboardLayoutIDs(void);
-
-/// NeruCopyReferenceKeyboardLayoutID returns the input source ID keys are
-/// named in, or NULL. The caller frees it.
-char *NeruCopyReferenceKeyboardLayoutID(void);
-
-/// NeruReferenceKeyboardLayoutResolved returns 0 when kb_layout_to_use names a
-/// layout the resolver could not find, and 1 otherwise.
-int NeruReferenceKeyboardLayoutResolved(void);
+/// NeruCopyKeyboardLayouts reads the keyboard layouts through TIS on the main
+/// thread. It sets layoutIDsOut to the input source IDs of the enabled layouts,
+/// one per line, and referenceIDOut to the ID keys are named in. Either is NULL
+/// when unknown, and the caller frees both. resolvedOut is 0 when
+/// kb_layout_to_use names a layout the resolver could not find, and 1 otherwise.
+/// Off the main thread the call reads on the main queue. When that queue does
+/// not answer within 500ms the call leaves both IDs NULL and sets resolvedOut
+/// to what the main thread last recorded, or to 1 while a
+/// NeruSetReferenceKeyboardLayout apply for another layout is still queued.
+void NeruCopyKeyboardLayouts(char **layoutIDsOut, char **referenceIDOut, int *resolvedOut);
 
 /// Callback type invoked after keyboard layout maps are rebuilt.
 typedef void (*KeymapLayoutChangeCallback)(void);
 
 /// Register a callback to be invoked after keyboard layout maps are rebuilt.
-/// Only one callback is supported; subsequent calls replace the previous one.
+/// Only one callback is supported, and subsequent calls replace the previous one.
 /// Pass NULL to unregister.
 void NeruSetKeymapLayoutChangeCallback(KeymapLayoutChangeCallback callback);
 
 /// Register a second callback to be invoked after keyboard layout maps are rebuilt.
 /// This is intended for Go-level notifications (e.g., re-registering hotkeys).
-/// Only one callback is supported; subsequent calls replace the previous one.
+/// Only one callback is supported, and subsequent calls replace the previous one.
 /// Pass NULL to unregister.
 void NeruSetKeymapLayoutChangeCallback2(KeymapLayoutChangeCallback callback);
 

@@ -7,7 +7,7 @@ import (
 // ServicesCmd is the CLI services command for managing the system service.
 //
 // macOS: backed by a launchd user agent.
-// Linux: backed by a systemd user unit; other init systems return
+// Linux: backed by a systemd user unit. Other init systems return
 // CodeNotSupported.
 // Windows: backed by a Task Scheduler logon task for the current user.
 // Other platforms: stubbed and returns CodeNotSupported until implemented.
@@ -52,7 +52,7 @@ var ServicesInstallCmd = &cobra.Command{
 var ServicesUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
 	Short: "Unload and remove the system service",
-	Long:  `Unload the Neru service and remove what describes it — the launchd plist on macOS, the systemd user unit on Linux, the Task Scheduler task on Windows. Neru will no longer start automatically on login.`,
+	Long:  `Unload the Neru service and remove what describes it: the launchd plist on macOS, the systemd user unit on Linux, the Task Scheduler task on Windows. Neru will no longer start automatically on login.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		err := uninstallService()
 		if err != nil {
@@ -69,7 +69,7 @@ var ServicesUninstallCmd = &cobra.Command{
 var ServicesStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the system service",
-	Long:  `Start the installed Neru service. The daemon will begin running in the background.`,
+	Long:  `Start the installed Neru service, including one that 'neru services stop' stopped. It turns the service back on at login too, and the daemon begins running in the background.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		err := startService()
 		if err != nil {
@@ -86,7 +86,7 @@ var ServicesStartCmd = &cobra.Command{
 var ServicesStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the system service",
-	Long:  `Stop the installed Neru service. The daemon process will be terminated; the service stays installed and starts again on your next login.`,
+	Long:  `Stop the Neru service and keep it stopped, across logins too, until 'neru services start'. Neru exits and the service stays installed.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		err := stopService()
 		if err != nil {
@@ -103,7 +103,7 @@ var ServicesStopCmd = &cobra.Command{
 var ServicesRestartCmd = &cobra.Command{
 	Use:   "restart",
 	Short: "Restart the system service",
-	Long:  `Stop then immediately start the Neru service. Useful after configuration changes or to recover from an unresponsive state.`,
+	Long:  `Stop then immediately start the running Neru service. Useful after configuration changes or to recover from an unresponsive state. Restart refuses a service that 'neru services stop' stopped. Run 'neru services start' instead.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		err := restartService()
 		if err != nil {
@@ -116,19 +116,44 @@ var ServicesRestartCmd = &cobra.Command{
 	},
 }
 
+// serviceStatus is what `neru services status` reports. Message is the line
+// the human form prints, and the booleans are the same answer for a script.
+// Error is set when the state could not be read, and the booleans then say
+// nothing.
+type serviceStatus struct {
+	Supported     bool   `json:"supported"`
+	Installed     bool   `json:"installed"`
+	Running       bool   `json:"running"`
+	StartsAtLogin bool   `json:"starts_at_login"` //nolint:tagliatelle // snake_case like every key neru prints.
+	Message       string `json:"message"`
+	Error         string `json:"error"`
+}
+
 // ServicesStatusCmd is the CLI status subcommand.
 var ServicesStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Check the status of the system service",
-	Long:  `Check whether the Neru service is installed and running. A machine where it was never installed is reported as such rather than as an error.`,
+	Long:  `Check whether the Neru service is installed and running. A machine where it was never installed is reported as such rather than as an error. Use --json to print the answer as a JSON object.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cmd.Println(statusService())
+		asJSON, flagErr := cmd.Flags().GetBool("json")
+		if flagErr != nil {
+			return flagErr
+		}
+
+		status := statusService()
+		if asJSON {
+			return formatter.PrintJSON(cmd, status)
+		}
+
+		cmd.Println(status.Message)
 
 		return nil
 	},
 }
 
 func init() {
+	ServicesStatusCmd.Flags().Bool("json", false, "Print the status as a JSON object")
+
 	ServicesCmd.AddCommand(ServicesInstallCmd)
 	ServicesCmd.AddCommand(ServicesUninstallCmd)
 	ServicesCmd.AddCommand(ServicesStartCmd)

@@ -11,12 +11,13 @@ import "C"
 
 import (
 	"sync"
+	"time"
 	"unsafe"
 
 	"go.uber.org/zap"
 
 	"github.com/y3owk1n/neru/internal/adapter/overlay/render/overlayutil"
-	// The overlay.h included above only declares its symbols; importing the
+	// The overlay.h included above only declares its symbols. Importing the
 	// bridge is what links the Objective-C that defines them (ADR 0009).
 	_ "github.com/y3owk1n/neru/internal/adapter/platform/darwin"
 	"github.com/y3owk1n/neru/internal/config"
@@ -25,9 +26,9 @@ import (
 )
 
 const (
-	// NSWindowSharingNone represents NSWindowSharingNone (0) - hidden from screen sharing.
+	// NSWindowSharingNone represents NSWindowSharingNone (0), which hides the window from screen sharing.
 	NSWindowSharingNone = 0
-	// NSWindowSharingReadOnly represents NSWindowSharingReadOnly (1) - visible in screen sharing.
+	// NSWindowSharingReadOnly represents NSWindowSharingReadOnly (1), which shows the window in screen sharing.
 	NSWindowSharingReadOnly = 1
 )
 
@@ -36,7 +37,7 @@ type Overlay struct {
 	window          C.OverlayWindow
 	indicatorConfig config.ModeIndicatorConfig
 	// customLabels is the indicator text of every declared mode that has one,
-	// by name. A declared mode has no per-mode section of its own: its label
+	// by name. A declared mode has no per-mode section of its own. Its label
 	// is the declaration's, and its colors are the shared UI defaults.
 	customLabels map[string]string
 	theme        config.ThemeProvider
@@ -64,6 +65,15 @@ type Overlay struct {
 	// drawMu serializes draw operations against cache invalidation.
 	// DrawModeIndicator and freeAllCaches both hold Lock.
 	drawMu sync.Mutex
+
+	memo overlayutil.IndicatorMemo[modeDraw]
+}
+
+// modeDraw holds the mode indicator draw inputs that the configuration does
+// not supply.
+type modeDraw struct {
+	mode string
+	x, y int
 }
 
 // NewOverlay creates a new mode indicator overlay instance with its own window.
@@ -120,33 +130,40 @@ func (o *Overlay) Logger() *zap.Logger {
 
 // Show displays the mode indicator overlay window.
 func (o *Overlay) Show() {
-	C.NeruShowOverlayWindow(o.window)
+	if o.memo.Show(time.Now()) {
+		C.NeruShowOverlayWindow(o.window)
+	}
 }
 
 // Hide conceals the mode indicator overlay window.
 func (o *Overlay) Hide() {
-	C.NeruHideOverlayWindow(o.window)
+	if o.memo.Hide() {
+		C.NeruHideOverlayWindow(o.window)
+	}
 }
 
 // Clear removes all highlights from the overlay.
 func (o *Overlay) Clear() {
-	C.NeruClearOverlay(o.window)
+	if o.memo.Clear() {
+		C.NeruClearOverlay(o.window)
+	}
 }
 
-// ResizeToActiveScreen is a no-op for mode indicator overlays.
+// ResizeToActiveScreen makes the next draw go through, because a display change
+// can move the same Quartz point to a different Cocoa frame.
 // The mode indicator uses a small window positioned dynamically by
 // DrawModeIndicator via NeruPositionAndSizeOverlayToFitHint, so full-screen resizing
 // is unnecessary and would defeat the small-window memory optimization.
 func (o *Overlay) ResizeToActiveScreen() {
-	// No-op: positioning is handled dynamically in DrawModeIndicator.
+	o.memo.Invalidate()
 }
 
 // DrawModeIndicator draws a mode label at absolute Quartz coordinates. mode
-// matches the domain.ModeName* strings; the label text comes from config. The
-// window is a small badge, not full-screen, and the native side clamps it to
-// one display (the multi-monitor flicker fix). Single-goroutine only:
+// matches the domain.ModeName* strings, and the label text comes from config.
+// The window is a small badge, not full-screen, and the native side clamps it
+// to one display (the multi-monitor flicker fix). It is single-goroutine only.
 // styleCache is refilled per mode, so concurrent calls would hand one caller
-// the other's colors — the single-poller guard enforces that today.
+// the other's colors. The single-poller guard enforces that today.
 func (o *Overlay) DrawModeIndicator(mode string, xCoordinate, yCoordinate int) {
 	// Hold configMu.RLock for entire draw to prevent SetConfig from
 	// writing to indicatorConfig while we read it.
@@ -162,14 +179,21 @@ func (o *Overlay) DrawModeIndicator(mode string, xCoordinate, yCoordinate int) {
 	yOffset := o.indicatorConfig.UI.IndicatorYOffset
 
 	// Hold drawMu.Lock for the entire span from mode-change invalidation
-	// through the C draw call.  This eliminates the gap between releasing
+	// through the C draw call. This eliminates the gap between releasing
 	// the write lock after invalidation and re-acquiring a read lock for
 	// drawing, during which freeAllCaches could reset lastDrawnMode and
 	// free the cache, causing a redundant invalidation cycle on the next
-	// call.  Because only one polling goroutine calls DrawModeIndicator at
+	// call. Because only one polling goroutine calls DrawModeIndicator at
 	// a time the broader lock scope has no practical concurrency cost.
 	o.drawMu.Lock()
 	defer o.drawMu.Unlock()
+
+	draw := modeDraw{mode: mode, x: xCoordinate, y: yCoordinate}
+
+	unchanged, epoch := o.memo.BeginDraw(draw)
+	if unchanged {
+		return
+	}
 
 	// Invalidate the style cache when the mode changes so that per-mode
 	// color overrides are re-resolved instead of reusing stale values.
@@ -281,6 +305,8 @@ func (o *Overlay) DrawModeIndicator(mode string, xCoordinate, yCoordinate int) {
 
 	// Reuse NeruDrawHints which can draw arbitrary labels
 	C.NeruDrawHints(o.window, &hint, 1, style)
+
+	o.memo.EndDraw(draw, epoch)
 }
 
 // SetConfig sets the overlay configuration, and the labels of the declared
@@ -293,7 +319,6 @@ func (o *Overlay) SetConfig(
 	o.indicatorConfig = indicatorCfg
 	o.customLabels = customLabels
 	o.configMu.Unlock()
-	// Invalidate caches when config changes
 	o.freeAllCaches()
 }
 
@@ -355,6 +380,7 @@ func (o *Overlay) freeAllCaches() {
 	o.styleCache.Free()
 	o.lastDrawnMode = ""
 	o.freeLabelCacheLocked()
+	o.memo.Invalidate()
 }
 
 // freeLabelCacheLocked frees all cached label C strings.
@@ -367,7 +393,6 @@ func (o *Overlay) freeLabelCacheLocked() {
 			C.free(unsafe.Pointer(cStr))
 		}
 	}
-	// Re-initialize map to clear references
 	o.cachedLabels = make(map[string]*C.char)
 }
 

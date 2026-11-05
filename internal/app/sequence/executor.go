@@ -3,7 +3,9 @@ package sequence
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"go.uber.org/zap"
@@ -27,8 +29,8 @@ type CommandHandler interface {
 // ExecutorDeps collects what running a sequence needs.
 //
 // Every field is a function or a one-method interface rather than a component,
-// which is what keeps this package out of the application's dependency graph:
-// the executor drives modes and IPC without importing either.
+// which is what keeps this package out of the application's dependency graph.
+// The executor drives modes and IPC without importing either.
 type ExecutorDeps struct {
 	// Commands dispatches a step that is not a shell command. A nil handler
 	// makes every such step fail rather than silently succeed.
@@ -45,7 +47,7 @@ type ExecutorDeps struct {
 	// sequences that no hotkey triggered.
 	SuppressModifiers func(source string)
 
-	// BaseContext returns the context steps run under — the daemon's, so a
+	// BaseContext returns the context steps run under. It is the daemon's, so a
 	// blocking step is released at shutdown rather than at the caller's whim.
 	// It is a function so the executor can be built before the context exists.
 	BaseContext func() context.Context
@@ -95,8 +97,8 @@ func NewExecutor(deps ExecutorDeps) *Executor {
 //
 // A step that reports CodeChainBail stops the sequence. Any other failure is
 // reported and the remaining steps still run, unless the step was marked
-// fatal — with the trailing --bail-on-error directive, or by a policy that
-// marks every step — in which case the sequence stops there.
+// fatal, either with the trailing --bail-on-error directive or by a policy
+// that marks every step. A fatal step stops the sequence there.
 //
 // Steps execute against the base context rather than against ctx, so a blocking
 // step (wait_for_mode_exit) is still released at shutdown. The nesting depth is
@@ -117,7 +119,7 @@ func (e *Executor) RunWithPolicy(
 
 	depth := Depth(ctx)
 	if depth >= MaxDepth {
-		// Nothing ran, so there is no step to point at: Executed and
+		// Nothing ran, so there is no step to point at. Executed and
 		// FailedIndex stay zero and reporting says the sequence never started.
 		outcome.Stopped = true
 		outcome.Err = derrors.Newf(
@@ -133,7 +135,7 @@ func (e *Executor) RunWithPolicy(
 		return outcome
 	}
 
-	stepCtx := e.stepContext(depth)
+	stepCtx := e.stepContext(ctx, depth)
 
 	for _, step := range steps {
 		trimmedStep := strings.TrimSpace(step)
@@ -157,7 +159,7 @@ func (e *Executor) RunWithPolicy(
 
 		bailed := derrors.IsCode(stepErr, derrors.CodeChainBail)
 
-		// A malformed directive is always fatal: the step never ran, and
+		// A malformed directive is always fatal. The step never ran, and
 		// carrying on would act on a sequence the author did not write.
 		if bailed || stepIsFatal || directiveErr != nil {
 			outcome.Bailed = bailed
@@ -207,17 +209,23 @@ func stepName(step string) string {
 }
 
 // RunAndForget executes a sequence and discards the outcome. It is the entry
-// point for callers that have nobody to report to — hotkeys, held-key repeat,
-// and a mode's --on-exit — all of which rely on the logging Run already does.
+// point for callers that have nobody to report to, hotkeys and held-key
+// repeat, both of which rely on the logging Run already does.
 func (e *Executor) RunAndForget(source string, steps []string) {
-	e.Run(e.base(), source, steps)
+	e.RunAndForgetWithEnv(source, steps, nil)
+}
+
+// RunAndForgetWithEnv is RunAndForget with env added to the environment of
+// every exec step, as WithEnv adds it. A mode's --on-exit runs through it.
+func (e *Executor) RunAndForgetWithEnv(source string, steps []string, env []string) {
+	e.Run(WithEnv(e.base(), env), source, steps)
 }
 
 // RunMacro runs the named macro's steps as a nested sequence.
 //
-// Running it nested rather than splicing its steps into the caller keeps two
-// things honest: the depth guard sees the nesting, so a macro that invokes
-// itself is stopped like any other runaway sequence; and the caller reports
+// Running it nested rather than splicing its steps into the caller does two
+// things. The depth guard sees the nesting, so a macro that invokes itself is
+// stopped like any other runaway sequence. And the caller reports
 // failures against the step the author actually wrote ("macro foo 1 2") rather
 // than against an expanded position they never saw.
 func (e *Executor) RunMacro(ctx context.Context, name string, args []string) error {
@@ -229,7 +237,7 @@ func (e *Executor) RunMacro(ctx context.Context, name string, args []string) err
 	}
 
 	// The table is read when the call runs, not pinned for the whole sequence,
-	// which is how every other step reads configuration — a scroll step takes
+	// which is how every other step reads configuration. A scroll step takes
 	// the step size current at the time it fires. A reload mid-sequence
 	// therefore affects the calls after it, and a macro deleted by that reload
 	// fails here rather than running a definition the config no longer has.
@@ -250,7 +258,7 @@ func (e *Executor) RunMacro(ctx context.Context, name string, args []string) err
 		)
 	}
 
-	// The nested sequence starts with its own policy: a macro decides for
+	// The nested sequence starts with its own policy. A macro decides for
 	// itself which of its steps are fatal, and its overall failure is what the
 	// caller sees.
 	outcome := e.RunWithPolicy(
@@ -274,8 +282,8 @@ func (e *Executor) RunMacro(ctx context.Context, name string, args []string) err
 	return derrors.Wrapf(outcome.Err, code, "macro %q", name)
 }
 
-// step runs one step of a sequence: a macro invocation expands to the sequence
-// it names, anything else is dispatched as an action.
+// step runs one step of a sequence. A macro invocation expands to the sequence
+// it names, and anything else is dispatched as an action.
 func (e *Executor) step(ctx context.Context, source, step string) error {
 	name, args, isMacro := config.ParseMacroCall(step)
 	if !isMacro {
@@ -293,7 +301,7 @@ func (e *Executor) action(ctx context.Context, source, actionStr string) error {
 	actionStr = strings.TrimSpace(actionStr)
 
 	if actionStr == action.PrefixExec || strings.HasPrefix(actionStr, action.PrefixExec+" ") {
-		if e.enabled != nil && !e.enabled() {
+		if !isHook(ctx) && e.enabled != nil && !e.enabled() {
 			return derrors.New(derrors.CodeExecFailed, "neru is stopped; exec step not run")
 		}
 
@@ -331,7 +339,7 @@ func (e *Executor) action(ctx context.Context, source, actionStr string) error {
 }
 
 // entersAMode reports whether a command word enters a mode, as opposed to
-// leaving one: idle is a mode command too, and the modifiers of the chord that
+// leaving one. Idle is a mode command too, and the modifiers of the chord that
 // left need no suppressing.
 func entersAMode(word string) bool {
 	mode, isMode := modecmd.LookupMode(word)
@@ -349,27 +357,27 @@ func (e *Executor) shell(ctx context.Context, source, actionStr string) error {
 	execCtx, cancel := context.WithTimeout(ctx, domain.ShellCommandTimeout)
 	defer cancel()
 
-	cfg := e.settings()
-	shell := cfg.General.ExecShell
-	shellArgs := cfg.General.ExecShellArgs
+	argv := append(e.settings().General.ShellCommand(runtime.GOOS), cmdString)
 
-	args := make([]string, 0, len(shellArgs)+1)
-	args = append(args, shellArgs...)
-	args = append(args, cmdString)
-
-	command := exec.CommandContext(execCtx, shell, args...) //nolint:gosec
+	command := exec.CommandContext(execCtx, argv[0], argv[1:]...) //nolint:gosec
 	procattr.HideConsole(command)
 
-	commandOutput, commandErr := command.CombinedOutput()
+	if env := execEnv(ctx); len(env) > 0 {
+		command.Env = append(os.Environ(), env...)
+	}
+
+	// Output goes to the null device, not a pipe. A background child inherits
+	// the pipe, so reading it would block the step until the child exits and
+	// keep everything the child prints in memory.
+	commandErr := command.Run()
 	if commandErr != nil {
-		// Never the command or its output, which are config content and the
-		// user's shell output. The sequence that ran the step logs this once.
+		// Never the command, which is config content. The sequence that ran the
+		// step logs this once.
 		return derrors.Wrapf(
 			commandErr,
 			derrors.CodeInternal,
-			"exec step failed (exit code %d, %d output bytes)",
+			"exec step failed (exit code %d)",
 			exitCodeOf(commandErr),
-			len(commandOutput),
 		)
 	}
 
@@ -377,7 +385,6 @@ func (e *Executor) shell(ctx context.Context, source, actionStr string) error {
 		"Exec step completed",
 		zap.String("source", source),
 		zap.Int("cmd_length", len(cmdString)),
-		zap.Int("output_bytes", len(commandOutput)),
 	)
 
 	return nil
@@ -396,9 +403,20 @@ func exitCodeOf(commandErr error) int {
 }
 
 // stepContext builds the context each step of a sequence runs under: the base
-// context, so shutdown releases a step that blocks, carrying the next depth.
-func (e *Executor) stepContext(depth int) context.Context {
-	return WithDepth(e.base(), depth+1)
+// context, so shutdown releases a step that blocks, carrying the next depth,
+// the hook ctx belongs to, if any, and the environment ctx adds.
+func (e *Executor) stepContext(ctx context.Context, depth int) context.Context {
+	stepCtx := WithDepth(e.base(), depth+1)
+
+	if isHook(ctx) {
+		stepCtx = context.WithValue(stepCtx, hookKey{}, true)
+	}
+
+	if env := execEnv(ctx); env != nil {
+		stepCtx = WithEnv(stepCtx, env)
+	}
+
+	return stepCtx
 }
 
 // base returns the daemon context, or a background one before it exists.

@@ -17,10 +17,10 @@ var subgridKeyNames = map[string]bool{
 
 // subgridKeyDeciders are the two packages allowed to decide what the key set is
 // when it is blank, rather than to pass on the one they were handed.
-// internal/config resolves the option (ResolveSublayerKeys) and validates it;
-// internal/domain/grid caps and cases it for everyone (SubgridKeys).
+// internal/config resolves the option (ResolveSublayerKeys) and validates it,
+// and internal/domain/grid caps and cases it for everyone (SubgridKeys).
 //
-// They are matched exactly rather than as path prefixes: internal/config/loader
+// They are matched exactly rather than as path prefixes, because internal/config/loader
 // is a different package that decides what a field change means, and a chain
 // reintroduced there would be as invisible as the five this replaced.
 var subgridKeyDeciders = []string{
@@ -30,12 +30,12 @@ var subgridKeyDeciders = []string{
 
 // TestSubgridKeySetIsDecidedOnce keeps the drawn keys and the accepted keys the
 // same keys. Four consumers used to answer "what if sublayer_keys is blank?"
-// for themselves — the mode layer, the component factory and two overlay
-// backends, the last two with an alphabet hardcoded in them — and nothing made
+// for themselves: the mode layer, the component factory and two overlay
+// backends, the last two with an alphabet hardcoded in them. Nothing made
 // their answers agree, so a configuration could produce a subgrid that drew one
 // key set and acted on another (#1269).
 //
-// The shape it catches is a blank test in a function that reads the keys: that
+// The shape it catches is a blank test in a function that reads the keys. That
 // is a fallback chain, wherever it is written and whatever it falls back to.
 // Passing the resolved value on is what a consumer is for.
 func TestSubgridKeySetIsDecidedOnce(t *testing.T) {
@@ -80,8 +80,8 @@ func TestSubgridKeySetIsDecidedOnce(t *testing.T) {
 
 // subgridKeyCarriers are the managers that keep their own copy of the key set
 // in the surface they draw through, rather than reading the configuration at
-// draw time the way the macOS overlay does. A copy can go stale — the surface
-// is rebuilt underneath them — so on these two the keys have to be handed over
+// draw time the way the macOS overlay does. A copy can go stale when the surface
+// is rebuilt underneath them, so on these two the keys have to be handed over
 // again by every draw that can put a subgrid on screen.
 var subgridKeyCarriers = []string{
 	"internal/adapter/overlay/linux",
@@ -89,18 +89,24 @@ var subgridKeyCarriers = []string{
 }
 
 // subgridKeySync is the method that does that handing over, and subgridDraws
-// the backend calls that can put a subgrid on screen: ShowSubgrid draws one
+// the backend calls that can put a subgrid on screen. ShowSubgrid draws one
 // outright, and DrawGrid is what the surface is holding when the next
 // ShowSubgrid lands on it.
 const subgridKeySync = "syncSublayerKeysLocked"
 
 var subgridDraws = []string{"ShowSubgrid", "DrawGrid"}
 
+// subgridKeyDrawFloor is the fewest draws this pin expects to read in
+// subgridKeyCarriers. Four are there today, both draws in each manager, so
+// three leaves room for one draw to be merged into the other and still catches
+// a walk that has lost a manager.
+const subgridKeyDrawFloor = 3
+
 // TestSubgridDrawHandsOverTheKeys pins the half of #1269 that a resolved option
 // cannot reach on its own. Deleting the hardcoded per-platform alphabets left
 // the Windows manager syncing its surface in DrawGrid and nowhere else, so a
-// surface rebuilt between the two drew a subgrid with no keys on it at all —
-// invisible, and still accepting the keys the mode layer had. The alphabet that
+// surface rebuilt between the two drew a subgrid with no keys on it at all. It
+// was invisible, and still accepted the keys the mode layer had. The alphabet that
 // used to mask that is gone, which is exactly why it needs pinning here.
 func TestSubgridDrawHandsOverTheKeys(t *testing.T) {
 	fileSet := token.NewFileSet()
@@ -143,13 +149,12 @@ func TestSubgridDrawHandsOverTheKeys(t *testing.T) {
 
 	// A rename of either backend call would otherwise leave this passing over
 	// nothing at all, which is the failure mode a guardrail can least afford.
-	if checked == 0 {
-		t.Errorf(
-			"found no method calling any of %v in %v; the walk is broken and this "+
-				"check would pass vacuously",
-			subgridDraws, subgridKeyCarriers,
-		)
-	}
+	assertWalkedAtLeast(
+		t,
+		"methods in the key-carrying managers that draw a subgrid",
+		checked,
+		subgridKeyDrawFloor,
+	)
 }
 
 // callsAnyMethod reports whether the body calls a method with one of the given
@@ -187,14 +192,14 @@ func decidesSubgridKeys(dir string) bool {
 }
 
 // testsSubgridKeysForBlank reports whether the body tests the subgrid key set
-// for blank — the shape every fallback chain this replaced had, whether it read
+// for blank, the shape every fallback chain this replaced had, whether it read
 // the field directly (`o.sublayerKeys != ""`), through a local it had just been
 // copied into (`keys := ...; if keys == ""`), or by length (`len(keys) == 0`).
 //
-// Testing something else for blank is nobody's business here: a function may
+// Testing something else for blank is nobody's business here. A function may
 // well ask whether the grid characters are blank next door to reading the keys,
 // and flagging that would make the check unusable. The cost of drawing the line
-// there is that this recognizes shapes rather than meaning — a blank test
+// there is that this recognizes shapes rather than meaning. A blank test
 // spelled some third way would pass it. It is a tripwire on the way back to a
 // second answer, not a proof that there is only one.
 func testsSubgridKeysForBlank(body *ast.BlockStmt) bool {
@@ -220,7 +225,7 @@ func testsSubgridKeysForBlank(body *ast.BlockStmt) bool {
 
 // subgridKeyLocals names the key set as this body spells it: the two field
 // spellings, plus every local assigned from one of them. One ordered pass is
-// enough — a local has to be assigned before it is copied again.
+// enough, because a local has to be assigned before it is copied again.
 func subgridKeyLocals(body *ast.BlockStmt) map[string]bool {
 	names := map[string]bool{}
 	for name := range subgridKeyNames {

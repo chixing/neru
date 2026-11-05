@@ -108,8 +108,8 @@ func (p MousePhase) String() string {
 }
 
 // ParsePhase parses the value of the --state flag into a mouse phase.
-// Only the down and up phases are expressible as --state values; click is the
-// absence of the flag and toggle has its own --toggle flag.
+// Only the down and up phases are expressible as --state values. Click is the
+// absence of the flag, and toggle has its own --toggle flag.
 func ParsePhase(phaseString string) (MousePhase, error) {
 	switch phaseString {
 	case "down":
@@ -298,36 +298,16 @@ func (t Type) IsMouseButton() bool {
 	return ok
 }
 
+// IsModeAction reports whether a mode can perform the action on its selection:
+// a mouse button, or move_mouse, which leaves the cursor on the selection and
+// does nothing else.
+func (t Type) IsModeAction() bool {
+	return t.IsMouseButton() || t == TypeMoveMouse
+}
+
 // IsMoveMouse returns true if the action moves the mouse cursor.
 func (t Type) IsMoveMouse() bool {
 	return t == TypeMoveMouse || t == TypeMoveMouseRelative
-}
-
-// allTypes is the cached slice of all valid action types to avoid heap allocation.
-var allTypes = []Type{
-	TypeLeftClick,
-	TypeRightClick,
-	TypeMiddleClick,
-	TypeLeftMouseDown,
-	TypeLeftMouseUp,
-	TypeRightMouseDown,
-	TypeRightMouseUp,
-	TypeMiddleMouseDown,
-	TypeMiddleMouseUp,
-	TypeLeftMouseToggle,
-	TypeRightMouseToggle,
-	TypeMiddleMouseToggle,
-	TypeMoveMouse,
-	TypeMoveMouseRelative,
-	TypeScroll,
-}
-
-// AllTypes returns all valid action types.
-func AllTypes() []Type {
-	result := make([]Type, len(allTypes))
-	copy(result, allTypes)
-
-	return result
 }
 
 // Name is a named action that can be performed by the application.
@@ -348,14 +328,14 @@ const (
 	// NameMouseDown is the original spelling of NameLeftMouseDown, from before
 	// the right and middle buttons could be pressed and released.
 	//
-	// Deprecated: use NameLeftMouseDown; "mouse_down" is still accepted from
-	// configs and IPC callers.
+	// Deprecated: use NameLeftMouseDown. Configs and IPC callers may still
+	// send "mouse_down".
 	NameMouseDown Name = "mouse_down"
 	// NameMouseUp is the original spelling of NameLeftMouseUp, from before the
 	// right and middle buttons could be pressed and released.
 	//
-	// Deprecated: use NameLeftMouseUp; "mouse_up" is still accepted from
-	// configs and IPC callers.
+	// Deprecated: use NameLeftMouseUp. Configs and IPC callers may still send
+	// "mouse_up".
 	NameMouseUp Name = "mouse_up"
 	// NameRightMouseDown is the right mouse button down action.
 	NameRightMouseDown Name = "right_mouse_down"
@@ -421,6 +401,10 @@ const (
 	NameCycleHint Name = "cycle_hint"
 	// NameSearchHints starts text filtering in hints mode.
 	NameSearchHints Name = "search_hints"
+	// NameRefreshHints rescans hints mode with the flags the session holds.
+	NameRefreshHints Name = "refresh_hints"
+	// NameSnap moves the cursor onto the nearest element hints would label.
+	NameSnap Name = "snap"
 
 	// PrefixExec is the prefix for shell command actions.
 	PrefixExec = "exec"
@@ -428,10 +412,17 @@ const (
 	PrefixAction = "action"
 )
 
+// IsExecStep reports whether step is a shell command step.
+func IsExecStep(step string) bool {
+	step = strings.TrimSpace(step)
+
+	return step == PrefixExec || strings.HasPrefix(step, PrefixExec+" ")
+}
+
 // knownNames lists the action names that can be used as pending mode actions
 // (e.g. --action flag on hints/grid commands). Scroll sub-actions (scroll_up,
-// page_down, etc.) are intentionally excluded — they are IPC/CLI-only and are
-// recognized separately by IsScrollSubAction and IsKnownName.
+// page_down, etc.) are left out because they are IPC/CLI-only.
+// IsScrollSubAction and IsKnownName recognize them separately.
 var knownNames = []Name{
 	NameLeftClick,
 	NameRightClick,
@@ -473,16 +464,14 @@ func SupportedNamesString() string {
 // ModeActionNamesString returns the comma-separated action names accepted by a
 // mode's --action flag, for use in help text.
 //
-// A mode performs its pending action at the selected point once the selection
-// is made, which only mouse button actions can do. The set is derived from the
-// same IsMouseButton predicate the CLI validates against, so help text cannot
-// drift from what is actually accepted.
+// The set is derived from the same IsModeAction predicate the CLI validates
+// against, so help text cannot drift from what is actually accepted.
 func ModeActionNamesString() string {
 	var names []string
 
 	for _, name := range KnownNames() {
 		actionType, err := name.ToType()
-		if err != nil || !actionType.IsMouseButton() {
+		if err != nil || !actionType.IsModeAction() {
 			continue
 		}
 
@@ -558,14 +547,24 @@ func IsCycleHintAction(name string) bool {
 	return Name(name) == NameCycleHint
 }
 
+// IsRefreshHintsAction reports whether the given action is refresh_hints.
+func IsRefreshHintsAction(name string) bool {
+	return Name(name) == NameRefreshHints
+}
+
+// IsSnapAction reports whether the given action is snap.
+func IsSnapAction(name string) bool {
+	return Name(name) == NameSnap
+}
+
 // IsSearchHintsAction reports whether the given action is search_hints.
 func IsSearchHintsAction(name string) bool {
 	return Name(name) == NameSearchHints
 }
 
 // IsKnownName determines whether the specified action name is recognized by the
-// application. This is a superset of the names in knownNames — it also includes
-// scroll sub-actions (scroll_up, page_down, etc.) which are IPC/CLI-only.
+// application. This is a superset of knownNames. It also includes the
+// IPC/CLI-only scroll sub-actions (scroll_up, page_down, etc.).
 // Use IsScrollSubAction to distinguish scroll sub-actions from mode-compatible names.
 func IsKnownName(name Name) bool {
 	switch name {
@@ -590,7 +589,7 @@ func IsKnownName(name Name) bool {
 		NameWaitForModeExit, NameSaveCursorPos, NameRestoreCursorPos,
 		NameScrollUp, NameScrollDown, NameScrollLeft, NameScrollRight,
 		NameGoTop, NameGoBottom, NamePageUp, NamePageDown,
-		NameMoveMonitor, NameFeed, NameSleep, NameCycleHint, NameSearchHints,
+		NameMoveMonitor, NameFeed, NameSleep, NameCycleHint, NameSearchHints, NameRefreshHints, NameSnap,
 		NameHideCursor, NameShowCursor:
 		return true
 	default:
@@ -619,7 +618,7 @@ func IsScrollSubAction(name string) bool {
 		NameMoveMouse, NameMoveMouseRelative, NameScroll,
 		NameReset, NameBackspace, NameMoveCell, NameBisect,
 		NameWaitForModeExit, NameSaveCursorPos, NameRestoreCursorPos,
-		NameMoveMonitor, NameFeed, NameSleep, NameCycleHint, NameSearchHints,
+		NameMoveMonitor, NameFeed, NameSleep, NameCycleHint, NameSearchHints, NameRefreshHints, NameSnap,
 		NameHideCursor, NameShowCursor:
 		return false
 	default:
@@ -629,13 +628,16 @@ func IsScrollSubAction(name string) bool {
 
 // IsHeldRepeatAction reports whether the action name supports held-key repeat
 // (fires repeatedly while the key is held, with no initial delay).
-// Currently applies to scroll, page, relative mouse move, and cell move actions.
+// Currently applies to scroll, page, relative mouse move, cell move and snap
+// actions. A held snap with --direction walks from element to element, and
+// one without stays on the element it found, so repeating it is harmless.
 func IsHeldRepeatAction(name Name) bool {
 	switch name { //nolint:exhaustive
 	case NameScrollUp, NameScrollDown, NameScrollLeft, NameScrollRight,
 		NamePageUp, NamePageDown,
 		NameMoveMouseRelative,
-		NameMoveCell:
+		NameMoveCell,
+		NameSnap:
 		return true
 	default:
 		return false
@@ -730,6 +732,8 @@ func (n Name) ToType() (Type, error) {
 		NameSleep,
 		NameCycleHint,
 		NameSearchHints,
+		NameRefreshHints,
+		NameSnap,
 		NameHideCursor,
 		NameShowCursor:
 		return 0, derrors.Newf(derrors.CodeInvalidInput, "action name not executable: %s", n)

@@ -102,13 +102,6 @@ var (
 // singleCharCache caches single-character strings to avoid allocations.
 var singleCharCache sync.Map // map[rune]string
 
-// stringBuilderPool is a pool of string builders for label generation.
-var stringBuilderPool = sync.Pool{
-	New: func() any {
-		return &strings.Builder{}
-	},
-}
-
 // AlphabetGenerator generates hint labels using an alphabet-based strategy.
 //
 // Two label directions are supported:
@@ -127,67 +120,20 @@ type AlphabetGenerator struct {
 
 // NewAlphabetGenerator creates a new alphabet-based hint generator.
 //
-// The label direction controls how multi-character labels are enumerated:
-// see LabelDirection for the trade-offs.
+// The label direction controls how multi-character labels are enumerated.
+// See LabelDirection for the trade-offs.
 func NewAlphabetGenerator(
 	characters string,
 	labelDirection LabelDirection,
 ) (*AlphabetGenerator, error) {
-	if len(characters) < MinCharactersLength {
-		return nil, derrors.Newf(
-			derrors.CodeInvalidInput,
-			"characters must have at least 2 characters, got %d",
-			len(characters),
-		)
+	generator := &AlphabetGenerator{}
+
+	err := generator.Update(characters, labelDirection)
+	if err != nil {
+		return nil, err
 	}
 
-	uppercaseRuneMap := make(map[rune]rune)
-
-	var (
-		uppercaseBuilder strings.Builder
-		seen             = make(map[rune]struct{}, len(characters))
-	)
-
-	for _, rune := range characters {
-		upper := unicode.ToUpper(rune)
-		uppercaseRuneMap[rune] = upper
-
-		if _, ok := seen[upper]; ok {
-			continue
-		}
-
-		seen[upper] = struct{}{}
-		uppercaseBuilder.WriteRune(upper)
-	}
-
-	uppercaseChars := uppercaseBuilder.String()
-	charCount := len(uppercaseChars)
-
-	if charCount < MinCharactersLength {
-		return nil, derrors.Newf(
-			derrors.CodeInvalidInput,
-			"characters must have at least %d unique characters after deduplication, got %d",
-			MinCharactersLength,
-			charCount,
-		)
-	}
-
-	n := charCount
-	maxHints := n * n * n
-
-	for _, r := range uppercaseChars {
-		if _, ok := singleCharCache.Load(r); !ok {
-			singleCharCache.Store(r, string(r))
-		}
-	}
-
-	return &AlphabetGenerator{
-		characters:       uppercaseChars,
-		uppercaseChars:   uppercaseChars,
-		maxHints:         maxHints,
-		uppercaseRuneMap: uppercaseRuneMap,
-		labelDirection:   labelDirection,
-	}, nil
+	return generator, nil
 }
 
 // Generate creates hints for the given elements.
@@ -206,11 +152,7 @@ func (g *AlphabetGenerator) Generate(
 	}
 
 	// Sort elements by position (top-to-bottom, left-to-right)
-	sorted := elements
-	if len(elements) > 0 {
-		sorted = make([]*element.Element, len(elements))
-		copy(sorted, elements)
-	}
+	sorted := slices.Clone(elements)
 
 	sort.Slice(sorted, func(i, j int) bool {
 		boundI, boundJ := sorted[i].Bounds(), sorted[j].Bounds()
@@ -261,7 +203,7 @@ func (g *AlphabetGenerator) Characters() string {
 
 // LabelsForTesting exposes the internal label-generation algorithm so tests
 // can assert on the exact ordering produced by each LabelDirection. It must
-// not be called from production code — use Generate instead. The slice is
+// not be called from production code. Use Generate instead. The slice is
 // freshly allocated by computeLabels and is safe to retain.
 func (g *AlphabetGenerator) LabelsForTesting(count int) []string {
 	return g.generateLabels(count)
@@ -373,12 +315,13 @@ func (g *AlphabetGenerator) generateLabels(count int) []string {
 
 	labels := g.computeLabels(count)
 
-	// Store in bounded LRU cache for future use.
-	// Double-check under lock: another goroutine may have computed and cached
-	// the same key while we were computing (TOCTOU).
+	// Store in bounded LRU cache for future use. Double-check under lock,
+	// because another goroutine may have computed and cached the same key while
+	// we were computing (TOCTOU).
 	labelCacheMu.Lock()
 	if entry, ok := labelCache[cacheKey]; ok {
-		// Another goroutine beat us — use its result, update access time.
+		// Another goroutine cached it first, so use its result and update the
+		// access time.
 		entry.lastUsed = time.Now()
 		labelCacheMu.Unlock()
 
@@ -429,7 +372,7 @@ func (g *AlphabetGenerator) computeLabels(count int) []string {
 
 // computeLabelsReverse emits fixed-length base-N labels so labels within a
 // tier are interleaved. For counts up to the alphabet size it returns single
-// characters; for larger counts it emits uniformly 2-char or 3-char labels
+// characters. For larger counts it emits uniformly 2-char or 3-char labels
 // depending on the bucket. Labels look like "AAA", "BAA", "CAA", ...
 func (g *AlphabetGenerator) computeLabelsReverse(
 	count int,
@@ -460,12 +403,8 @@ func (g *AlphabetGenerator) computeLabelsReverse(
 	}
 
 	for index := range count {
-		stringBuilder, ok := stringBuilderPool.Get().(*strings.Builder)
-		if !ok {
-			stringBuilder = &strings.Builder{}
-		}
+		var stringBuilder strings.Builder
 
-		stringBuilder.Reset()
 		stringBuilder.Grow(length)
 
 		v := index
@@ -477,7 +416,6 @@ func (g *AlphabetGenerator) computeLabelsReverse(
 		}
 
 		labels = append(labels, stringBuilder.String())
-		stringBuilderPool.Put(stringBuilder)
 	}
 
 	return labels
@@ -513,7 +451,7 @@ func (g *AlphabetGenerator) computeLabelsNormal(
 			// Current level can satisfy the remaining target on its own.
 			keep = remainingTarget
 		case nextLevelCapacity < remainingTarget:
-			// We must expand every slot to reach the target — keep nothing.
+			// Every slot must expand to reach the target, so keep nothing.
 			keep = 0
 		default:
 			// Keep as many as possible at this level while ensuring the next
@@ -563,12 +501,8 @@ func (g *AlphabetGenerator) computeLabelsNormal(
 			}
 
 			for range keep {
-				stringBuilder, ok := stringBuilderPool.Get().(*strings.Builder)
-				if !ok {
-					stringBuilder = &strings.Builder{}
-				}
+				var stringBuilder strings.Builder
 
-				stringBuilder.Reset()
 				stringBuilder.Grow(length)
 
 				for _, index := range current {
@@ -576,7 +510,6 @@ func (g *AlphabetGenerator) computeLabelsNormal(
 				}
 
 				labels = append(labels, stringBuilder.String())
-				stringBuilderPool.Put(stringBuilder)
 
 				// Increment cursor like adding 1 in base-N.
 				for pos := range slices.Backward(current) {

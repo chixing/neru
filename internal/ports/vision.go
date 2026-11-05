@@ -42,8 +42,18 @@ type VisionPort interface {
 		cfg config.HintsContourConfig,
 	) ([]*element.Element, error)
 
+	// DetectSegments captures screenBounds and returns the targets the segment
+	// detector finds in it (controls, pictures and words), as clickable
+	// vision-only buttons with no title. cfg says what to hint. The caller
+	// bounds the pass with ctx.
+	DetectSegments(
+		ctx context.Context,
+		screenBounds image.Rectangle,
+		cfg config.HintsSegmentConfig,
+	) ([]*element.Element, error)
+
 	// CaptureScreen returns the current screen image. Which screen "current"
-	// means is the platform's own answer: macOS captures the primary display,
+	// means is the platform's own answer. macOS captures the primary display,
 	// Linux the screen holding the cursor, because Wayland exposes no primary
 	// display at all. Either way the image's bounds start at (0, 0) and carry no
 	// global origin.
@@ -54,6 +64,12 @@ type VisionPort interface {
 	// never log it, derive log text from it, write it to disk, or keep it past
 	// the detection that asked for it.
 	CaptureScreen(ctx context.Context) (*image.RGBA, error)
+
+	// CaptureExcludesOwnWindows reports whether a capture leaves Neru's own
+	// windows out of the frame. When it does not, a hints refresh that reads
+	// the screen takes the old labels off first, or it reads them back as
+	// targets.
+	CaptureExcludesOwnWindows() bool
 }
 
 type textOnlyDetectionKey struct{}

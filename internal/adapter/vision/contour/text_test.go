@@ -33,9 +33,4 @@ func TestLabel_SmallestHolderGetsWordsAndStraysBecomeTargets(t *testing.T) {
 	if len(rects) != 2 {
 		t.Error("Label must not grow the caller's slice")
 	}
-
-	els := contour.Elements(image.Point{}, image.Rect(0, 0, 500, 500), gotRects, gotTexts)
-	if els[1].SearchText() != "Save As" {
-		t.Errorf("SearchText() = %q, want %q", els[1].SearchText(), "Save As")
-	}
 }

@@ -66,7 +66,7 @@ func TestTracker_HeldButtonsOrdering(t *testing.T) {
 	var tracker mousestate.Tracker
 
 	// Pressed out of order to prove the result is ordered by button, not by
-	// press order — the drag event type is picked from the first entry.
+	// press order. The drag event type is picked from the first entry.
 	tracker.SetDown(action.ButtonMiddle, image.Point{}, 0)
 	tracker.SetDown(action.ButtonLeft, image.Point{}, 0)
 
@@ -81,28 +81,6 @@ func TestTracker_HeldButtonsOrdering(t *testing.T) {
 		if held[i] != button {
 			t.Errorf("HeldButtons()[%d] = %v, want %v", i, held[i], button)
 		}
-	}
-}
-
-func TestTracker_ClearAll(t *testing.T) {
-	var tracker mousestate.Tracker
-
-	for _, button := range action.MouseButtons() {
-		tracker.SetDown(button, image.Point{}, 0)
-	}
-
-	if !tracker.AnyDown() {
-		t.Fatal("AnyDown() = false with every button held, want true")
-	}
-
-	tracker.ClearAll()
-
-	if tracker.AnyDown() {
-		t.Error("AnyDown() = true after ClearAll, want false")
-	}
-
-	if held := tracker.HeldButtons(); len(held) != 0 {
-		t.Errorf("HeldButtons() = %v after ClearAll, want empty", held)
 	}
 }
 

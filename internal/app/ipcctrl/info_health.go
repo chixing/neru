@@ -5,13 +5,14 @@ package ipcctrl
 
 import (
 	"context"
+	"runtime"
 	"strings"
 
 	"go.uber.org/zap"
 
 	"github.com/y3owk1n/neru/internal/adapter/ipc"
 	"github.com/y3owk1n/neru/internal/adapter/platform"
-	"github.com/y3owk1n/neru/internal/domain"
+	"github.com/y3owk1n/neru/internal/domain/action"
 	"github.com/y3owk1n/neru/internal/ports"
 )
 
@@ -20,7 +21,7 @@ func (h *InfoHandler) handleHealth(ctx context.Context, _ ipc.Command) ipc.Respo
 	// --- component checks ---------------------------------------------------
 	components := make(map[string]string)
 	capabilities := capabilitiesMap(h.systemCapabilities())
-	// Event tap — only enabled during active modes (hints/grid/scroll),
+	// The event tap is only enabled during active modes (hints/grid/scroll),
 	// so "disabled" in idle mode is expected and healthy.
 	if h.eventTap != nil {
 		if h.eventTap.IsEnabled() {
@@ -62,7 +63,7 @@ func (h *InfoHandler) handleHealth(ctx context.Context, _ ipc.Command) ipc.Respo
 	if reporter, ok := h.eventTap.(ports.KeyboardLayoutReporter); ok {
 		var requested string
 		if cfg != nil {
-			requested = strings.TrimSpace(cfg.General.KBLayoutToUse)
+			requested = strings.TrimSpace(cfg.General.KBLayoutToUse.ForOS(runtime.GOOS))
 		}
 
 		status, found := keyboardLayoutsStatus(reporter.KeyboardLayouts(), requested)
@@ -71,8 +72,8 @@ func (h *InfoHandler) handleHealth(ctx context.Context, _ ipc.Command) ipc.Respo
 	}
 
 	for key, value := range capabilities {
-		// Skip informational sibling fields (e.g. dark_mode_detection_detail);
-		// see detailSuffix for the contract.
+		// Skip informational sibling fields (e.g. dark_mode_detection_detail).
+		// See detailSuffix for the contract.
 		if strings.HasSuffix(key, detailSuffix) {
 			continue
 		}
@@ -137,7 +138,7 @@ func (h *InfoHandler) handleHealth(ctx context.Context, _ ipc.Command) ipc.Respo
 
 	mode := ""
 	if h.appState != nil {
-		mode = domain.ModeString(h.appState.CurrentMode())
+		mode = h.appState.ModeName()
 	}
 
 	data := map[string]any{
@@ -164,7 +165,7 @@ func (h *InfoHandler) handleHealth(ctx context.Context, _ ipc.Command) ipc.Respo
 
 // systemCapabilities is the platform preset with the overlay row replaced by
 // what the overlay reports about itself. The preset can only name what was
-// built; the manager knows what came up, which on Windows decides whether
+// built. The manager knows what came up, which on Windows decides whether
 // hints draw through Direct2D or the GDI fallback.
 func (h *InfoHandler) systemCapabilities() ports.PlatformCapabilities {
 	if h.systemPort == nil {
@@ -194,7 +195,7 @@ func capabilitiesMap(capabilities ports.PlatformCapabilities) map[string]any {
 	// Surface dark-mode Detail as a sibling field so `neru doctor` can render
 	// the current live state (e.g. "current state: dark (source=xdg-portal)")
 	// without having to expand FeatureCapability into its own structured map.
-	// Only Linux probes a live state into Detail; Darwin/Windows leave a static
+	// Only Linux probes a live state into Detail. Darwin/Windows leave a static
 	// description there, so gate on platform to keep it out of their output.
 	if detail := capabilities.DarkModeDetection.Detail; detail != "" &&
 		strings.HasPrefix(capabilities.Platform, "linux") {
@@ -208,17 +209,17 @@ func capabilitiesMap(capabilities ports.PlatformCapabilities) map[string]any {
 	}
 
 	// Notifications get the same treatment, gated on the status rather than on
-	// the platform: "stub" alone does not tell a user whether a daemon to
+	// the platform, because "stub" alone does not tell a user whether a daemon to
 	// install, a build to change, or nothing at all would fix it, while the
 	// supported detail only restates the mechanism and is left out. Linux
-	// probes a live reason into this; the other platforms carry a static one,
+	// probes a live reason into this. The other platforms carry a static one,
 	// and either is worth the line when the capability is not there.
 	if detail := capabilities.Notifications.Detail; detail != "" &&
 		!capabilities.Notifications.Supported() {
 		out[string(ports.CapabilityNotifications)+detailSuffix] = detail
 	}
 
-	// Scroll gets the notification treatment: a Linux downgrade names the
+	// Scroll gets the notification treatment. A Linux downgrade names the
 	// device the user has to make writable, which is the whole fix.
 	if detail := capabilities.Scroll.Detail; detail != "" &&
 		!capabilities.Scroll.Supported() {
@@ -228,7 +229,7 @@ func capabilitiesMap(capabilities ports.PlatformCapabilities) map[string]any {
 	// Focused-app inspection is the third, gated the same way, because the one
 	// thing a bare "stub" cannot say is that nothing is wrong. Linux probes it
 	// live, so a desktop with no window focused reports the same status as a
-	// session with no window manager — and only the detail separates "focus
+	// session with no window manager, and only the detail separates "focus
 	// something" from "install something".
 	if detail := capabilities.Process.Detail; detail != "" &&
 		!capabilities.Process.Supported() {
@@ -241,7 +242,7 @@ func capabilitiesMap(capabilities ports.PlatformCapabilities) map[string]any {
 func profileMap(profile platform.Profile) map[string]any {
 	return map[string]any{
 		"os":                          string(profile.OS),
-		"primary_modifier":            profile.PrimaryModifier,
+		"primary_modifier":            action.PrimaryModifier().Canonical(),
 		"display_server":              string(profile.DisplayServer),
 		"accessibility_backend":       profile.Accessibility.Name,
 		"accessibility_build_mode":    string(profile.Accessibility.BuildMode),
@@ -281,6 +282,12 @@ func capabilityStatusSupported(status string) bool {
 // layout kb_layout_to_use names, which is a typo neru doctor should catch.
 func keyboardLayoutsStatus(layouts ports.KeyboardLayouts, requested string) (string, bool) {
 	if len(layouts.Names) == 0 {
+		// The platform may know the layout is missing without listing any,
+		// as macOS does when its main thread is too busy to list them.
+		if requested != "" && layouts.Unmatched {
+			return "not found: " + requested + " (layouts not read)", false
+		}
+
 		// Doctor cannot check a forced layout here, so it does not call it ok.
 		// It does not fail on it either, because the keymap may still arrive.
 		if requested != "" {

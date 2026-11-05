@@ -4,7 +4,6 @@ import (
 	"context"
 	"image"
 
-	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/domain/bisect"
 	"github.com/y3owk1n/neru/internal/domain/modecmd"
 )
@@ -12,15 +11,16 @@ import (
 // Compile-time interface compliance checks: the core interface, then every
 // optional extension bisect mode opts into (extensions.go).
 var (
-	_ Mode                   = (*BisectMode)(nil)
-	_ bisector               = (*BisectMode)(nil)
-	_ selectionTracker       = (*BisectMode)(nil)
-	_ cursorFollowSelector   = (*BisectMode)(nil)
-	_ inputEditor            = (*BisectMode)(nil)
-	_ hotkeyOverrideReporter = (*BisectMode)(nil)
-	_ themeRefresher         = (*BisectMode)(nil)
-	_ screenRefresher        = (*BisectMode)(nil)
-	_ captureScopeReporter   = (*BisectMode)(nil)
+	_ Mode                    = (*BisectMode)(nil)
+	_ bisector                = (*BisectMode)(nil)
+	_ selectionTracker        = (*BisectMode)(nil)
+	_ cursorFollowSelector    = (*BisectMode)(nil)
+	_ inputEditor             = (*BisectMode)(nil)
+	_ hotkeyOverrideReporter  = (*BisectMode)(nil)
+	_ themeRefresher          = (*BisectMode)(nil)
+	_ screenRefresher         = (*BisectMode)(nil)
+	_ captureScopeReporter    = (*BisectMode)(nil)
+	_ selectionRegionReporter = (*BisectMode)(nil)
 )
 
 // BisectMode implements the Mode interface for bisection navigation.
@@ -31,7 +31,7 @@ type BisectMode struct {
 // NewBisectMode creates a new bisect mode implementation.
 func NewBisectMode(handler *handlerState) *BisectMode {
 	return &BisectMode{
-		baseMode: newBaseMode(handler, domain.ModeBisect, "BisectMode"),
+		baseMode: newBaseMode(handler, "BisectMode"),
 	}
 }
 
@@ -107,6 +107,26 @@ func (m *BisectMode) Backspace() {
 	m.handler.settleBisect("Failed to move cursor after bisect backspace")
 }
 
+// SelectionWrites reports how many times this session has set its selection.
+func (m *BisectMode) SelectionWrites() uint64 {
+	if m.handler.bisect == nil || m.handler.bisect.Context == nil {
+		return 0
+	}
+
+	return m.handler.bisect.Context.SelectionWrites()
+}
+
+// SelectionRegion reports the region the cuts have left. Before the first cut
+// it is the whole area the session started from, which narrows nothing.
+func (m *BisectMode) SelectionRegion() (image.Rectangle, bool) {
+	if m.handler.bisect == nil || m.handler.bisect.Region == nil ||
+		m.handler.bisect.Region.Depth() == 0 {
+		return image.Rectangle{}, false
+	}
+
+	return m.handler.bisect.Region.Bounds().Add(m.handler.screenBounds.Min), true
+}
+
 // SelectionPoint reports the region center bisect mode has selected.
 func (m *BisectMode) SelectionPoint() (image.Point, bool) {
 	if m.handler.bisect == nil || m.handler.bisect.Context == nil {
@@ -127,6 +147,17 @@ func (m *BisectMode) ClearSelectionPoint() bool {
 	m.handler.refreshBisectVirtualPointer()
 
 	return true
+}
+
+// PlaceSelectionPoint moves the selection onto point and the virtual pointer
+// with it.
+func (m *BisectMode) PlaceSelectionPoint(point image.Point) {
+	if m.handler.bisect == nil || m.handler.bisect.Context == nil {
+		return
+	}
+
+	m.handler.bisect.Context.SetSelectionPoint(point)
+	m.handler.refreshBisectVirtualPointer()
 }
 
 // SelectionAnchor anchors to the region center whenever the real cursor is
@@ -151,7 +182,7 @@ func (m *BisectMode) CursorFollowSelection() (bool, bool) {
 }
 
 // ApplyCursorFollowSelection sets or toggles the preference and then settles
-// what the change owes: the virtual pointer stands in only while the cursor
+// what the change owes. The virtual pointer stands in only while the cursor
 // is held back, and turning following on puts the cursor on the center.
 func (m *BisectMode) ApplyCursorFollowSelection(desired *bool) (bool, bool) {
 	if m.handler.bisect == nil || m.handler.bisect.Context == nil {

@@ -35,25 +35,29 @@ const (
 	// decides whether a binding is an action step.
 	ActionCommand = action.PrefixAction
 
-	flagCenter    = "--center"
-	flagWindow    = "--window"
-	flagSelection = "--selection"
-	flagPrevious  = "--previous"
-	flagName      = "--name"
-	flagBare      = "--bare"
-	flagBail      = "--bail"
-	flagState     = "--state"
-	flagToggle    = "--toggle"
-	flagDirection = "--direction"
-	flagCount     = "--count"
-	flagSlot      = "--slot"
-	flagModifier  = "--modifier"
-	flagX         = "--x"
-	flagY         = "--y"
-	flagDX        = "--dx"
-	flagDY        = "--dy"
-	flagSteps     = "--steps"
-	flagBackward  = "--backward"
+	flagCenter         = "--center"
+	flagWindow         = "--window"
+	flagSelection      = "--selection"
+	flagPrevious       = "--previous"
+	flagName           = "--name"
+	flagBare           = "--bare"
+	flagBail           = "--bail"
+	flagState          = "--state"
+	flagToggle         = "--toggle"
+	flagDirection      = "--direction"
+	flagCount          = "--count"
+	flagSlot           = "--slot"
+	flagModifier       = "--modifier"
+	flagX              = "--x"
+	flagY              = "--y"
+	flagDX             = "--dx"
+	flagDY             = "--dy"
+	flagSteps          = "--steps"
+	flagBackward       = "--backward"
+	flagConfirmOnLabel = "--confirm-on-label"
+	flagStrategy       = "--strategy"
+	flagRole           = "--role"
+	flagText           = "--text"
 
 	// slotDataKey names the slot a cursor action acted on, in its response data.
 	slotDataKey = "slot"
@@ -174,7 +178,7 @@ func failAction(message string) ipc.Response {
 }
 
 // dispatchByName routes the actions identified by their name alone. The second
-// result reports whether one of them matched; anything else acts on a point and
+// result reports whether one of them matched. Anything else acts on a point and
 // is handled after.
 func (h *ActionsHandler) dispatchByName(
 	ctx context.Context,
@@ -216,7 +220,13 @@ func (h *ActionsHandler) dispatchByName(
 		return h.handleCycleHintAction(ctx, parsed), true
 
 	case action.IsSearchHintsAction(actionName):
-		return h.handleSearchHintsAction(), true
+		return h.handleSearchHintsAction(parsed), true
+
+	case action.IsRefreshHintsAction(actionName):
+		return h.handleRefreshHintsAction(), true
+
+	case action.IsSnapAction(actionName):
+		return h.handleSnapAction(ctx, parsed), true
 
 	case action.IsHideCursorAction(actionName) || action.IsShowCursorAction(actionName):
 		return h.handleCursorVisibilityAction(action.IsHideCursorAction(actionName)), true

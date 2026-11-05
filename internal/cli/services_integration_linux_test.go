@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/y3owk1n/neru/internal/derrors"
 )
 
 // requireSystemdMachine skips unless systemd booted this machine, which is the
@@ -33,7 +35,7 @@ func requireNoExistingUnit(t *testing.T, unitPath string) {
 // TestRenderServiceUnit_IsAcceptedBySystemdAnalyze parses the unit Neru writes
 // with systemd's own parser.
 //
-// Every other test here can pass while the unit is subtly wrong — a directive
+// Every other test here can pass while the unit is subtly wrong. A directive
 // spelled the way the documentation spells the concept rather than the way
 // systemd spells the key is accepted by every string comparison and ignored by
 // systemd. `systemd-analyze verify` is the only reader whose opinion counts,
@@ -46,7 +48,7 @@ func TestRenderServiceUnit_IsAcceptedBySystemdAnalyze(t *testing.T) {
 	}
 
 	// The verifier resolves ExecStart, so the unit points at a binary that
-	// really exists — the test binary itself.
+	// really exists: the test binary itself.
 	binary, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable() error = %v", err)
@@ -70,7 +72,7 @@ func TestRenderServiceUnit_IsAcceptedBySystemdAnalyze(t *testing.T) {
 }
 
 // TestStatusService_ReportsNotInstalledWhenTheUnitIsAbsent pins the acceptance
-// criterion that matters most on a fresh machine: asking about a service nobody
+// criterion that matters most on a fresh machine. Asking about a service nobody
 // installed is answered, not refused.
 func TestStatusService_ReportsNotInstalledWhenTheUnitIsAbsent(t *testing.T) {
 	requireSystemdMachine(t)
@@ -84,7 +86,7 @@ func TestStatusService_ReportsNotInstalledWhenTheUnitIsAbsent(t *testing.T) {
 
 	requireNoExistingUnit(t, unitPath)
 
-	status := statusService()
+	status := statusService().Message
 	if !strings.Contains(status, "Service not installed") {
 		t.Errorf("statusService() = %q, want it to report that nothing is installed", status)
 	}
@@ -95,13 +97,13 @@ func TestStatusService_ReportsNotInstalledWhenTheUnitIsAbsent(t *testing.T) {
 }
 
 // shadowSystemctl puts a systemctl on PATH ahead of the real one, failing for
-// the verb named in failVerb — or for every verb when that is empty — and
+// the verb named in failVerb (or for every verb when that is empty), and
 // succeeding silently otherwise.
 //
 // It is what lets an unreachable or uncooperative user manager be tested
-// without one: the failures that matter here (a stale session bus, a manager
-// that never started) cannot be provoked on a working machine, and the
-// alternative — driving the real manager into a failure — is exactly what a
+// without one, because the failures that matter here (a stale session bus, a manager
+// that never started) cannot be provoked on a working machine. The
+// alternative, driving the real manager into a failure, is exactly what a
 // test must not do to a developer's session.
 func shadowSystemctl(t *testing.T, failVerb string) {
 	t.Helper()
@@ -127,12 +129,66 @@ exit 0
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// TestStopService_RefusesAUnitTheManagerLoadsFromElsewhere pins that stop
+// leaves a unit alone when this shell finds Neru's own unit file but the user
+// manager loads neru.service from another one, such as a home-manager link.
+// Disabling that unit would remove the link.
+func TestStopService_RefusesAUnitTheManagerLoadsFromElsewhere(t *testing.T) {
+	requireSystemdMachine(t)
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	unitPath, err := serviceUnitPath()
+	if err != nil {
+		t.Fatalf("serviceUnitPath() error = %v", err)
+	}
+
+	err = os.MkdirAll(filepath.Dir(unitPath), unitDirPerm)
+	if err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	err = os.WriteFile(unitPath, []byte(renderServiceUnit("/usr/local/bin/neru")), unitFilePerm)
+	if err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", unitPath, err)
+	}
+
+	dir := t.TempDir()
+	callLog := filepath.Join(dir, "calls")
+
+	const script = `#!/bin/sh
+echo "$@" >> "$NERU_FAKE_SYSTEMCTL_LOG"
+case " $* " in
+*" show "*) echo /home/tester/.local/share/home-manager/neru.service ;;
+esac
+exit 0
+`
+
+	err = os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755)
+	if err != nil {
+		t.Fatalf("WriteFile(systemctl) error = %v", err)
+	}
+
+	t.Setenv("NERU_FAKE_SYSTEMCTL_LOG", callLog)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err = stopService()
+	if !derrors.IsCode(err, derrors.CodeInvalidInput) {
+		t.Fatalf("stopService() error = %v, want %v", err, derrors.CodeInvalidInput)
+	}
+
+	calls, _ := os.ReadFile(callLog)
+	if strings.Contains(string(calls), "disable") {
+		t.Errorf("stopService() ran disable on a unit it refused:\n%s", calls)
+	}
+}
+
 // TestUninstallService_ReportsSystemdFailures pins that an uninstall which did
 // not finish says so.
 //
 // A discarded `disable --now` error is an uninstall that prints success while
 // the daemon keeps running and the unit stays enabled for the next login, which
-// is the worst of the three outcomes: the user believes the machine is in a
+// is the worst of the three outcomes, because the user believes the machine is in a
 // state it is not in.
 func TestUninstallService_ReportsSystemdFailures(t *testing.T) {
 	requireSystemdMachine(t)
@@ -208,12 +264,12 @@ func TestUninstallService_ReportsSystemdFailures(t *testing.T) {
 	}
 }
 
-// TestInstallService_RoundTripsThroughSystemd is the end-to-end claim: the unit
+// TestInstallService_RoundTripsThroughSystemd is the end-to-end claim that the unit
 // Neru writes is one systemd accepts, enables and forgets again.
 //
 // It installs a real user unit and starts it, so it belongs to the tier that is
 // allowed to take the machine over. The unit it installs points at the test
-// binary, which exits immediately — the round trip is about systemd accepting
+// binary, which exits immediately. The round trip is about systemd accepting
 // and enabling the unit, not about the daemon staying up.
 func TestInstallService_RoundTripsThroughSystemd(t *testing.T) {
 	if os.Getenv("NERU_DESKTOP_TESTS") == "" {
@@ -223,7 +279,7 @@ func TestInstallService_RoundTripsThroughSystemd(t *testing.T) {
 	requireSystemdMachine(t)
 
 	// A machine systemd booted still need not have a *user* manager reachable
-	// from this session — CI runners routinely do not — and every step below
+	// from this session (CI runners routinely do not), and every step below
 	// talks to one.
 	_, reachErr := systemctl("list-units", "--type=service")
 	if reachErr != nil {
@@ -252,7 +308,7 @@ func TestInstallService_RoundTripsThroughSystemd(t *testing.T) {
 			)
 		}
 
-		status := statusService()
+		status := statusService().Message
 		if !strings.Contains(status, "Service not installed") {
 			t.Errorf(
 				"statusService() after uninstall = %q, want it to report nothing installed",
@@ -272,11 +328,11 @@ func TestInstallService_RoundTripsThroughSystemd(t *testing.T) {
 	}
 
 	enabled := systemctlWord("is-enabled")
-	if enabled != "enabled" {
-		t.Errorf("is-enabled = %q, want %q", enabled, "enabled")
+	if enabled != unitEnabled {
+		t.Errorf("is-enabled = %q, want %q", enabled, unitEnabled)
 	}
 
-	status := statusService()
+	status := statusService().Message
 	if !strings.Contains(status, "Service installed") {
 		t.Errorf("statusService() = %q, want it to report an installed unit", status)
 	}
@@ -286,21 +342,35 @@ func TestInstallService_RoundTripsThroughSystemd(t *testing.T) {
 		t.Error("installService() on top of an existing unit succeeded, want a refusal")
 	}
 
-	// The three verbs that only forward to systemctl. They are checked against
-	// the installed unit rather than for a resulting run state: the unit points
-	// at the test binary, which exits as soon as it is started, so what is being
-	// claimed here is that systemd accepts each job.
-	for _, verb := range []struct {
-		name string
-		call func() error
-	}{
-		{name: "stop", call: stopService},
-		{name: "start", call: startService},
-		{name: "restart", call: restartService},
-	} {
-		verbErr := verb.call()
-		if verbErr != nil {
-			t.Errorf("%sService() error = %v", verb.name, verbErr)
-		}
+	// The unit runs the test binary, which exits at once. So this checks that
+	// systemd accepts each job and whether the unit is enabled at login after
+	// each verb. It does not check a run state.
+	err = stopService()
+	if err != nil {
+		t.Fatalf("stopService() error = %v", err)
+	}
+
+	if enabled := systemctlWord("is-enabled"); enabled != unitDisabled {
+		t.Errorf("is-enabled after stop = %q, want %q", enabled, unitDisabled)
+	}
+
+	err = restartService()
+	if !derrors.IsCode(err, derrors.CodeInvalidInput) {
+		t.Errorf("restartService() on a stopped unit error = %v, want %v",
+			err, derrors.CodeInvalidInput)
+	}
+
+	err = startService()
+	if err != nil {
+		t.Fatalf("startService() error = %v", err)
+	}
+
+	if enabled := systemctlWord("is-enabled"); enabled != unitEnabled {
+		t.Errorf("is-enabled after start = %q, want %q", enabled, unitEnabled)
+	}
+
+	err = restartService()
+	if err != nil {
+		t.Errorf("restartService() error = %v", err)
 	}
 }

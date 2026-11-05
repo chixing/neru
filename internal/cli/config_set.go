@@ -2,11 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/y3owk1n/neru/internal/adapter/ipc"
-	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/config/loader"
 	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain"
@@ -52,13 +52,7 @@ Use "neru config dump | jq" to explore all available keys.`,
 
 		noReload, _ := cmd.Flags().GetBool(noReloadFlagName)
 
-		var valErr error
-		if noReload {
-			valErr = loader.SetField(config.DefaultConfig(), key, value)
-		} else {
-			valErr = loader.ValidateConfigSetField(key, value)
-		}
-
+		valErr := loader.ValidateConfigSetField(key, value)
 		if valErr != nil {
 			typeHint := loader.ConfigFieldType(key)
 
@@ -77,10 +71,10 @@ Use "neru config dump | jq" to explore all available keys.`,
 			ipcArgs = append(ipcArgs, "--no-reload")
 		}
 
-		resp, err := client.Send(ipc.Command{
+		resp, err := client.SendWithTimeout(ipc.Command{
 			Action: domain.CommandConfigSet,
 			Args:   ipcArgs,
-		})
+		}, time.Duration(timeoutSec)*time.Second)
 		if err != nil {
 			return fmt.Errorf("failed to send config-set command: %w", err)
 		}
@@ -108,6 +102,6 @@ Use "neru config dump | jq" to explore all available keys.`,
 
 func init() {
 	configSetCmd.Flags().Bool(noReloadFlagName, false,
-		"Skip hotkey re-registration. Use when setting multiple fields; "+
-			"run `neru config reload` afterwards to apply.")
+		"Skip hotkey re-registration. Use when setting multiple fields, then "+
+			"run `neru config reload` to apply.")
 }

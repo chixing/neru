@@ -9,6 +9,7 @@ import (
 
 	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain"
+	"github.com/y3owk1n/neru/internal/domain/event"
 	"github.com/y3owk1n/neru/internal/domain/geometry"
 	domainGrid "github.com/y3owk1n/neru/internal/domain/grid"
 	domainHint "github.com/y3owk1n/neru/internal/domain/hint"
@@ -36,7 +37,7 @@ func (h *Handler) MoveMonitor(
 	direction MonitorDirection,
 ) error {
 	// Serialize concurrent MoveMonitor calls. Rapid hotkey presses each
-	// dispatch MoveMonitor in a fresh goroutine; without this lock a second
+	// dispatch MoveMonitor in a fresh goroutine. Without this lock a second
 	// call can sample ScreenBounds mid-animation and race the first call's
 	// overlay redraw, leaving the grid on the wrong monitor or half-drawn.
 	h.moveMonitorMu.Lock()
@@ -51,8 +52,8 @@ func (h *Handler) MoveMonitor(
 	}
 
 	// "Next" is relative to the monitor under the cursor, and on Wayland the
-	// cursor position is a cache a user-driven mouse move invalidates — refresh
-	// it first or the step starts from the last place Neru put the cursor, not
+	// cursor position is a cache a user-driven mouse move invalidates. Refresh
+	// it first, or the step starts from the last place Neru put the cursor, not
 	// where the user did (#1279). Runs outside h.mu, like the warp below.
 	h.syncCursorPosition(ctx)
 
@@ -81,6 +82,10 @@ func (h *Handler) MoveMonitorByName(
 		return derrors.New(derrors.CodeActionFailed, "action service not available")
 	}
 
+	// The move is reported only when it leaves the display under the cursor,
+	// so that display is read from a fresh position, as MoveMonitor does.
+	h.syncCursorPosition(ctx)
+
 	screens, err := h.system.Screens(ctx)
 	if err != nil {
 		return err
@@ -107,12 +112,12 @@ func (h *Handler) MoveMonitorByName(
 // cursor to the center of the display given, and puts the mode back on the
 // display it lands on.
 //
-// Clear → warp → redraw, in that order: sizing the overlay to a screen reads
-// the mouse position on the main queue, so taking the frame off first removes
-// the stale overlay before the warp, and everything that puts it back runs
-// with the cursor already on the target monitor. Putting it back is one Frame
-// per mode, and the overlay owns the resize/show/draw order inside it. A warp
-// that fails puts the mode back on the display it never left.
+// Clear, then warp, then redraw, in that order. Sizing the overlay to a screen
+// reads the mouse position on the main queue, so taking the frame off first
+// removes the stale overlay before the warp, and everything that puts it back
+// runs with the cursor already on the target monitor. Putting it back is one
+// Frame per mode, and the overlay owns the resize/show/draw order inside it. A
+// warp that fails puts the mode back on the display it never left.
 func (h *Handler) moveCursorToMonitor(
 	ctx context.Context,
 	bounds image.Rectangle,
@@ -122,6 +127,8 @@ func (h *Handler) moveCursorToMonitor(
 		X: bounds.Min.X + bounds.Dx()/2,
 		Y: bounds.Min.Y + bounds.Dy()/2,
 	}
+
+	from, fromErr := h.system.ScreenBounds(ctx)
 
 	sourceBounds, hasActiveOverlay := h.clearFrameForMonitorMove()
 
@@ -140,9 +147,28 @@ func (h *Handler) moveCursorToMonitor(
 		zap.Int("y", center.Y),
 	)
 
+	h.publishMonitorMove(from, fromErr, bounds, monitorName)
+
 	h.refreshActiveModeForMonitorMove(ctx, bounds)
 
 	return nil
+}
+
+// publishMonitorMove reports a move to the display at bounds, unless the
+// cursor started on it. A display that could not be read counts as another
+// one. Caller holds moveMonitorMu, which orders the reports as the moves
+// applied.
+func (h *handlerState) publishMonitorMove(
+	from image.Rectangle,
+	fromErr error,
+	bounds image.Rectangle,
+	monitorName string,
+) {
+	if fromErr == nil && from == bounds {
+		return
+	}
+
+	h.events.Publish(event.Event{Name: event.MonitorMove, Monitor: monitorName})
 }
 
 // resolveMonitorTarget returns the bounds and display name of the next monitor
@@ -205,14 +231,14 @@ func indexOfScreen(screens []ports.Screen, active image.Rectangle) int {
 // left. What puts it back is the redraw on the other side.
 //
 // It reports the display the mode was drawn against, and whether there was a
-// mode drawn at all, from the same locked section that clears: read separately,
+// mode drawn at all, from the same locked section that clears. Read separately,
 // a mode that exited in between would leave the caller restoring a frame that
 // no longer exists.
 //
 // The clear reaches the overlay under h.mu, which on macOS makes a synchronous
 // hop to the main queue when monitor-select panels are on screen. That is safe
-// only while nothing running on the main queue takes h.mu — the invariant the
-// darwin overlay already states — and this is the third path that leans on it
+// only while nothing running on the main queue takes h.mu, the invariant the
+// darwin overlay already states, and this is the third path that leans on it
 // (`internal/app/modes/AGENTS.md`).
 func (h *Handler) clearFrameForMonitorMove() (image.Rectangle, bool) {
 	h.mu.Lock()
@@ -236,15 +262,15 @@ func (h *Handler) clearFrameForMonitorMove() (image.Rectangle, bool) {
 // Every mode comes back the way it came up in the first place: as a Frame,
 // with the overlay owning the resize, show and draw inside it.
 //
-// This is the whole dispatch and it runs under one hold of h.mu: the mode is
+// This is the whole dispatch and it runs under one hold of h.mu. The mode is
 // read once, selected once and called once, so it cannot change between being
 // chosen and being used and no implementation re-checks it (ADR 0004). Idle
 // has no entry in the mode map, which is what makes a monitor move with
 // nothing open draw nothing.
 //
 // The lock is taken here rather than in MoveMonitor because the animated
-// cursor warp runs before this call and must stay outside the hold; the
-// blocking work that remains inside it — hint regeneration — is the same work
+// cursor warp runs before this call and must stay outside the hold. The
+// blocking work that remains inside it, hint regeneration, is the same work
 // the activation and screen-change paths already do under the lock.
 func (h *Handler) refreshActiveModeForMonitorMove(
 	ctx context.Context,
@@ -270,7 +296,7 @@ func (h *handlerState) refreshScrollForMonitorMove() {
 
 // refreshMonitorSelectForMonitorMove redraws the monitor picker after a
 // monitor move. The panels are placed per display, so they come back exactly
-// as they were — but they were taken off the screen with the frame, and
+// as they were, but they were taken off the screen with the frame, and
 // leaving them off would strand the user in a mode with nothing to pick from.
 func (h *handlerState) refreshMonitorSelectForMonitorMove() {
 	if h.monitorSelect == nil {
@@ -327,7 +353,7 @@ func (h *handlerState) refreshRecursiveGridForMonitorMove(targetBounds image.Rec
 		h.recursiveGrid.Context.ClearSelectionPoint()
 	}
 
-	// Same as grid: the recursive grid comes up on the new display as a Frame.
+	// As with grid, the recursive grid comes up on the new display as a Frame.
 	if !h.showFrame(h.recursiveGridFrame(), "refresh recursive-grid after monitor move") {
 		return
 	}
@@ -339,7 +365,7 @@ func (h *handlerState) refreshRecursiveGridForMonitorMove(targetBounds image.Rec
 // bounds. Unlike refreshHintsForScreenChange this does not re-query
 // ScreenBounds.
 //
-// The whole of it — including the accessibility-tree walk GenerateHints does —
+// The whole of it, including the accessibility-tree walk GenerateHints does,
 // runs under h.mu, which is where the activation path and the screen-change
 // path already do the same work. What it buys is that the flags the session
 // was activated with are read under the same lock that writes them, rather
@@ -347,7 +373,7 @@ func (h *handlerState) refreshRecursiveGridForMonitorMove(targetBounds image.Rec
 //
 // The walk is given the same HintTimeout budget the activation path gives it.
 // The context a move_monitor step arrives with carries no deadline of its own,
-// and a tree that never answers would pin h.mu — and with it every keystroke —
+// and a tree that never answers would pin h.mu, and with it every keystroke,
 // for as long as it took.
 func (h *handlerState) refreshHintsForMonitorMove(
 	ctx context.Context,
@@ -360,19 +386,32 @@ func (h *handlerState) refreshHintsForMonitorMove(
 		return
 	}
 
+	// Nothing can scan supplied targets on the display moved to.
+	if h.hints.Context.TargetsSupplied() {
+		h.logger.Debug("Monitor moved under supplied hint targets; exiting hints mode")
+		h.exitMode()
+
+		return
+	}
+
 	generateCtx, cancelGenerate := context.WithTimeout(ctx, HintTimeout)
 	defer cancelGenerate()
+
+	// The focused window stays on the display just left, so a capture
+	// strategy scanning it would find nothing on this one. The session scans
+	// the whole screen moved to from here on, the way grid covers it, and the
+	// refreshes after this keep doing so. The axtree strategy ignores the
+	// scope. Updating the active scan as well lets a --capture-scope cycle
+	// advance from the scope now in use.
+	h.hints.Context.SetCaptureScopeOverride(domain.CaptureScopeScreen)
+	h.hints.Context.SetActiveScan(h.hints.Context.ActiveStrategy(), domain.CaptureScopeScreen)
 
 	filterRoles := h.hints.Context.FilterRoles()
 	filterTextContains := h.hints.Context.FilterTextContains()
 	strategyOverride := h.hints.Context.StrategyOverride()
 	captureScopeOverride := h.hints.Context.CaptureScopeOverride()
 	labelDirectionOverride := h.hints.Context.LabelDirectionOverride()
-
-	splitWordOverride := false
-	if h.hints != nil && h.hints.Context != nil {
-		splitWordOverride = h.hints.Context.SplitWord()
-	}
+	splitWordOverride := h.hints.Context.SplitWord()
 
 	domainHints, err := h.hintService.GenerateHints(
 		generateCtx,
@@ -416,9 +455,7 @@ func (h *handlerState) refreshHintsForMonitorMove(
 
 	// The frame came off the screen before the warp, so this draw performs the
 	// window sequence again. As on the activation path, the flag is cleared
-	// immediately before SetHints — which bumps the hint manager's update
-	// generation in the same locked section, so a debounce timer that fired
-	// during the move cannot re-show the overlay on the display just left.
+	// immediately before SetHints, and SetHints draws that sequence.
 	h.hintsFrameOnScreen = false
 
 	setHintsErr := h.hints.Context.SetHints(hintCollection)
@@ -429,6 +466,6 @@ func (h *handlerState) refreshHintsForMonitorMove(
 		return
 	}
 	// SetHints fires the hint manager's update callback, which hands the
-	// labels over as a Frame — and since the frame was cleared before the
+	// labels over as a Frame. Since the frame was cleared before the
 	// warp, that first draw is the transition that brings the overlay back up.
 }
