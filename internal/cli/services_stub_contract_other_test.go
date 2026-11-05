@@ -10,11 +10,11 @@ import (
 )
 
 // TestServicesStubsRefuseLoudly pins the fallback slot's half of the contract in
-// internal/adapter/platform/AGENTS.md: a subcommand with no service manager
+// internal/adapter/platform/AGENTS.md, that a subcommand with no service manager
 // behind it returns CodeNotSupported, never nil.
 //
-// Nothing else in the tree covers it — cli_test.go deliberately skips the
-// services subcommands because on a real platform they have side effects — so
+// Nothing else in the tree covers it. cli_test.go deliberately skips the
+// services subcommands because on a real platform they have side effects, so
 // without this a rewrite of the stubs could quietly start returning success.
 func TestServicesStubsRefuseLoudly(t *testing.T) {
 	testCases := []struct {
@@ -45,10 +45,15 @@ func TestServicesStubsRefuseLoudly(t *testing.T) {
 }
 
 // TestStatusServiceSaysItIsUnsupported covers the one subcommand whose signature
-// carries no error, so the refusal has to be in the words.
+// carries no error, so the refusal has to be in the words and in supported.
 func TestStatusServiceSaysItIsUnsupported(t *testing.T) {
 	status := statusService()
-	if !strings.Contains(status, "not supported") {
-		t.Errorf("statusService() = %q, want it to say service management is unsupported", status)
+	if !strings.Contains(status.Message, "not supported") {
+		t.Errorf("statusService() = %q, want it to say service management is unsupported",
+			status.Message)
+	}
+
+	if status.Supported || status.Installed || status.Running || status.StartsAtLogin {
+		t.Errorf("statusService() = %+v, want every flag false", status)
 	}
 }

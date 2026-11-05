@@ -9,7 +9,7 @@ import (
 
 // MockTextInputPort is a mock implementation of ports.TextInputPort.
 //
-// By default it reports started == false, matching every platform but macOS —
+// By default it reports started == false, matching every platform but macOS,
 // so a test exercising the fallback path (reading the event tap's key stream)
 // gets that behavior without configuring anything. Set Started to true to
 // exercise the native-field path instead.
@@ -51,6 +51,15 @@ func (m *MockTextInputPort) StopHintSearchSession(_ context.Context) error {
 	m.stopN++
 
 	return m.StopErr
+}
+
+// Callbacks returns the callbacks passed to the last StartHintSearchSession
+// call, so a test can invoke one after a later session started.
+func (m *MockTextInputPort) Callbacks() ports.TextInputCallbacks {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.callbacks
 }
 
 // Frame returns the frame passed to the last StartHintSearchSession call.

@@ -75,8 +75,11 @@ func NewHintService(
 
 // GenerateHints collects clickable elements and generates labels without
 // drawing them, so mode handlers can filter and position hints before the
-// first render. A non-empty bundleID skips the AX lookup; non-empty overrides
+// first render. A non-empty bundleID skips the AX lookup, and non-empty overrides
 // win over the config-derived strategy and label direction.
+//
+// When a capture strategy's detection fails, it keeps what else it collected
+// and says so in the log, so the mode still opens on the system surfaces.
 func (s *HintService) GenerateHints(
 	ctx context.Context,
 	filterRoles []string,
@@ -87,87 +90,78 @@ func (s *HintService) GenerateHints(
 	labelDirectionOverride string,
 	splitWord bool,
 ) ([]*hint.Interface, error) {
-	// This read must not be widened to span the strategy switch below: the
-	// vision branch takes s.mu for writing (notifyVisionUnavailable), and a
-	// sync.RWMutex is neither reentrant nor upgradable, so a read lock still
-	// held there would deadlock this goroutine against itself.
-	s.mu.RLock()
-	cfg := s.config
-	s.mu.RUnlock()
+	return s.generate(ctx, filterRoles, filterTextContains, bundleID,
+		strategyOverride, captureScopeOverride, labelDirectionOverride, splitWord, false)
+}
 
-	if bundleID == "" {
-		var bundleIDErr error
+// ProbeHints is GenerateHints for a caller that reports the hints rather than
+// draws them. It returns a capture strategy's failed detection instead of
+// degrading, so a scan that failed cannot read as one that found nothing.
+func (s *HintService) ProbeHints(
+	ctx context.Context,
+	filterRoles []string,
+	filterTextContains []string,
+	bundleID string,
+	strategyOverride string,
+	captureScopeOverride string,
+	labelDirectionOverride string,
+	splitWord bool,
+) ([]*hint.Interface, error) {
+	return s.generate(ctx, filterRoles, filterTextContains, bundleID,
+		strategyOverride, captureScopeOverride, labelDirectionOverride, splitWord, true)
+}
 
-		bundleID, bundleIDErr = s.accessibility.FocusedAppBundleID(ctx)
-		if bundleIDErr != nil {
-			s.logger.Debug(
-				"Failed to get focused app bundle ID for hints roles",
-				zap.Error(bundleIDErr),
-			)
-		}
+// SnapScan is what `neru action snap` asks a scan for. Empty fields fall back
+// to the configuration for the focused app, as for hints.
+type SnapScan struct {
+	// Roles and Text narrow the elements as hints --role and --text do.
+	Roles []string
+	Text  []string
+	// Strategy overrides the configured strategy.
+	Strategy string
+	// Region, when not empty, is an area a capture strategy's scan must cover
+	// on top of the window or screen capture_scope names.
+	Region image.Rectangle
+	// OverlayDrawn says a mode has something on screen. A capture strategy is
+	// refused then when the capture would read Neru's own overlay as part of
+	// the screen.
+	OverlayDrawn bool
+}
+
+// SnapCandidates collects the elements `neru action snap` chooses among, the
+// ones hints would label in the focused window, without labeling them. A
+// failed capture is returned rather than degraded, as for ProbeHints.
+func (s *HintService) SnapCandidates(
+	ctx context.Context,
+	scan SnapScan,
+) ([]*element.Element, error) {
+	elements, _, err := s.collect(ctx, collectRequest{
+		filterRoles:        scan.Roles,
+		filterTextContains: scan.Text,
+		strategy:           scan.Strategy,
+		strict:             true,
+		region:             scan.Region,
+		refuseOwnWindows:   scan.OverlayDrawn,
+	})
+
+	return elements, err
+}
+
+// LabelElements labels elements a caller supplied, in place of a scan, with
+// the label direction a scan of bundleID's window would use unless
+// labelDirectionOverride names one.
+func (s *HintService) LabelElements(
+	ctx context.Context,
+	elements []*element.Element,
+	bundleID string,
+	labelDirectionOverride string,
+) ([]*hint.Interface, error) {
+	labelDirection := labelDirectionOverride
+	if labelDirection == "" {
+		s.mu.RLock()
+		labelDirection = s.config.LabelDirectionForApp(bundleID)
+		s.mu.RUnlock()
 	}
-
-	filter, usable := s.hintFilter(cfg, bundleID, filterRoles, filterTextContains)
-	if !usable {
-		return nil, nil
-	}
-
-	strategy := cfg.StrategyForApp(bundleID)
-	if strategyOverride != "" {
-		strategy = strategyOverride
-	}
-
-	captureScope := cfg.CaptureScopeForApp(bundleID)
-	if captureScopeOverride != "" {
-		captureScope = captureScopeOverride
-	}
-
-	labelDirection := cfg.LabelDirectionForApp(bundleID)
-	if labelDirectionOverride != "" {
-		labelDirection = labelDirectionOverride
-	}
-
-	if splitWord && strategy != domain.StrategyVision && strategy != domain.StrategyContour {
-		return nil, derrors.New(
-			derrors.CodeInvalidInput,
-			"--split-word is only supported when resolved strategy is 'vision' or 'contour'",
-		)
-	}
-
-	var (
-		elements []*element.Element
-		genErr   error
-	)
-
-	switch strategy {
-	case domain.StrategyVision:
-		elements = s.generateHintsVision(ctx, filter, captureScope, splitWord)
-	case domain.StrategyContour:
-		contourCfg := cfg.Contour
-		contourCfg.DetectText = contourCfg.DetectText || splitWord
-
-		contourCtx := ctx
-		if splitWord {
-			// A search is shown text matches only, so skip the contour pass.
-			contourCtx = ports.WithTextOnlyDetection(ctx)
-		}
-
-		elements = s.generateHintsContour(contourCtx, filter, captureScope, contourCfg)
-	default:
-		elements, genErr = s.generateHintsAX(ctx, filter)
-	}
-
-	if genErr != nil {
-		return nil, genErr
-	}
-
-	if len(elements) == 0 {
-		s.logger.Debug("No clickable elements found")
-
-		return nil, nil
-	}
-
-	s.logger.Debug("Found clickable elements", zap.Int("count", len(elements)))
 
 	return s.labelElements(ctx, elements, labelDirection)
 }
@@ -205,6 +199,13 @@ func (s *HintService) UpdateConfig(config config.HintsConfig) {
 		zap.Bool("include_screen_capture", config.IncludeScreenCaptureHints))
 }
 
+// CaptureShowsOwnWindows reports whether a screen-reading scan would see
+// Neru's own windows in its capture. With no vision port there is no capture,
+// so nothing is seen.
+func (s *HintService) CaptureShowsOwnWindows() bool {
+	return s.vision != nil && !s.vision.CaptureExcludesOwnWindows()
+}
+
 // Generator returns the registered hint generator for the given label
 // direction. An empty direction resolves to the default generator. If no
 // generator exists for the requested direction the default is returned as a
@@ -225,7 +226,7 @@ func (s *HintService) Generator(direction string) hint.Generator {
 }
 
 // UpdateGenerator registers a hint generator for a specific label direction.
-// The first registration becomes the default fallback; subsequent
+// The first registration becomes the default fallback. Subsequent
 // registrations for the *same* direction also replace the default so a
 // config reload that changes `hint_characters` keeps the empty/unknown
 // direction fallback in sync with the configured generator. A nil
@@ -252,6 +253,187 @@ func (s *HintService) UpdateGenerator(_ context.Context, generator hint.Generato
 	s.logger.Debug("Hint generator updated", zap.String("direction", direction))
 }
 
+// generate is GenerateHints, with strict choosing whether a capture strategy's
+// detection failure is returned or degraded.
+func (s *HintService) generate(
+	ctx context.Context,
+	filterRoles []string,
+	filterTextContains []string,
+	bundleID string,
+	strategyOverride string,
+	captureScopeOverride string,
+	labelDirectionOverride string,
+	splitWord bool,
+	strict bool,
+) ([]*hint.Interface, error) {
+	elements, bundleID, err := s.collect(ctx, collectRequest{
+		filterRoles:        filterRoles,
+		filterTextContains: filterTextContains,
+		bundleID:           bundleID,
+		strategy:           strategyOverride,
+		captureScope:       captureScopeOverride,
+		splitWord:          splitWord,
+		strict:             strict,
+		// Only a caller that reports the hints shows the identifier and
+		// focus, so hints mode skips the reads behind them.
+		readState: strict,
+	})
+	if err != nil || len(elements) == 0 {
+		return nil, err
+	}
+
+	return s.LabelElements(ctx, elements, bundleID, labelDirectionOverride)
+}
+
+// collectRequest is what decides which elements a scan collects. Empty
+// overrides fall back to the configuration for the focused app.
+type collectRequest struct {
+	filterRoles        []string
+	filterTextContains []string
+	// bundleID skips the focused-app lookup when set.
+	bundleID     string
+	strategy     string
+	captureScope string
+	splitWord    bool
+	// strict returns a capture strategy's failed detection instead of
+	// degrading to what else was collected.
+	strict bool
+	// readState reads each element's identifier and focus.
+	readState bool
+	// region, when not empty, is an area a capture strategy's scan must
+	// cover on top of the window or screen captureScope names.
+	region image.Rectangle
+	// refuseOwnWindows refuses a capture strategy whose capture would see
+	// Neru's own windows.
+	refuseOwnWindows bool
+}
+
+// collect runs a scan and returns the elements it found, with the bundle ID
+// it resolved the configuration for.
+func (s *HintService) collect(
+	ctx context.Context,
+	req collectRequest,
+) ([]*element.Element, string, error) {
+	// This read must not be widened to span the strategy switch below. A
+	// failed capture takes s.mu for writing (degradeCapture, through
+	// notifyVisionUnavailable), and a sync.RWMutex is neither reentrant nor
+	// upgradable, so a read lock still held there would deadlock this goroutine
+	// against itself.
+	s.mu.RLock()
+	cfg := s.config
+	s.mu.RUnlock()
+
+	bundleID := req.bundleID
+	if bundleID == "" {
+		var bundleIDErr error
+
+		bundleID, bundleIDErr = s.accessibility.FocusedAppBundleID(ctx)
+		if bundleIDErr != nil {
+			s.logger.Debug(
+				"Failed to get focused app bundle ID for hints roles",
+				zap.Error(bundleIDErr),
+			)
+		}
+	}
+
+	filter, usable := s.hintFilter(cfg, bundleID, req.filterRoles, req.filterTextContains)
+	if !usable {
+		return nil, bundleID, nil
+	}
+
+	filter.ReadElementState = req.readState
+
+	strategy := cfg.StrategyForApp(bundleID)
+	if req.strategy != "" {
+		strategy = req.strategy
+	}
+
+	captureScope := cfg.CaptureScopeForApp(bundleID)
+	if req.captureScope != "" {
+		captureScope = req.captureScope
+	}
+
+	if req.splitWord && strategy != domain.StrategyVision && strategy != domain.StrategyContour {
+		return nil, bundleID, derrors.New(
+			derrors.CodeInvalidInput,
+			"--split-word is only supported when resolved strategy is 'vision' or 'contour'",
+		)
+	}
+
+	if req.refuseOwnWindows && strategy != domain.StrategyAXTree && s.CaptureShowsOwnWindows() {
+		return nil, bundleID, derrors.Newf(
+			derrors.CodeNotSupported,
+			"the %s strategy cannot scan while a mode is on screen here, "+
+				"because the capture would read Neru's own overlay",
+			strategy,
+		)
+	}
+
+	var (
+		elements   []*element.Element
+		genErr     error
+		captureErr error
+	)
+
+	switch strategy {
+	case domain.StrategyVision:
+		elements, captureErr = s.generateHintsVision(
+			ctx,
+			filter,
+			captureScope,
+			req.region,
+			cfg.Vision,
+			req.splitWord,
+		)
+	case domain.StrategyContour:
+		contourCfg := cfg.Contour
+
+		contourCfg.DetectText = contourCfg.DetectText || req.splitWord
+		if req.splitWord {
+			ctx = ports.WithTextOnlyDetection(ctx)
+		}
+
+		elements, captureErr = s.generateHintsFromPixels(
+			ctx, filter, captureScope, req.region, strategy,
+			time.Duration(cfg.Contour.RequestTimeoutMS)*time.Millisecond,
+			func(ctx context.Context, region image.Rectangle) ([]*element.Element, error) {
+				return s.vision.DetectContours(ctx, region, contourCfg)
+			},
+		)
+	case domain.StrategySegment:
+		elements, captureErr = s.generateHintsFromPixels(
+			ctx, filter, captureScope, req.region, strategy, segmentTimeout,
+			func(ctx context.Context, region image.Rectangle) ([]*element.Element, error) {
+				return s.vision.DetectSegments(ctx, region, cfg.Segment)
+			},
+		)
+	default:
+		elements, genErr = s.generateHintsAX(ctx, filter)
+	}
+
+	if genErr != nil {
+		return nil, bundleID, genErr
+	}
+
+	if captureErr != nil {
+		if req.strict {
+			return nil, bundleID, captureErr
+		}
+
+		s.degradeCapture(ctx, strategy, captureErr)
+	}
+
+	if len(elements) == 0 {
+		s.logger.Debug("No clickable elements found")
+
+		return nil, bundleID, nil
+	}
+
+	s.logger.Debug("Found clickable elements", zap.Int("count", len(elements)))
+
+	return elements, bundleID, nil
+}
+
 // generateHintsAX collects elements using the AX tree (default strategy).
 func (s *HintService) generateHintsAX(
 	ctx context.Context,
@@ -272,51 +454,40 @@ func (s *HintService) generateHintsAX(
 }
 
 // generateHintsVision collects window elements via vision detection and
-// supplementary elements (menubar, dock, etc.) via AX. This hybrid approach
-// ensures system UI is always detected while the frontmost window content
-// uses vision-based detection for apps with poor AX trees.
+// supplementary elements (menubar, dock, etc.) via AX. The AX pass still finds
+// the system UI, while vision covers the frontmost window's content in apps
+// with poor AX trees.
 func (s *HintService) generateHintsVision(
 	ctx context.Context,
 	filter ports.ElementFilter,
 	captureScope string,
+	region image.Rectangle,
+	visionConfig config.HintsVisionConfig,
 	splitWord bool,
-) []*element.Element {
+) ([]*element.Element, error) {
 	allElements := s.supplementaryElements(ctx, filter)
 
 	if s.vision == nil {
 		s.logger.Warn("Vision strategy selected but vision port is unavailable")
 
-		return allElements
+		return allElements, nil
 	}
 
-	windowBounds, ok := s.resolveDetectionBounds(ctx, captureScope)
+	windowBounds, ok := s.resolveDetectionBounds(ctx, captureScope, region)
 	if !ok {
-		return allElements
+		return allElements, nil
 	}
 
-	// Detect window elements via vision
 	visionStart := time.Now()
 
 	windowElements, visionErr := s.vision.DetectElements(
 		ctx,
 		windowBounds,
-		s.config.Vision,
+		visionConfig,
 		splitWord,
 	)
 	if visionErr != nil {
-		s.logger.Warn("Failed to detect elements via vision", zap.Error(visionErr))
-
-		// CodeNotSupported here means the machine cannot run this strategy at
-		// all, and the error names what to install or which display server has
-		// no path. That has to reach a person: what a user otherwise sees is an
-		// overlay with nothing on it, because the supplementary elements kept
-		// above are macOS surfaces with no counterpart elsewhere, and a log
-		// line reaches nobody (ADR 0002). Transient failures stay in the log.
-		if derrors.IsNotSupported(visionErr) {
-			s.notifyVisionUnavailable(ctx, visionErr.Error())
-		}
-
-		return allElements
+		return allElements, visionErr
 	}
 
 	s.logger.Debug("Vision detection finished",
@@ -336,13 +507,13 @@ func (s *HintService) generateHintsVision(
 		}
 	}
 
-	return allElements
+	return allElements, nil
 }
 
 // supplementaryElements collects the system surfaces the include_* options
 // ask for (menubar, dock, notification center, stage manager) through the
 // accessibility tree, with the window itself skipped because a capture
-// strategy is about to scan it. Roles are not filtered here: the role filter
+// strategy is about to scan it. Roles are not filtered here. The role filter
 // is meant for the window's own elements.
 func (s *HintService) supplementaryElements(
 	ctx context.Context,
@@ -367,53 +538,71 @@ func (s *HintService) supplementaryElements(
 	return supplementElements
 }
 
-// generateHintsContour is the vision path with the contour detector in place
-// of recognition: the same include_* supplement from the accessibility tree,
-// the same focused-window region, so the two strategies are interchangeable
-// per app.
-func (s *HintService) generateHintsContour(
+// segmentTimeout bounds one segment pass, capture included. The detector
+// takes a few milliseconds on a full screen, so this is a safety net for a
+// stalled capture backend rather than a tuning knob, and it has no option.
+const segmentTimeout = 2 * time.Second
+
+// generateHintsFromPixels is the vision path with a pixel detector in place of
+// recognition: the same include_* supplement from the accessibility tree, the
+// same focused-window region, so the capture strategies are interchangeable
+// per app. detect runs on the region under timeout.
+func (s *HintService) generateHintsFromPixels(
 	ctx context.Context,
 	filter ports.ElementFilter,
 	captureScope string,
-	cfg config.HintsContourConfig,
-) []*element.Element {
+	region image.Rectangle,
+	strategy string,
+	timeout time.Duration,
+	detect func(context.Context, image.Rectangle) ([]*element.Element, error),
+) ([]*element.Element, error) {
 	allElements := s.supplementaryElements(ctx, filter)
 
 	if s.vision == nil {
-		s.logger.Warn("Contour strategy selected but vision port is unavailable")
+		s.logger.Warn("Capture strategy selected but vision port is unavailable",
+			zap.String("strategy", strategy))
 
-		return allElements
+		return allElements, nil
 	}
 
-	windowBounds, ok := s.resolveDetectionBounds(ctx, captureScope)
+	windowBounds, ok := s.resolveDetectionBounds(ctx, captureScope, region)
 	if !ok {
-		return allElements
+		return allElements, nil
 	}
 
-	contourCtx, cancel := context.WithTimeout(
-		ctx,
-		time.Duration(cfg.RequestTimeoutMS)*time.Millisecond,
-	)
+	detectCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	contourStart := time.Now()
+	started := time.Now()
 
-	elements, err := s.vision.DetectContours(contourCtx, windowBounds, cfg)
+	elements, err := detect(detectCtx, windowBounds)
 	if err != nil {
-		s.logger.Warn("Failed to detect elements via contour", zap.Error(err))
-
-		if derrors.IsNotSupported(err) {
-			s.notifyVisionUnavailable(ctx, err.Error())
-		}
-
-		return allElements
+		return allElements, err
 	}
 
-	s.logger.Debug("Contour detection finished",
-		zap.Duration("duration", time.Since(contourStart)),
+	s.logger.Debug("Pixel detection finished",
+		zap.String("strategy", strategy),
+		zap.Duration("duration", time.Since(started)),
 		zap.Int("count", len(elements)))
 
-	return append(allElements, elements...)
+	return append(allElements, elements...), nil
+}
+
+// degradeCapture lets hints mode open after a capture strategy's detection
+// fails. The caller keeps what else it collected, and this logs the failure.
+//
+// CodeNotSupported means the machine cannot run this strategy at all, and the
+// error names what to install or which display server has no path. That has
+// to reach a person. What a user otherwise sees is an overlay with nothing on
+// it, because the supplementary elements kept are macOS surfaces with no
+// counterpart elsewhere, and a log line reaches nobody (ADR 0002). Transient
+// failures stay in the log.
+func (s *HintService) degradeCapture(ctx context.Context, strategy string, err error) {
+	s.logger.Warn("Failed to detect elements", zap.String("strategy", strategy), zap.Error(err))
+
+	if derrors.IsNotSupported(err) {
+		s.notifyVisionUnavailable(ctx, err.Error())
+	}
 }
 
 // resolveDetectionBounds is the region a screen-capture strategy scans: the
@@ -424,7 +613,31 @@ func (s *HintService) generateHintsContour(
 // answer. An error means the platform could not answer at all, and then
 // scanning the whole screen is a degradation nobody asked for: slower, noisier,
 // and silent until now, so it is logged at warn.
+//
+// A caller that names a region gets a scan covering it as well, so a snap
+// inside a grid cell past the window's edge still reads the cell. The scan is
+// never cut down to the region. The pixel detectors see a control by its whole
+// outline, and a capture cropped through a button reads as no button at all.
 func (s *HintService) resolveDetectionBounds(
+	ctx context.Context,
+	captureScope string,
+	region image.Rectangle,
+) (image.Rectangle, bool) {
+	bounds, ok := s.scopeBounds(ctx, captureScope)
+	if region.Empty() {
+		return bounds, ok
+	}
+
+	if !ok {
+		return region, true
+	}
+
+	return bounds.Union(region), true
+}
+
+// scopeBounds is the window or screen capture_scope names, as
+// resolveDetectionBounds describes.
+func (s *HintService) scopeBounds(
 	ctx context.Context,
 	captureScope string,
 ) (image.Rectangle, bool) {
@@ -461,7 +674,7 @@ func (s *HintService) resolveDetectionBounds(
 // notifyVisionUnavailable tells the user, once, that the vision strategy
 // cannot run here, carrying the reason the port gave.
 //
-// Once per distinct reason: a user who keeps pressing the hotkey gets one
+// Once per distinct reason. A user who keeps pressing the hotkey gets one
 // notification rather than one per press, and a different reason (the language
 // data arrived, the session changed) is a new thing worth saying. The notice is
 // the port's own sentence, which names a package or a display server and never
@@ -475,7 +688,7 @@ func (s *HintService) resolveDetectionBounds(
 //
 // It drops the activation context's cancellation. Those callers build the
 // context with a hint timeout and cancel it on return, which is microseconds
-// after this is reached — and the Linux notification path honors a caller's
+// after this is reached, and the Linux notification path honors a caller's
 // deadline, so keeping it would cancel the very first send, the one that also
 // dials the session bus. The send is still bounded, by the deadline that path
 // imposes itself.
@@ -485,7 +698,7 @@ func (s *HintService) resolveDetectionBounds(
 // so a session that had no notification daemon at the first attempt is not
 // silenced for the life of the daemon.
 //
-// Locking: s.mu sits below the mode handler's lock — nothing held under it does
+// Locking: s.mu sits below the mode handler's lock. Nothing held under it does
 // I/O or reaches the handler, which is what makes taking it from locked context
 // safe (internal/app/modes/AGENTS.md).
 func (s *HintService) notifyVisionUnavailable(ctx context.Context, reason string) {
@@ -525,7 +738,7 @@ func (s *HintService) notifyVisionUnavailable(ctx context.Context, reason string
 }
 
 // hintFilter builds the element filter for one activation. The second result
-// is false when every requested role belongs to another platform: hinting
+// is false when every requested role belongs to another platform. Hinting
 // everything would hide that misconfiguration, so nothing is hinted instead
 // (`neru roles --explain` and `neru doctor` report the cause).
 func (s *HintService) hintFilter(

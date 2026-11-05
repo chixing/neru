@@ -9,7 +9,7 @@ import (
 )
 
 // Real IUIAutomation enumeration test against the live foreground window.
-// Does not run in default CI; execute on WIN-VM with a GUI app focused:
+// Does not run in default CI. Execute on WIN-VM with a GUI app focused:
 // go test -tags=integration ./internal/adapter/accessibility/...
 func TestEnumerateClickableElementsIntegration(t *testing.T) {
 	user32 := windows.NewLazySystemDLL("user32.dll")
@@ -22,7 +22,7 @@ func TestEnumerateClickableElementsIntegration(t *testing.T) {
 
 	// A nil role set falls back to the shipped defaults, which is what the
 	// hints path uses when no roles are configured.
-	elements := enumerateClickableElements(hwnd, enumerateOptions{})
+	elements := enumerateClickableElements(t.Context(), hwnd, enumerateOptions{})
 	if len(elements) == 0 {
 		t.Skip("skipping: foreground window exposed no clickable elements")
 	}

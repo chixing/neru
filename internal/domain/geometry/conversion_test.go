@@ -9,128 +9,6 @@ import (
 
 const testNegativeOffsetScreen = "negative offset screen"
 
-func TestComputeRestoredPosition(t *testing.T) {
-	tests := []struct {
-		name     string
-		initPos  image.Point
-		fromRect image.Rectangle
-		toRect   image.Rectangle
-		expected image.Point
-	}{
-		{
-			name:     "same screen",
-			initPos:  image.Point{X: 100, Y: 200},
-			fromRect: image.Rect(0, 0, 1920, 1080),
-			toRect:   image.Rect(0, 0, 1920, 1080),
-			expected: image.Point{X: 100, Y: 200},
-		},
-		{
-			name:     "different screen same size",
-			initPos:  image.Point{X: 100, Y: 200},
-			fromRect: image.Rect(0, 0, 1920, 1080),
-			toRect:   image.Rect(1920, 0, 3840, 1080),
-			expected: image.Point{X: 2020, Y: 200},
-		},
-		{
-			name:     "different screen different size",
-			initPos:  image.Point{X: 960, Y: 540}, // center of 1920x1080
-			fromRect: image.Rect(0, 0, 1920, 1080),
-			toRect:   image.Rect(0, 0, 2560, 1440),
-			expected: image.Point{X: 1280, Y: 720}, // center of 2560x1440
-		},
-		{
-			name:     "clamp to bounds",
-			initPos:  image.Point{X: 2000, Y: 1200}, // outside original screen
-			fromRect: image.Rect(0, 0, 1920, 1080),
-			toRect:   image.Rect(0, 0, 2560, 1440),
-			expected: image.Point{X: 2560, Y: 1440}, // clamped to max
-		},
-		{
-			name:     "zero width screen",
-			initPos:  image.Point{X: 100, Y: 200},
-			fromRect: image.Rect(0, 0, 0, 1080),
-			toRect:   image.Rect(0, 0, 1920, 1080),
-			expected: image.Point{X: 100, Y: 200}, // returns original position
-		},
-		{
-			name:     "zero height screen",
-			initPos:  image.Point{X: 100, Y: 200},
-			fromRect: image.Rect(0, 0, 1920, 0),
-			toRect:   image.Rect(0, 0, 1920, 1080),
-			expected: image.Point{X: 100, Y: 200}, // returns original position
-		},
-		{
-			name:     "relative position calculation",
-			initPos:  image.Point{X: 480, Y: 270}, // quarter of 1920x1080
-			fromRect: image.Rect(0, 0, 1920, 1080),
-			toRect:   image.Rect(0, 0, 1280, 720),
-			expected: image.Point{X: 320, Y: 180}, // quarter of 1280x720
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			result := geometry.ComputeRestoredPosition(
-				testCase.initPos,
-				testCase.fromRect,
-				testCase.toRect,
-			)
-			if result != testCase.expected {
-				t.Errorf("ComputeRestoredPosition(%v, %v, %v) = %v, expected %v",
-					testCase.initPos, testCase.fromRect, testCase.toRect, result, testCase.expected)
-			}
-		})
-	}
-}
-
-func TestComputeCenteredPosition(t *testing.T) {
-	tests := []struct {
-		name     string
-		bounds   image.Rectangle
-		expected image.Point
-	}{
-		{
-			name:     "standard 1920x1080 screen at origin",
-			bounds:   image.Rect(0, 0, 1920, 1080),
-			expected: image.Point{X: 960, Y: 540},
-		},
-		{
-			name:     "offset screen (second monitor)",
-			bounds:   image.Rect(1920, 0, 3840, 1080),
-			expected: image.Point{X: 2880, Y: 540},
-		},
-		{
-			name:     "small screen",
-			bounds:   image.Rect(100, 50, 300, 200),
-			expected: image.Point{X: 200, Y: 125},
-		},
-		{
-			name:     "zero-size bounds",
-			bounds:   image.Rect(100, 100, 100, 100),
-			expected: image.Point{X: 100, Y: 100},
-		},
-		{
-			name:     "odd dimensions (integer division truncates)",
-			bounds:   image.Rect(0, 0, 1921, 1081),
-			expected: image.Point{X: 960, Y: 540},
-		},
-		{
-			name:     testNegativeOffsetScreen,
-			bounds:   image.Rect(-1920, -1080, 0, 0),
-			expected: image.Point{X: -960, Y: -540},
-		},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			result := geometry.ComputeCenteredPosition(testCase.bounds)
-			if result != testCase.expected {
-				t.Errorf("ComputeCenteredPosition(%v) = %v, expected %v",
-					testCase.bounds, result, testCase.expected)
-			}
-		})
-	}
-}
-
 func TestNormalizeToLocalCoordinates(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -206,62 +84,6 @@ func TestConvertToAbsoluteCoordinates(t *testing.T) {
 	}
 }
 
-func TestClampFloat(t *testing.T) {
-	tests := []struct {
-		name     string
-		value    float64
-		minVal   float64
-		maxVal   float64
-		expected float64
-	}{
-		{
-			name:     "within range",
-			value:    0.5,
-			minVal:   0.0,
-			maxVal:   1.0,
-			expected: 0.5,
-		},
-		{
-			name:     "below minimum",
-			value:    -0.5,
-			minVal:   0.0,
-			maxVal:   1.0,
-			expected: 0.0,
-		},
-		{
-			name:     "above maximum",
-			value:    1.5,
-			minVal:   0.0,
-			maxVal:   1.0,
-			expected: 1.0,
-		},
-		{
-			name:     "equal to minimum",
-			value:    0.0,
-			minVal:   0.0,
-			maxVal:   1.0,
-			expected: 0.0,
-		},
-		{
-			name:     "equal to maximum",
-			value:    1.0,
-			minVal:   0.0,
-			maxVal:   1.0,
-			expected: 1.0,
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			result := geometry.ClampFloat(testCase.value, testCase.minVal, testCase.maxVal)
-			if result != testCase.expected {
-				t.Errorf("ClampFloat(%v, %v, %v) = %v, expected %v",
-					testCase.value, testCase.minVal, testCase.maxVal, result, testCase.expected)
-			}
-		})
-	}
-}
-
 func TestClampInt(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -319,14 +141,11 @@ func TestClampInt(t *testing.T) {
 }
 
 func TestMultiMonitor_CoordinateConversion(t *testing.T) {
-	// Test case: Hint on extended screen should be converted to local coordinates
-	// Screen bounds: (1920, 0) to (3840, 1080) - second monitor in extended desktop
+	// The second monitor of an extended desktop.
 	screenBounds := image.Rect(1920, 0, 3840, 1080)
 
-	// Hint position in screen coordinates (center of second monitor)
 	screenHintPos := image.Point{X: 2880, Y: 540} // center of second monitor
 
-	// Convert to local coordinates (relative to overlay window at screen origin)
 	localHintPos := geometry.ConvertToLocalCoordinates(screenHintPos, screenBounds)
 
 	expectedLocalPos := image.Point{X: 960, Y: 540} // 2880-1920=960, 540-0=540
@@ -336,7 +155,6 @@ func TestMultiMonitor_CoordinateConversion(t *testing.T) {
 			localHintPos, expectedLocalPos)
 	}
 
-	// Verify that converting back to absolute works
 	absolutePos := geometry.ConvertToAbsoluteCoordinates(localHintPos, screenBounds)
 	if absolutePos != screenHintPos {
 		t.Errorf("Round-trip conversion failed: got %v, expected %v",

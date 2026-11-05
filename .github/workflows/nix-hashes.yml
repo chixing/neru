@@ -19,13 +19,13 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
         runs-on: ubuntu-latest
         steps:
-            # The PAT, not GITHUB_TOKEN: a pull request opened with
+            # The PAT, not GITHUB_TOKEN, because a pull request opened with
             # GITHUB_TOKEN does not start CI.
             - uses: actions/checkout@v7
               with:
                   ref: main
                   token: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
-            - uses: "DeterminateSystems/determinate-nix-action@8d87e8d5e5b8a8309d4281094560f127d9a265f1" # v3.22.5
+            - uses: "DeterminateSystems/determinate-nix-action@92957199488000b908fdad19f63711000965d8f3" # v3.24.1
             - name: Update hashes
               env:
                   GH_TOKEN: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}

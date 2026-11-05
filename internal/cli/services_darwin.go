@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/y3owk1n/neru/internal/adapter/logger"
+	"github.com/y3owk1n/neru/internal/derrors"
 )
 
 const (
@@ -24,10 +25,10 @@ const (
 // daemonStderrFileName is the file the login agent's standard error is
 // redirected to, inside the per-user log directory the logger already owns.
 //
-// Standard output is deliberately not redirected: the logger's console core
+// Standard output is deliberately not redirected. The logger's console core
 // writes every log line there, so a redirect would duplicate app.log into a
-// second, unrotated file. Standard error carries what app.log cannot — a panic,
-// a native crash, or a startup failure raised before the file sink exists — so
+// second, unrotated file. Standard error carries what app.log cannot (a panic,
+// a native crash, or a startup failure raised before the file sink exists), so
 // it is the half worth keeping.
 const daemonStderrFileName = "daemon.err.log"
 
@@ -45,7 +46,10 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>StandardErrorPath</key>
     <string>NERU_STDERR_PATH</string>
     <key>ProcessType</key>
@@ -68,8 +72,70 @@ var (
 	errServiceAlreadyLoaded = errors.New(
 		"service is already loaded; check for existing installations (e.g., nix-darwin, home-manager) and uninstall them first",
 	)
-	errPlistAlreadyExists = errors.New("plist file already exists")
+	errPlistAlreadyExists  = errors.New("plist file already exists")
+	errServiceNotInstalled = derrors.New(
+		derrors.CodeInvalidInput,
+		"no service is installed; run `neru services install` first",
+	)
+	errServiceStopped = derrors.New(
+		derrors.CodeInvalidInput,
+		"the service is stopped; run `neru services start` to start it",
+	)
 )
+
+// serviceDomain is the per-user launchd domain the agent loads into.
+// serviceTarget names the agent inside it, in the form enable, disable,
+// bootout and kickstart take.
+func serviceDomain() string {
+	return "gui/" + strconv.Itoa(os.Getuid())
+}
+
+func serviceTarget() string {
+	return serviceDomain() + "/" + serviceLabel
+}
+
+// launchctl runs a launchctl subcommand, folding launchctl's own explanation
+// into the error rather than leaving only an exit status.
+func launchctl(args ...string) error {
+	_, err := launchctlOutput(args...)
+
+	return err
+}
+
+// launchctlOutput is launchctl for a subcommand whose output is the answer.
+func launchctlOutput(args ...string) (string, error) {
+	output, err := exec.CommandContext(context.Background(), "launchctl", args...).
+		CombinedOutput()
+	if err != nil {
+		return "", derrors.Wrapf(
+			err,
+			derrors.CodeExecFailed,
+			"launchctl %s: %s",
+			args[0],
+			strings.TrimSpace(string(output)),
+		)
+	}
+
+	return string(output), nil
+}
+
+// plistPath is where the agent's plist lives, expanded.
+func plistPath() (string, error) {
+	path, err := expandPath(plistFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to expand plist path: %w", err)
+	}
+
+	return path, nil
+}
+
+// plistInstalled reports whether anything is at the plist path. It tells a
+// stopped service, installed but not loaded, apart from one never installed.
+func plistInstalled(path string) bool {
+	_, err := os.Lstat(path)
+
+	return err == nil
+}
 
 // daemonStderrPath returns the absolute file the login agent's stderr is
 // redirected to. The plist is read by launchd, which expands nothing, so this
@@ -85,7 +151,7 @@ func daemonStderrPath() (string, error) {
 
 // plistTextEscaper escapes what cannot appear literally inside a plist
 // <string> element. A filesystem path is arbitrary text as far as XML is
-// concerned — a directory called "A&B" is perfectly legal on macOS — and an
+// concerned, and a directory called "A&B" is legal on macOS. An
 // unescaped one produces a plist launchctl refuses to load, leaving a file
 // behind that the next install then refuses to write over.
 var plistTextEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
@@ -109,10 +175,11 @@ func getBinaryPath() (string, error) {
 	return filepath.EvalSymlinks(execPath)
 }
 
+// isServiceLoaded asks the gui domain every other call targets. A plain
+// launchctl list answers for the caller's own session, which over SSH is not
+// the one the agent runs in.
 func isServiceLoaded() bool {
-	cmd := exec.CommandContext(context.Background(), "launchctl", "list", serviceLabel)
-
-	return cmd.Run() == nil
+	return launchctl("print", serviceTarget()) == nil
 }
 
 func installService() error {
@@ -126,7 +193,7 @@ func installService() error {
 	}
 
 	// launchd opens the redirect itself, before neru runs, and it creates the
-	// file but never the directory holding it — so the directory has to exist
+	// file but never the directory holding it. So the directory has to exist
 	// by the time the agent is bootstrapped or the first launch's stderr, which
 	// is the launch most likely to fail, goes nowhere.
 	stderrPath, err := daemonStderrPath()
@@ -171,21 +238,13 @@ func installService() error {
 		return fmt.Errorf("failed to write plist: %w", err)
 	}
 
-	currentUser, err := user.Current()
+	// launchd refuses to load an agent that `neru services stop` disabled.
+	err = launchctl("enable", serviceTarget())
 	if err != nil {
-		return fmt.Errorf("failed to get current user: %w", err)
+		return fmt.Errorf("failed to enable service: %w", err)
 	}
 
-	// Load service
-	cmd := exec.CommandContext(
-		context.Background(),
-		"launchctl",
-		"bootstrap",
-		"gui/"+currentUser.Uid,
-		expandedPlist,
-	)
-
-	err = cmd.Run()
+	err = launchctl("bootstrap", serviceDomain(), expandedPlist)
 	if err != nil {
 		return fmt.Errorf("failed to load service: %w", err)
 	}
@@ -194,24 +253,16 @@ func installService() error {
 }
 
 func uninstallService() error {
-	expandedPlist, err := expandPath(plistFile)
+	expandedPlist, err := plistPath()
 	if err != nil {
-		return fmt.Errorf("failed to expand plist path: %w", err)
+		return err
 	}
 
-	currentUser, err := user.Current()
-	if err != nil {
-		return fmt.Errorf("failed to get current user: %w", err)
-	}
+	_ = launchctl("bootout", serviceTarget()) // Ignore error if not loaded
 
-	// Unload service if loaded
-	cmd := exec.CommandContext(
-		context.Background(),
-		"launchctl",
-		"bootout",
-		"gui/"+currentUser.Uid+"/"+serviceLabel,
-	)
-	_ = cmd.Run() // Ignore error if not loaded
+	// Clear the disable that a stop leaves behind, or a later plist under this
+	// label fails to load.
+	_ = launchctl("enable", serviceTarget())
 
 	err = os.Remove(expandedPlist)
 	if err != nil && !os.IsNotExist(err) {
@@ -221,44 +272,162 @@ func uninstallService() error {
 	return nil
 }
 
+// startService undoes stopService. It enables the agent again, so launchd
+// loads it at login too, and starts neru now. A stopped agent is not loaded,
+// so startService loads the plist and RunAtLoad starts neru. A loaded agent
+// gets a kickstart instead.
 func startService() error {
-	cmd := exec.CommandContext(context.Background(), "launchctl", "start", serviceLabel)
-
-	err := cmd.Run()
+	path, err := plistPath()
 	if err != nil {
-		return fmt.Errorf("failed to start service: %w", err)
+		return err
+	}
+
+	loaded := isServiceLoaded()
+	if !loaded && !plistInstalled(path) {
+		return errServiceNotInstalled
+	}
+
+	err = launchctl("enable", serviceTarget())
+	if err != nil {
+		return fmt.Errorf("failed to enable service: %w", err)
+	}
+
+	if loaded {
+		err = launchctl("kickstart", serviceTarget())
+		if err != nil {
+			return fmt.Errorf("failed to start service: %w", err)
+		}
+
+		return nil
+	}
+
+	err = launchctl("bootstrap", serviceDomain(), path)
+	if err != nil {
+		return fmt.Errorf("failed to load service: %w", err)
 	}
 
 	return nil
 }
 
+// stopService stops the agent until startService, across logins too.
+//
+// A plain launchctl stop would last only until the next login. Disabling the
+// agent keeps launchd from loading it at the next login, and unloading it
+// stops neru now. The plist stays, so startService can load it again.
 func stopService() error {
-	cmd := exec.CommandContext(context.Background(), "launchctl", "stop", serviceLabel)
-
-	err := cmd.Run()
+	path, err := plistPath()
 	if err != nil {
-		return fmt.Errorf("failed to stop service: %w", err)
+		return err
+	}
+
+	loaded := isServiceLoaded()
+	if !loaded && !plistInstalled(path) {
+		return errServiceNotInstalled
+	}
+
+	err = launchctl("disable", serviceTarget())
+	if err != nil {
+		return fmt.Errorf("failed to disable service: %w", err)
+	}
+
+	if !loaded {
+		return nil
+	}
+
+	err = launchctl("bootout", serviceTarget())
+	if err != nil {
+		return fmt.Errorf("failed to unload service: %w", err)
 	}
 
 	return nil
 }
 
+// restartService restarts the loaded agent with one kickstart -k, which kills
+// whatever runs under it and spawns it again.
 func restartService() error {
-	_ = stopService()
+	if !isServiceLoaded() {
+		path, err := plistPath()
+		if err == nil && plistInstalled(path) {
+			return errServiceStopped
+		}
 
-	// Always attempt to start
-	return startService()
-}
-
-func statusService() string {
-	cmd := exec.CommandContext(context.Background(), "launchctl", "list", serviceLabel)
-
-	_, err := cmd.Output()
-	if err != nil {
-		return "Service not loaded"
+		return errServiceNotInstalled
 	}
 
-	return "Service loaded"
+	err := launchctl("kickstart", "-k", serviceTarget())
+	if err != nil {
+		return fmt.Errorf("failed to restart service: %w", err)
+	}
+
+	return nil
+}
+
+// statusService reads the agent from launchd. launchd loads an installed
+// plist at login unless the agent is disabled, which stopService does.
+func statusService() serviceStatus {
+	path, err := plistPath()
+	installed := err == nil && plistInstalled(path)
+
+	// print-disabled reads the same domain as print. When launchd cannot read
+	// that domain, the error comes from here, so a script does not mistake it
+	// for a missing agent.
+	disabled, err := launchctlOutput("print-disabled", serviceDomain())
+	startsAtLogin := installed && err == nil && !launchdDisabled(disabled)
+
+	readErr := ""
+	if err != nil {
+		readErr = err.Error()
+	}
+
+	printed, err := launchctlOutput("print", serviceTarget())
+	if err == nil {
+		return serviceStatus{
+			Supported:     true,
+			Installed:     true,
+			Running:       launchdRunning(printed),
+			StartsAtLogin: startsAtLogin,
+			Message:       "Service loaded",
+			Error:         readErr,
+		}
+	}
+
+	if installed {
+		return serviceStatus{
+			Supported:     true,
+			Installed:     true,
+			StartsAtLogin: startsAtLogin,
+			Message:       "Service stopped (run `neru services start` to start it)",
+			Error:         readErr,
+		}
+	}
+
+	return serviceStatus{Supported: true, Message: "Service not loaded", Error: readErr}
+}
+
+// launchdDisabled reads the agent's entry out of `launchctl print-disabled`.
+// Older macOS releases write true for disabled, newer ones write disabled.
+func launchdDisabled(printed string) bool {
+	for line := range strings.SplitSeq(printed, "\n") {
+		label, value, found := strings.Cut(strings.TrimSpace(line), " => ")
+		if found && label == strconv.Quote(serviceLabel) {
+			return value == "disabled" || value == "true"
+		}
+	}
+
+	return false
+}
+
+// launchdRunning reads the agent's state out of `launchctl print`, which
+// indents the agent's own properties by one tab and the state lines of nested
+// blocks, such as its endpoints, further.
+func launchdRunning(printed string) bool {
+	for line := range strings.SplitSeq(printed, "\n") {
+		if line == "\tstate = running" {
+			return true
+		}
+	}
+
+	return false
 }
 
 func expandPath(path string) (string, error) {

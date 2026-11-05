@@ -9,13 +9,14 @@ import (
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/config/loader"
 	"github.com/y3owk1n/neru/internal/derrors"
+	"github.com/y3owk1n/neru/internal/domain/event"
 	domainHint "github.com/y3owk1n/neru/internal/domain/hint"
 )
 
 // newConfigService builds the config service from both halves of the load the
 // app was constructed with: the configuration to run on, and the one it was
 // derived from. Passing only the first leaves the service deriving from its own
-// output, which cannot re-infer — so the two travel together from here on.
+// output, which cannot re-infer. So the two travel together from here on.
 //
 // The backend limit is wired the same way main.go wires it for the first load,
 // so a hot reload warns about the same words the launch did.
@@ -36,12 +37,15 @@ func (a *App) newConfigService(logger *zap.Logger) *loader.Service {
 // than re-reading from disk.
 //
 // Derived values come along, because the change is applied to the
-// configuration the user wrote and the derivation is run again over the result
-// — so `neru config set grid.characters` relabels the grid at once, and
+// configuration the user wrote and the derivation runs again over the result.
+// So `neru config set grid.characters` relabels the grid at once, and
 // `neru config set theme.*` recolours at once. Both halves are read from the
 // service, which is the source of truth for prior --no-reload changes.
 func (a *App) SetConfigField(ctx context.Context, key, value string) error {
 	a.prepareForConfigUpdate()
+
+	a.configApplyMu.Lock()
+	defer a.configApplyMu.Unlock()
 
 	newCfg, newWritten, err := loader.ApplyFieldChange(a.configService.Written(), key, value)
 	if err != nil {
@@ -80,9 +84,9 @@ func (a *App) SetConfigField(ctx context.Context, key, value string) error {
 			"config set at runtime but failed to persist (the change will not survive a restart)")
 	}
 
-	// Only the key: it names a schema field. The value is what the user typed,
-	// and the log is not a place config content goes — the same rule the IPC
-	// controller states in handleConfigSetInMemory.
+	// Only the key is logged, since it names a schema field. The value is what
+	// the user typed, and the log is not a place config content goes. The IPC
+	// controller states the same rule in handleConfigSetInMemory.
 	a.logger.Info("Config field updated at runtime",
 		zap.String("key", key),
 		zap.Int("value_length", len(value)),
@@ -97,6 +101,9 @@ func (a *App) SetConfigField(ctx context.Context, key, value string) error {
 func (a *App) ReloadConfig(ctx context.Context, configPath string) error {
 	a.prepareForConfigUpdate()
 
+	a.configApplyMu.Lock()
+	defer a.configApplyMu.Unlock()
+
 	loadResult, err := a.configService.ReloadWithAppContext(
 		ctx,
 		configPath,
@@ -104,6 +111,7 @@ func (a *App) ReloadConfig(ctx context.Context, configPath string) error {
 	)
 	if err != nil {
 		a.restoreHotkeysAfterFailedReload()
+		a.events.Publish(event.Event{Name: event.ConfigReload, OK: false})
 
 		return err
 	}
@@ -113,6 +121,8 @@ func (a *App) ReloadConfig(ctx context.Context, configPath string) error {
 
 	// On Linux, verify the hotkey listener started correctly after reload.
 	a.schedulePostReloadVerification()
+
+	a.events.Publish(event.Event{Name: event.ConfigReload, OK: true})
 
 	return nil
 }
@@ -126,7 +136,8 @@ func (a *App) prepareForConfigUpdate() {
 	a.hotkeys.Unregister()
 }
 
-// applyAppSpecificConfigUpdates applies app-specific configuration updates.
+// applyAppSpecificConfigUpdates pushes the reloaded clickable roles to the
+// accessibility adapter when hints are enabled.
 func (a *App) applyAppSpecificConfigUpdates(loadResult *config.LoadResult) {
 	if loadResult.Config.Hints.Enabled && a.accessibility != nil {
 		roles := loadResult.Config.Hints.ResolvedClickableRoles()
@@ -146,8 +157,23 @@ func (a *App) reconfigureAfterUpdate(loadResult *config.LoadResult) {
 	// An activation refresh between prepareForConfigUpdate and here may
 	// have re-registered with the old config for the current bundle,
 	// causing refreshHotkeysForAppOrCurrent to skip because the bundle
-	// hasn't changed.  Force clean registration with the new config.
+	// hasn't changed. Force clean registration with the new config.
 	a.hotkeys.ForceRefresh()
+
+	// This runs after the hotkeys, as it does at startup (Run), because what
+	// it arms can run an action sequence.
+	a.applyMissionControlDetection(loadResult.Config)
+}
+
+// applyMissionControlDetection arms or disarms Mission Control detection for
+// both of its readers: the app watcher, which reports Mission Control opening
+// and closing, and the accessibility adapter, which aims hints at it.
+func (a *App) applyMissionControlDetection(cfg *config.Config) {
+	a.appWatcher.SetMCDetection(cfg.Hints.DetectMissionControl)
+
+	if a.accessibility != nil {
+		a.accessibility.UpdateMissionControlDetection(cfg.Hints.DetectMissionControl)
+	}
 }
 
 func (a *App) restoreHotkeysAfterFailedReload() {
@@ -155,6 +181,10 @@ func (a *App) restoreHotkeysAfterFailedReload() {
 }
 
 func (a *App) updateConfigSnapshot(loadResult *config.LoadResult) {
+	// Publish before the swap, so nothing reads the new configuration's keys
+	// under the old meaning of Primary.
+	config.UsePrimaryModifier(loadResult.Config.General.PrimaryModifier)
+
 	a.configMu.Lock()
 	a.config = loadResult.Config
 	a.ConfigPath = loadResult.ConfigPath
@@ -164,7 +194,7 @@ func (a *App) updateConfigSnapshot(loadResult *config.LoadResult) {
 func (a *App) reconfigureRuntimeFromConfig(cfg *config.Config) {
 	a.configureEventTapHotkeys(cfg, a.logger)
 
-	// One notification reaches every overlay: the overlay re-resolves each
+	// One notification reaches every overlay. The overlay re-resolves each
 	// Style and hands the new configuration to the components it draws through.
 	if a.overlayPort != nil {
 		a.overlayPort.ApplyConfig(cfg)
@@ -216,8 +246,9 @@ func (a *App) updateControllerConfigs(cfg *config.Config) {
 }
 
 func (a *App) syncScreenShareConfig(cfg *config.Config) {
-	if a.appState.IsHiddenForScreenShare() != cfg.General.HideOverlayInScreenShare {
-		a.appState.SetHiddenForScreenShare(cfg.General.HideOverlayInScreenShare)
+	hidden := cfg.General.HideOverlayInScreenShare && config.HidesFromScreenShareHere()
+	if a.appState.IsHiddenForScreenShare() != hidden {
+		a.appState.SetHiddenForScreenShare(hidden)
 	}
 }
 
@@ -233,8 +264,9 @@ func (a *App) syncScrollInvertConfig(cfg *config.Config) {
 func syncInitialConfigToAppState(app *App) {
 	cfg := app.configSnapshot()
 
-	if app.appState.IsHiddenForScreenShare() != cfg.General.HideOverlayInScreenShare {
-		app.appState.SetHiddenForScreenShare(cfg.General.HideOverlayInScreenShare)
+	hidden := cfg.General.HideOverlayInScreenShare && config.HidesFromScreenShareHere()
+	if app.appState.IsHiddenForScreenShare() != hidden {
+		app.appState.SetHiddenForScreenShare(hidden)
 	}
 
 	if app.appState.IsScrollInverted() != cfg.Scroll.InvertScroll {

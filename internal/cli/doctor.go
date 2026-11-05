@@ -20,24 +20,36 @@ var (
 // DoctorCmd is the CLI doctor command.
 var DoctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Run comprehensive diagnostics",
-	Long: `Run a comprehensive health check of the Neru system.
+	Short: "Run diagnostics",
+	Long: `Run a health check of the Neru system.
 
-This command performs client-side checks (IPC socket, config) first,
+This command runs client-side checks (IPC socket, config) first,
 then queries the running daemon for component-level health status
 (accessibility permissions, overlay state, input monitoring).
 
 The platform_support row is a different question from the component
-health below it: it names the options, actions and mode flags your
+health below it. It names the options, actions and mode flags your
 configuration writes that do nothing on this platform. They load and
 the daemon runs, so it never fails the check.
 
 Runs client-side checks even when the daemon is not running, so you
-can use it to verify accessibility permissions before launching.`,
+can use it to verify accessibility permissions before launching.
+
+Use --json to print every check as one JSON object. The exit status is
+the same either way.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		asJSON, flagErr := cmd.Flags().GetBool("json")
+		if flagErr != nil {
+			return flagErr
+		}
+
+		if asJSON {
+			return runDoctorJSON(cmd)
+		}
+
 		cmd.Println("Neru Doctor — pre-flight checks")
 		cmd.Println()
-		// --- client-side checks (no daemon needed) --------------------------
+		// Client-side checks, which need no daemon.
 		loadResult := doctorConfigLoad()
 
 		rolesUsable := printClickableRolesCheck(cmd, loadResult)
@@ -45,7 +57,7 @@ can use it to verify accessibility permissions before launching.`,
 		printPlatformSupportCheck(cmd, loadResult)
 
 		// The endpoint is named after the user it belongs to, so on a system
-		// that will not say who that is there is no path to print — and
+		// that will not say who that is there is no path to print, and
 		// nowhere for the daemon to listen either.
 		endpointPath := ipc.SocketPath()
 		if endpointPath == "" {
@@ -71,7 +83,7 @@ can use it to verify accessibility permissions before launching.`,
 
 		cmd.Printf("  ✅ %-24s %s\n", "ipc_endpoint", endpointPath)
 		cmd.Println()
-		// --- daemon-side checks (via IPC) -----------------------------------
+		// Daemon-side checks, over IPC.
 		cmd.Println("Querying daemon...")
 		cmd.Println()
 
@@ -87,7 +99,7 @@ can use it to verify accessibility permissions before launching.`,
 			return &silentError{err: errDaemonUnreachable}
 		}
 
-		err = formatter.PrintHealth(cmd, ipcResponse.Success, ipcResponse.Data)
+		err = formatter.PrintHealth(cmd, ipcResponse)
 
 		if errors.Is(err, cliutil.ErrUnhealthy) {
 			return &silentError{err: err}
@@ -108,6 +120,81 @@ can use it to verify accessibility permissions before launching.`,
 	},
 }
 
+// doctorReport is `neru doctor --json`.
+type doctorReport struct {
+	Healthy         bool                `json:"healthy"`
+	Config          doctorConfig        `json:"config"`
+	ClickableRoles  clickableRolesCheck `json:"clickable_roles"`  //nolint:tagliatelle // snake_case like every key neru prints.
+	PlatformSupport *doctorInert        `json:"platform_support"` //nolint:tagliatelle // snake_case like every key neru prints.
+	IPCEndpoint     doctorEndpoint      `json:"ipc_endpoint"`     //nolint:tagliatelle // snake_case like every key neru prints.
+	Daemon          any                 `json:"daemon"`
+}
+
+// doctorConfig is the configuration the checks judged.
+type doctorConfig struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
+}
+
+// doctorInert is the platform_support check.
+type doctorInert struct {
+	Inert []inertSetting `json:"inert"`
+}
+
+// doctorEndpoint is where the daemon listens and whether it answers there.
+type doctorEndpoint struct {
+	Path      string `json:"path"`
+	Reachable bool   `json:"reachable"`
+}
+
+// runDoctorJSON runs the checks the human form runs and prints them as one
+// object, then fails the command when the object says it is unhealthy.
+func runDoctorJSON(cmd *cobra.Command) error {
+	loadResult := doctorConfigLoad()
+
+	report := doctorReport{
+		Config:         doctorConfig{Path: loadResult.ConfigPath},
+		ClickableRoles: checkClickableRoles(loadResult),
+		IPCEndpoint:    doctorEndpoint{Path: ipc.SocketPath(), Reachable: ipc.IsServerRunning()},
+	}
+
+	if loadResult.ValidationError != nil {
+		report.Config.Error = loadResult.ValidationError.Error()
+	}
+
+	if inert := inertSettings(loadResult); inert != nil {
+		report.PlatformSupport = &doctorInert{Inert: inert}
+	}
+
+	daemonHealthy := !stoppedDaemonFailsDoctor
+
+	if report.IPCEndpoint.Reachable {
+		communicator := cliutil.NewIPCCommunicator(timeoutSec)
+
+		ipcResponse, err := communicator.SendCommand(domain.CommandHealth, []string{})
+		if err == nil {
+			report.Daemon = ipcResponse.Data
+		}
+
+		daemonHealthy = err == nil && ipcResponse.Success
+	}
+
+	report.Healthy = daemonHealthy && report.ClickableRoles.Usable
+
+	err := formatter.PrintJSON(cmd, report)
+	if err != nil {
+		return err
+	}
+
+	if !report.Healthy {
+		return &silentError{err: cliutil.ErrUnhealthy}
+	}
+
+	return nil
+}
+
 func init() {
+	DoctorCmd.Flags().Bool("json", false, "Print the checks as a JSON object")
+
 	RootCmd.AddCommand(DoctorCmd)
 }

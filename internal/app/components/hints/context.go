@@ -2,10 +2,10 @@ package hints
 
 import (
 	domainHint "github.com/y3owk1n/neru/internal/domain/hint"
+	"github.com/y3owk1n/neru/internal/domain/modecmd"
 )
 
 // baseContext provides common functionality for mode component contexts.
-// It contains shared state fields used across different mode contexts.
 type baseContext struct {
 	pendingAction          *string
 	pendingModifier        *string
@@ -21,6 +21,7 @@ type baseContext struct {
 	activeCaptureScope     string
 	labelDirectionOverride string
 	splitWord              bool
+	targets                []modecmd.Target
 }
 
 // SetPendingAction sets the action to execute when mode selection is complete.
@@ -97,6 +98,7 @@ func (c *baseContext) Reset() {
 	c.activeCaptureScope = ""
 	c.labelDirectionOverride = ""
 	c.splitWord = false
+	c.targets = nil
 }
 
 // SetFilterRoles sets the filter roles for hint mode.
@@ -189,6 +191,25 @@ func (c *baseContext) SplitWord() bool {
 	return c.splitWord
 }
 
+// SetTargets stores the targets a caller supplied for the session to label in
+// place of a scan. Nil means the session scans.
+func (c *baseContext) SetTargets(targets []modecmd.Target) {
+	c.targets = targets
+}
+
+// Targets returns the targets the session labels, nil when it scans. A
+// re-activation inside the session carries them, so it labels them again
+// rather than scanning.
+func (c *baseContext) Targets() []modecmd.Target {
+	return c.targets
+}
+
+// TargetsSupplied reports whether the session labels supplied targets, which
+// nothing can scan again.
+func (c *baseContext) TargetsSupplied() bool {
+	return c.targets != nil
+}
+
 // Context holds the state and context for hint mode operations.
 type Context struct {
 	baseContext
@@ -198,10 +219,12 @@ type Context struct {
 	hints       *domainHint.Collection
 	sourceHints *domainHint.Collection
 
-	searchQuery       string
-	searchActive      bool
-	hideOnEmptySearch bool
-	exitOnUnmatched   bool
+	searchQuery          string
+	searchActive         bool
+	hideOnEmptySearch    bool
+	confirmOnLabel       bool
+	searchConfirmOnLabel bool
+	exitOnUnmatched      bool
 }
 
 // SetManager sets the domain hint manager.
@@ -314,6 +337,31 @@ func (c *Context) HideOnEmptySearch() bool {
 	return c.hideOnEmptySearch
 }
 
+// SetConfirmOnLabel sets whether a search confirms itself once a label typed
+// after the search text leaves one match.
+func (c *Context) SetConfirmOnLabel(confirm bool) {
+	c.confirmOnLabel = confirm
+}
+
+// ConfirmOnLabel returns whether a search confirms itself once a label typed
+// after the search text leaves one match.
+func (c *Context) ConfirmOnLabel() bool {
+	return c.confirmOnLabel
+}
+
+// SetSearchConfirmOnLabel sets whether the open search confirms itself once a
+// label typed after the search text leaves one match. Each search sets it.
+func (c *Context) SetSearchConfirmOnLabel(confirm bool) {
+	c.searchConfirmOnLabel = confirm
+}
+
+// SearchConfirmsOnLabel reports whether the open search confirms itself once
+// a label typed after the search text leaves one match. It is true when the
+// mode or the search asked for it.
+func (c *Context) SearchConfirmsOnLabel() bool {
+	return c.confirmOnLabel || c.searchConfirmOnLabel
+}
+
 // SetExitOnUnmatched sets whether hint mode should exit when a key matches no hint.
 func (c *Context) SetExitOnUnmatched(exit bool) {
 	c.exitOnUnmatched = exit
@@ -339,6 +387,8 @@ func (c *Context) Reset() error {
 	c.searchQuery = ""
 	c.searchActive = false
 	c.hideOnEmptySearch = false
+	c.confirmOnLabel = false
+	c.searchConfirmOnLabel = false
 	c.exitOnUnmatched = false
 	c.baseContext.Reset()
 

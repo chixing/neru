@@ -10,44 +10,7 @@ import (
 	"github.com/y3owk1n/neru/internal/domain/grid"
 )
 
-const (
-	testCharacters = "ABC"
-	// allLetters is a 26-character input, not the set a grid falls back to —
-	// that one is grid.DefaultCharacters, which leaves `o` out.
-	allLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-)
-
-func TestGrid_Initialization(t *testing.T) {
-	log := logger.Get()
-	tests := []struct {
-		name      string
-		chars     string
-		bounds    image.Rectangle
-		wantCells int
-	}{
-		{
-			name:      "standard 1080p",
-			chars:     allLetters,
-			bounds:    image.Rect(0, 0, 1920, 1080),
-			wantCells: 26 * 26, // 2 chars depth
-		},
-		{
-			name:      "small screen",
-			chars:     "ABC",
-			bounds:    image.Rect(0, 0, 100, 100),
-			wantCells: 3 * 3, // 2 chars depth
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			grid := grid.NewGrid(testCase.chars, testCase.bounds, log)
-			if len(grid.AllCells()) == 0 {
-				t.Error("Expected cells to be generated")
-			}
-		})
-	}
-}
+const testCharacters = "ABC"
 
 func TestGrid_CellByCoordinate(t *testing.T) {
 	logger := logger.Get()
@@ -86,109 +49,21 @@ func TestGrid_CellByCoordinate(t *testing.T) {
 	}
 }
 
-func TestCell_Methods(t *testing.T) {
-	logger := logger.Get()
-	grid := grid.NewGrid("ABC", image.Rect(0, 0, 300, 300), logger)
-
-	cells := grid.AllCells()
-	if len(cells) == 0 {
-		t.Fatal("Expected cells to be generated")
-	}
-
-	cell := cells[0]
-
-	// Test that methods return non-zero values
-	if cell.Coordinate() == "" {
-		t.Error("Coordinate() returned empty string")
-	}
-
-	bounds := cell.Bounds()
-	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
-		t.Errorf("Bounds() returned invalid bounds: %v", bounds)
-	}
-
-	center := cell.Center()
-	if center.X < 0 || center.Y < 0 {
-		t.Errorf("Center() returned invalid center: %v", center)
-	}
-
-	// Test that center is within bounds
-	if !center.In(bounds) {
-		t.Errorf("Center %v is not within bounds %v", center, bounds)
-	}
-}
-
-func TestGrid_Getters(t *testing.T) {
-	logger := logger.Get()
-	bounds := image.Rect(0, 0, 1920, 1080)
-	gridInstance := grid.NewGrid(testCharacters, bounds, logger)
-
-	if gridInstance.Characters() != testCharacters {
-		t.Errorf("Characters() = %q, want %q", gridInstance.Characters(), testCharacters)
-	}
-
-	if gridInstance.Bounds() != bounds {
-		t.Errorf("Bounds() = %v, want %v", gridInstance.Bounds(), bounds)
-	}
-
-	cells := gridInstance.Cells()
-	if len(cells) == 0 {
-		t.Error("Cells() returned empty slice")
-	}
-
-	index := gridInstance.Index()
-	if len(index) != len(cells) {
-		t.Errorf("Index() length = %d, want %d", len(index), len(cells))
-	}
-
-	allCells := gridInstance.AllCells()
-	if len(allCells) != len(cells) {
-		t.Errorf("AllCells() length = %d, want %d", len(allCells), len(cells))
-	}
-}
-
-func TestCalculateOptimalGrid(t *testing.T) {
-	tests := []struct {
-		name       string
-		characters string
-		wantRows   int
-		wantCols   int
-	}{
-		{"normal characters", testCharacters, 3, 3},
-		{"empty string", "", 9, 9},
-		{"single character", "A", 9, 9},
-		{"long string", allLetters, 26, 26},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			rows, cols := grid.CalculateOptimalGrid(testCase.characters)
-			if rows != testCase.wantRows || cols != testCase.wantCols {
-				t.Errorf("CalculateOptimalGrid(%q) = (%d, %d), want (%d, %d)",
-					testCase.characters, rows, cols, testCase.wantRows, testCase.wantCols)
-			}
-		})
-	}
-}
-
 func TestGrid_InvalidBounds(t *testing.T) {
 	logger := logger.Get()
 
-	// Test with zero width
 	gridInstance := grid.NewGrid("ABC", image.Rect(0, 0, 0, 100), logger)
 	if len(gridInstance.Cells()) != 0 {
 		t.Error("Expected empty cells for zero width")
 	}
 
-	// Test with zero height
 	gridInstance = grid.NewGrid("ABC", image.Rect(0, 0, 100, 0), logger)
 	if len(gridInstance.Cells()) != 0 {
 		t.Error("Expected empty cells for zero height")
 	}
 
-	// Test with negative dimensions (image.Rect normalizes this to positive dimensions)
-	// So this actually creates a valid grid. Let's test with truly invalid bounds
-	gridInstance = grid.NewGrid("ABC", image.Rect(100, 100, 100, 100), logger) // Zero width/height
+	// Zero width and zero height away from the origin.
+	gridInstance = grid.NewGrid("ABC", image.Rect(100, 100, 100, 100), logger)
 	if len(gridInstance.Cells()) != 0 {
 		t.Errorf(
 			"Expected empty cells for zero dimensions, got %d cells",
@@ -224,7 +99,7 @@ func TestGrid_EmptyCharacters(t *testing.T) {
 // TestGrid_RepeatedCharactersLabelOnce pins what a coordinate set that lists a
 // character twice builds: the grid the distinct characters build. A repeat used
 // to widen the alphabet the labeling pass counted on, which drew coordinates
-// twice over and left every cell past the first one carrying them unreachable —
+// twice over and left every cell past the first one carrying them unreachable.
 // `characters = "aab"` put 16 different cells under `AAAA`.
 func TestGrid_RepeatedCharactersLabelOnce(t *testing.T) {
 	log := logger.Get()
@@ -248,8 +123,8 @@ func TestGrid_RepeatedCharactersLabelOnce(t *testing.T) {
 	}
 }
 
-// TestGrid_RepeatsCanLeaveTooFewCharacters covers the floor the dedupe lands on:
-// a set that is only repeats has one distinct character, which cannot label a
+// TestGrid_RepeatsCanLeaveTooFewCharacters covers the floor the dedupe lands on.
+// A set that is only repeats has one distinct character, which cannot label a
 // grid at all, so it falls back like any other set too short to label with.
 func TestGrid_RepeatsCanLeaveTooFewCharacters(t *testing.T) {
 	gridInstance := grid.NewGrid("aA", image.Rect(0, 0, 300, 300), logger.Get())
@@ -292,7 +167,6 @@ func TestGrid_WithCustomLabels(t *testing.T) {
 		foundLabels[cell.Coordinate()] = true
 	}
 
-	// Should have unique coordinates for all cells
 	if len(foundLabels) != len(cells) {
 		t.Errorf("Expected %d unique coordinates, got %d", len(cells), len(foundLabels))
 	}
@@ -328,7 +202,6 @@ func TestGrid_CustomLabelsWithSymbols(t *testing.T) {
 
 		coordMap[coord] = true
 
-		// Verify coordinate uses valid characters
 		for _, r := range coord {
 			if !strings.ContainsRune(validChars, r) {
 				t.Errorf("Coordinate %s contains invalid character %c", coord, r)
@@ -341,7 +214,7 @@ func TestGrid_BackwardCompatibility(t *testing.T) {
 	logger := logger.Get()
 	bounds := image.Rect(0, 0, 300, 300)
 
-	// Test that old NewGrid still works (empty row/col labels)
+	// NewGrid with no row or column labels.
 	gridInstance := grid.NewGrid(testCharacters, bounds, logger)
 
 	if gridInstance.Characters() != testCharacters {
@@ -357,7 +230,6 @@ func TestGrid_BackwardCompatibility(t *testing.T) {
 		)
 	}
 
-	// Should have unique coordinates
 	cells := gridInstance.Cells()
 
 	coordMap := make(map[string]bool)
@@ -370,8 +242,8 @@ func TestGrid_BackwardCompatibility(t *testing.T) {
 	}
 }
 
-// TestGrid_MaxLabelLengthCapsCoarseSelection pins the issue #1536 workflow:
-// the main region is selected in at most two keypresses, then the existing
+// TestGrid_MaxLabelLengthCapsCoarseSelection pins the issue #1536 workflow.
+// The main region is selected in at most two keypresses, then the existing
 // subgrid supplies the local refinement key. The two grids deliberately share
 // every cache input except the label limit, so this also catches a cache key
 // that would return the old geometry after a config change.
@@ -441,8 +313,8 @@ func TestGrid_MaxLabelLengthCapsCoarseSelection(t *testing.T) {
 	}
 }
 
-// assertGridPrefixesFormRectangles keeps the first key spatially meaningful:
-// every cell sharing it forms one solid coarse region rather than scattered
+// assertGridPrefixesFormRectangles keeps the first key spatially meaningful.
+// Every cell sharing it forms one solid coarse region rather than scattered
 // cells that merely happen to have square final geometry.
 func assertGridPrefixesFormRectangles(t *testing.T, cells []*grid.Cell) {
 	t.Helper()

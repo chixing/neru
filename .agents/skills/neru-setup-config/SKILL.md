@@ -61,8 +61,8 @@ handing all hotkeys to skhd or another daemon.
 1. **Check the install.** `neru doctor` runs without the daemon and reports
    config validity, socket health, permissions, and what this platform
    supports. `neru status` says whether the daemon runs. On macOS, hints
-   and actions need Accessibility, and the `vision` and `contour` strategies
-   need Screen Recording, both under System Settings, Privacy & Security.
+   and actions need Accessibility, and the `vision`, `contour` and `segment`
+   strategies need Screen Recording, both under System Settings, Privacy & Security.
    On Linux the user needs the `input` group and a `/dev/uinput` udev rule,
    covered in `docs/guide/linux.md`. Windows needs nothing beyond the install.
 
@@ -92,10 +92,10 @@ handing all hotkeys to skhd or another daemon.
    - **A key inside a mode.** `[hints.hotkeys]`, `[grid.hotkeys]`, and the
      rest hold the keys that work while the mode is open, such as Shift+L
      for a click or Tab to cycle. Same merging rules.
-   - **Hints that miss elements.** Run `neru hints --debug` in the app
-     first. A role missing from the sample goes into
+   - **Hints that miss elements.** Run `sleep 3; neru query hints` and
+     switch to the app first. A role missing from the list goes into
      `hints.clickable_roles`, checked against `neru roles --explain`. An
-     app whose tree is empty gets `strategy = "vision"` or `"contour"`,
+     app whose tree is empty gets `strategy = "vision"`, `"contour"` or `"segment"`,
      globally or under `[[hints.app_configs]]` with its `bundle_id`. The
      per-app table also takes `additional_clickable_roles`,
      `ignore_clickable_check`, and `label_direction`, and it is the
@@ -116,7 +116,7 @@ handing all hotkeys to skhd or another daemon.
 
 4. **Validate.** `neru config validate` must pass before anything else. It
    runs without the daemon and parses the mode commands inside hotkeys, so a
-   mistyped flag is caught here. Read its warnings: a flag the mode does not
+   mistyped flag is caught here. Read its warnings, because a flag the mode does not
    accept, a role the platform cannot name, or a key inert on this platform
    all load and then do nothing, which is the failure the user will report
    later.
@@ -152,8 +152,8 @@ handing all hotkeys to skhd or another daemon.
   nothing on purpose, to avoid colliding with the compositor. Either write
   `[hotkeys]` or bind `neru hints` and friends in the compositor's keymap.
 - **`bundle_id` works on every platform.** Per-app tables match a bundle
-  identifier on macOS, a window class on Linux, and an executable name on
-  Windows, under the same key. The reference names how to find each.
+  identifier on macOS, a window class on Linux, and the full executable
+  path on Windows, under the same key. The reference names how to find each.
 - **Runtime toggles are not config.** `neru toggle-scroll-invert` and its
   siblings last until restart. The lasting version is the matching key.
 - **A stale Accessibility grant looks like a broken hotkey.** After an

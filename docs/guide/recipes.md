@@ -16,8 +16,11 @@ Click as soon as you finish typing a hint label:
 "Primary+Shift+R"     = "hints --action right_click"   # context menu
 ```
 
-On macOS and Windows the first line replaces the default hints launcher. Bind
-another key to keep both.
+A `[hotkeys]` entry that opens a mode replaces that mode's default launcher,
+listed under [Global hotkeys](../reference/configuration.md#global-hotkeys),
+rather than adding a second way in. So plain `hints` is gone even with only
+the second line. To keep it, bind it again, such as
+`"Primary+Shift+H" = "hints"`.
 
 ### Click with Return
 
@@ -37,7 +40,8 @@ A comma chain clicks several times at one point, so
 
 ### Click and leave the mode with one key
 
-Click and leave the mode with one key, in any mode:
+Click and leave hints mode with one key. The same lines work in the other
+mode tables, such as `[grid.hotkeys]`:
 
 ```toml
 [hints.hotkeys]
@@ -46,7 +50,7 @@ Click and leave the mode with one key, in any mode:
 ```
 
 The mode exits even if the click fails. To stay in the mode on failure, write
-`"action left_click --bail-on-error"`, see
+`"action left_click --bail-on-error"`. See
 [Failure policy](../reference/cli.md#failure-policy).
 
 ### Pause after a click
@@ -91,17 +95,21 @@ Give a button its own key, such as `Cmd+1` for the Home view in Claude for
 macOS. A root-level `[[app_configs]]` entry applies only while that app has
 focus.
 
-**If the button has unique text,** filter hints to it and select the first
-one. This survives window moves and resizes:
+**If the button has unique text,** filter hints to it and click the first
+match with the `neru-click` script from
+[Scripting](scripting.md#select-an-element-by-its-label). This survives window
+moves and resizes:
 
 ```toml
 [[app_configs]]
 bundle_id = "com.anthropic.claudefordesktop"
-hotkeys = { "Cmd+1" = ["hints --role button --text Home --action left_click", "action feed --mode a"] }
+hotkeys = { "Cmd+1" = "exec ~/.local/bin/neru-click --role button --text Home" }
 ```
 
-`a` is the first label with the default `hint_characters`. A common word can
-match other buttons too, such as "Code" matching every "Copy code" button.
+The script asks `neru query hints` for the label instead of assuming one,
+because Neru assigns labels afresh on every scan. See
+[`neru query`](../reference/cli.md#neru-query). A common word can match other
+buttons too, such as "Code" matching every "Copy code" button.
 
 **Otherwise, click at an offset from the window's top-left corner.** This
 survives window moves, but not layout changes. Define the steps once as a
@@ -144,13 +152,26 @@ or open hints with search showing:
 ```
 
 - Typing filters by element title, description or value. `Space` is allowed.
+- A label typed after a space narrows the matches to that label. `save a`
+  keeps the `save` matches whose label starts with `A`, along with any text
+  still matching `save a`. Once one is left, `Return` acts on it.
+  With `--confirm-on-label`, it acts as soon as one is left, without
+  `Return`. A single match by text alone still waits for `Return`. To turn
+  this on only for searches opened with `/`, bind
+  `"/" = "action search_hints --confirm-on-label"` under `[hints.hotkeys]`.
 - `Backspace` deletes a character. `Escape` cancels and restores every hint.
-- `Return` selects the first match and runs the binding's `--action`. With an
-  `--action` and several matches, `Return` only closes the search so you can
-  type the label.
 - `Tab` (`action cycle_hint`) moves between matches without running the action.
 
-Search needs element text, so it does not work with the `contour` strategy.
+`Return` closes the search. What else it does depends on the matches:
+
+| Matches | With `--action`                                   | Without `--action`                      |
+| ------- | ------------------------------------------------- | --------------------------------------- |
+| None    | Every hint comes back                             | Every hint comes back                   |
+| One     | Moves the cursor to it and runs the action        | Moves the cursor to it                  |
+| Several | The matches keep their labels, so type one        | Moves the cursor to the first match     |
+
+Search needs element text, so it does not work with the `contour` or `segment`
+strategy.
 
 ### Wait for a page to load before hints redraw
 
@@ -205,7 +226,7 @@ When the click comes from the mode's `--action`, use the repeatable
 ```
 
 `--on-exit` runs only after the action, so `Escape` leaves the cursor where you
-moved it. Use `--slot` to keep two saved positions apart, see
+moved it. Use `--slot` to keep two saved positions apart. See
 [Cursor slots](../reference/cli.md#cursor-slots).
 
 ### Keep the cursor still while you aim
@@ -238,6 +259,64 @@ Open recursive grid already drilled down at the cursor:
 
 A depth beyond the deepest level stops at that level.
 
+## Snapping
+
+[`neru action snap`](../reference/cli.md#neru-action-snap) moves the cursor
+onto the nearest element hints would label, without drawing labels. After a
+grid gets you close, one snap lands on a small target without zooming
+further.
+
+### Land a grid selection on the element
+
+Zoom with recursive grid, then snap to the element inside the cell, and click
+it with a second key:
+
+```toml
+[recursive_grid.hotkeys]
+"Tab"       = "action snap"
+"Shift+Tab" = ["action snap", "action left_click"]
+```
+
+Snap searches only the region you zoomed into and leaves the mode open, so
+`Shift+L` still clicks afterwards. The same lines work in `[grid.hotkeys]`
+once a subgrid is open, and in `[bisect.hotkeys]` after a cut. When snap
+finds nothing, `Shift+Tab` still clicks, at the grid's selection, so the key
+works the same with or without an element to snap to. To skip the click
+instead, write `"action snap --bail-on-error"`.
+
+### Walk from element to element
+
+Step through a toolbar or a list with four keys, and keep walking while one is
+held:
+
+```toml
+[hotkeys]
+"Primary+Alt+Shift+H" = "action snap --direction left"
+"Primary+Alt+Shift+J" = "action snap --direction down"
+"Primary+Alt+Shift+K" = "action snap --direction up"
+"Primary+Alt+Shift+L" = "action snap --direction right"
+
+[held_repeat]
+enabled = true
+```
+
+A step keeps to the same row or column before it jumps to a nearer element
+beside it, and never lands on the container around the current element. Avoid
+`Primary+Alt+H` on macOS, where `Cmd+Option+H` hides every other app.
+
+### Jump to the nearest input
+
+Put the cursor in the nearest text field, or on the nearest button named Save:
+
+```toml
+[hotkeys]
+"Primary+Alt+Shift+I" = ["action snap --role text_field", "action left_click"]
+"Primary+Alt+Shift+S" = "action snap --text Save"
+```
+
+`--role` and `--text` take the values hints mode does. Quote a term with a
+space, as in `--text 'Save As'`.
+
 ## Modes and hotkeys
 
 ### Toggle a mode with one key
@@ -253,10 +332,10 @@ Enter and leave a mode with one key:
 
 ### Cycle through modes with one key
 
-Step through hints, recursive grid, grid and scroll with one key. Inside a
-mode, its `[<mode>.hotkeys]` binding wins over the global one, see
-[Resolution order](../concepts/bindings.md#which-binding-wins), so every
-mode in the cycle needs an entry.
+Step through hints, recursive grid, grid, bisect and scroll with one key.
+Inside a mode, its `[<mode>.hotkeys]` binding wins over the global one, so
+every mode in the cycle needs an entry. See
+[Resolution order](../concepts/bindings.md#which-binding-wins).
 
 ```toml
 [hotkeys]
@@ -269,15 +348,19 @@ mode in the cycle needs an entry.
 "Primary+Ctrl+F" = "grid"
 
 [grid.hotkeys]
+"Primary+Ctrl+F" = "bisect"
+
+[bisect.hotkeys]
 "Primary+Ctrl+F" = "scroll"
 
 [scroll.hotkeys]
 "Primary+Ctrl+F" = "hints"            # wrap back to the start
 ```
 
-`Escape` still returns to idle. On macOS and Windows, you can set the default
-launchers `Primary+Shift+Space`, `Primary+Shift+G`, `Primary+Shift+C` and
-`Primary+Shift+S` to `"__disabled__"`.
+`Escape` still returns to idle. The `[hotkeys]` line replaces the default
+hints launcher. The other modes keep theirs, listed under
+[Global hotkeys](../reference/configuration.md#global-hotkeys), and setting one
+to `"__disabled__"` removes it.
 
 ### Switch grid layouts with one key
 
@@ -297,7 +380,7 @@ Swap recursive grid layouts. `--no-reload` defers the reload to the last step:
 ]
 ```
 
-`config set` values persist in the override file, see
+`config set` values persist in the override file. See
 [Configuring Neru](configuring.md#how-the-layers-combine).
 
 ### Leave global hotkeys to another tool

@@ -32,22 +32,29 @@ func TestExecuteActionAtPoint_NilActionNoop(t *testing.T) {
 	}
 }
 
-func TestRunOnExit_DispatchesEveryStepInOrder(t *testing.T) {
-	got := make(chan []string, 1)
+func TestRunOnExit_DispatchesEveryStepInOrderWithTheSelection(t *testing.T) {
+	type dispatch struct{ steps, env []string }
+
+	got := make(chan dispatch, 1)
 	handler := newHandlerWithState(handlerState{
 		logger: zap.NewNop(),
-		executeActionSequence: func(_ string, steps []string) {
-			got <- steps
+		executeActionSequence: func(_ string, steps []string, env []string) {
+			got <- dispatch{steps, env}
 		},
 	})
 
 	onExit := []string{"action sleep 0.2", "exec notify-send done"}
-	handler.runOnExit(onExit)
+	selection := []string{"NERU_X=10", "NERU_Y=20"}
+	handler.runOnExit(onExit, selection)
 
 	select {
-	case steps := <-got:
-		if !slices.Equal(steps, onExit) {
-			t.Fatalf("on-exit dispatched %v, want %v", steps, onExit)
+	case dispatched := <-got:
+		if !slices.Equal(dispatched.steps, onExit) {
+			t.Fatalf("on-exit dispatched %v, want %v", dispatched.steps, onExit)
+		}
+
+		if !slices.Equal(dispatched.env, selection) {
+			t.Fatalf("on-exit env = %v, want %v", dispatched.env, selection)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("on-exit sequence was not dispatched")
@@ -58,13 +65,13 @@ func TestRunOnExit_NilAndEmptyNoop(t *testing.T) {
 	called := make(chan struct{}, 1)
 	handler := newHandlerWithState(handlerState{
 		logger: zap.NewNop(),
-		executeActionSequence: func(_ string, _ []string) {
+		executeActionSequence: func(_ string, _ []string, _ []string) {
 			called <- struct{}{}
 		},
 	})
 
-	handler.runOnExit(nil)
-	handler.runOnExit([]string{})
+	handler.runOnExit(nil, nil)
+	handler.runOnExit([]string{}, nil)
 
 	select {
 	case <-called:
@@ -73,15 +80,14 @@ func TestRunOnExit_NilAndEmptyNoop(t *testing.T) {
 	}
 }
 
-// stepExecFoo is the on-exit step these cases pass around; what it says does
+// stepExecFoo is the on-exit step these cases pass around. What it says does
 // not matter, only that it survives the trip.
 const stepExecFoo = "exec foo"
 
 // activationRecordingMode is a minimal Mode used to capture the activation an
 // external command hands to a mode through ActivateMode.
 type activationRecordingMode struct {
-	modeType domain.Mode
-	last     modecmd.Activation
+	last modecmd.Activation
 }
 
 func (m *activationRecordingMode) Activate(
@@ -92,13 +98,12 @@ func (m *activationRecordingMode) Activate(
 func (m *activationRecordingMode) HandleKey(string) {}
 func (m *activationRecordingMode) Exit()            {}
 
-func (m *activationRecordingMode) ModeType() domain.Mode                                  { return m.modeType }
 func (m *activationRecordingMode) RefreshForMonitorMove(context.Context, image.Rectangle) {}
 
 // newHandlerWithRecordingMode builds a handler whose only mode records what it
 // was activated with.
 func newHandlerWithRecordingMode(mode domain.Mode) (*Handler, *activationRecordingMode) {
-	recorder := &activationRecordingMode{modeType: mode}
+	recorder := &activationRecordingMode{}
 	handler := newHandlerWithState(handlerState{
 		logger:   zap.NewNop(),
 		appState: state.NewAppState(),
@@ -177,7 +182,7 @@ func TestActivateMode_HandsTheWholeActivationToTheMode(t *testing.T) {
 }
 
 // TestActivateMode_OnExitAbsentClearsStaleSteps covers the sharpest edge of the
-// --on-exit contract as an external command sees it: a fresh command that says
+// --on-exit contract as an external command sees it. A fresh command that says
 // nothing about --on-exit must not inherit the steps a previous activation
 // stored, or a later completed action runs a command the user never asked for.
 func TestActivateMode_OnExitAbsentClearsStaleSteps(t *testing.T) {

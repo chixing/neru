@@ -2,7 +2,6 @@ package config
 
 import (
 	"slices"
-	"time"
 
 	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/domain/action"
@@ -136,13 +135,6 @@ const (
 	// DefaultMaxAge is the default max age for logs (30 days).
 	DefaultMaxAge = 30
 
-	// DefaultExecShell is the default shell used for exec commands.
-	DefaultExecShell = "/bin/bash"
-
-	// DefaultExecShellFlag is the shell flag that causes the shell to read
-	// commands from the following string argument (e.g. "-c" or "-lc").
-	DefaultExecShellFlag = "-lc"
-
 	// DefaultSmoothCursorSteps is the default smooth cursor steps.
 	DefaultSmoothCursorSteps = 10
 
@@ -159,8 +151,8 @@ const (
 	DefaultSmoothCursorRelativeMovementDuration = 50
 
 	// MinSmoothCursorAnimationDuration is the floor for every smooth cursor
-	// animation in ms — the animator raises shorter animations to it. It is
-	// also the smallest accepted relative_movement_duration: anything below
+	// animation in ms. The animator raises shorter animations to it. It is
+	// also the smallest accepted relative_movement_duration. Anything below
 	// would be silently rounded up rather than honored, so the validator
 	// rejects it.
 	MinSmoothCursorAnimationDuration = 10
@@ -184,104 +176,19 @@ const (
 	// MaxHeldRepeatAccelMultiplier bounds accel_max_multiplier.
 	MaxHeldRepeatAccelMultiplier = 100
 
-	// DefaultIPCTimeout is the default IPC timeout.
-	DefaultIPCTimeout = 5
-	// DefaultAppWatcherTimeout is the default app watcher timeout.
-	DefaultAppWatcherTimeout = 10
-	// DefaultModeTimeout is the default mode timeout.
-	DefaultModeTimeout = 5
-	// DefaultValidationTimeout is the default validation timeout.
-	DefaultValidationTimeout = 2
-
-	// DefaultCacheSize is the default cache size.
-	DefaultCacheSize = 100
-	// DefaultCallbackMapSize is the default callback map size.
-	DefaultCallbackMapSize = 8
-	// DefaultSubscriberMapSize is the default subscriber map size.
-	DefaultSubscriberMapSize = 4
-
 	// DefaultMaxDepth is the default max depth for accessibility tree traversal.
 	DefaultMaxDepth = 50
 
 	// DefaultChildrenCapacity is the default children capacity.
 	DefaultChildrenCapacity = 8
 
-	// DefaultGridLinesCount is the default grid lines count.
-	DefaultGridLinesCount = 4
-
-	// DefaultTimerDuration is the default timer duration.
-	DefaultTimerDuration = 2 * time.Second
-
-	// DefaultIPCReadTimeout is the default IPC read timeout.
-	DefaultIPCReadTimeout = 30 * time.Second
-
-	// DefaultPingTimeout is the default ping timeout.
-	DefaultPingTimeout = 500 * time.Millisecond
-
-	// DefaultConfigCacheTTL is the default cache TTL for config.
-	DefaultConfigCacheTTL = 5 * time.Second
-
 	// DefaultDirPerms is the default directory permissions.
 	DefaultDirPerms = 0o750
 	// DefaultFilePerms is the default file permissions.
 	DefaultFilePerms = 0o644
-	// DefaultSocketPerms is the default socket permissions.
-	DefaultSocketPerms = 0o600
 
 	// MinCharactersLength is the minimum characters length.
 	MinCharactersLength = 2
-
-	// LabelLength2 is the grid label length 2.
-	LabelLength2 = 2
-	// LabelLength3 is the grid label length 3.
-	LabelLength3 = 3
-	// LabelLength4 is the grid label length 4.
-	LabelLength4 = 4
-
-	// MinGridCols is the minimum grid columns.
-	MinGridCols = 2
-	// MinGridRows is the minimum grid rows.
-	MinGridRows = 2
-
-	// CenterDivisor is the center calculation divisor.
-	CenterDivisor = 2
-
-	// ScoreWeight is the score weight.
-	ScoreWeight = 0.1
-
-	// AspectRatioAdjustment is the aspect ratio adjustment.
-	AspectRatioAdjustment = 1.2
-
-	// StringBuilderGrow2 is the string builder growth factor 2.
-	StringBuilderGrow2 = 2
-	// StringBuilderGrow3 is the string builder growth factor 3.
-	StringBuilderGrow3 = 3
-	// StringBuilderGrow4 is the string builder growth factor 4.
-	StringBuilderGrow4 = 4
-
-	// CountsCapacity is the counts capacity.
-	CountsCapacity = 5
-
-	// LabelLengthCheck is the label length check.
-	LabelLengthCheck = 2
-
-	// PrefixLengthCheck is the prefix length check.
-	PrefixLengthCheck = 2
-
-	// CacheCleanupDivisor is the cache cleanup interval divisor.
-	CacheCleanupDivisor = 2
-
-	// CacheDeletionEstimate is the cache deletion estimate.
-	CacheDeletionEstimate = 4
-
-	// OverlayTimerDuration is the timer duration for overlays.
-	OverlayTimerDuration = 2 * time.Second
-
-	// GridMaxChars is the grid max chars.
-	GridMaxChars = 9
-
-	// IPCTimeoutSeconds is the IPC timeout seconds.
-	IPCTimeoutSeconds = 5
 
 	// DefaultRecursiveGridMinSizeWidth is the default minimum cell width in pixels.
 	DefaultRecursiveGridMinSizeWidth = 1
@@ -388,6 +295,7 @@ func newDefaultConfig() *Config {
 		General:         defaultGeneral(),
 		Theme:           defaultThemeConfig(),
 		Hotkeys:         defaultHotkeys(),
+		Hooks:           defaultHooks(),
 		Hints:           defaultHints(),
 		Grid:            defaultGrid(),
 		RecursiveGrid:   defaultRecursiveGrid(),
@@ -406,6 +314,30 @@ func newDefaultConfig() *Config {
 	}
 }
 
+// defaultHooks sets no hook, and nil steps run nothing.
+func defaultHooks() HooksConfig {
+	return HooksConfig{
+		OnModeEnter:                 nil,
+		OnModeExit:                  nil,
+		OnSelect:                    nil,
+		OnAppFocus:                  nil,
+		OnEnable:                    nil,
+		OnDisable:                   nil,
+		OnConfigReload:              nil,
+		OnMissionControlActivated:   nil,
+		OnMissionControlDeactivated: nil,
+		OnScrollInvert:              nil,
+		OnScreenShareHide:           nil,
+		OnCursorSave:                nil,
+		OnCursorRestore:             nil,
+		OnStickyModifiers:           nil,
+		OnMonitorMove:               nil,
+		OnScreenChange:              nil,
+		OnReady:                     nil,
+		OnQuit:                      nil,
+	}
+}
+
 func defaultGeneral() GeneralConfig {
 	return GeneralConfig{
 		ExcludedApps:                      []string{},
@@ -413,16 +345,30 @@ func defaultGeneral() GeneralConfig {
 		ShouldExitAfterPassthrough:        false,
 		PassthroughUnboundedKeysBlacklist: []string{},
 		HideOverlayInScreenShare:          false,
-		KBLayoutToUse:                     "",
-		ExecShell:                         DefaultExecShell,
-		ExecShellArgs:                     []string{DefaultExecShellFlag},
+		// Empty on every platform picks a layout automatically.
+		KBLayoutToUse: PerPlatform[string]{Darwin: "", Linux: "", Windows: ""},
+		Shell:         defaultShell(),
+		// Unset, so general.shell decides. Both are deprecated.
+		ExecShell:       nil,
+		ExecShellArgs:   nil,
+		PrimaryModifier: defaultPrimaryModifier(),
+	}
+}
+
+// defaultPrimaryModifier is Cmd on macOS, where it is the shortcut modifier,
+// and Ctrl elsewhere, where Super usually belongs to the desktop.
+func defaultPrimaryModifier() PrimaryModifierConfig {
+	return PrimaryModifierConfig{
+		Darwin:  modifierDisplayCmd,
+		Linux:   modifierDisplayCtrl,
+		Windows: modifierDisplayCtrl,
 	}
 }
 
 // DefaultCustomModeHotkeys is the table a declared mode's [modes.<name>.hotkeys]
-// merges over: Escape returns to idle, as it does in every built-in mode. A
+// merges over. Escape returns to idle, as it does in every built-in mode. A
 // mode declared with no table at all still gets it, so no declaration can be
-// entered and not left; `"Escape" = "__disabled__"` removes it on purpose.
+// entered and not left. `"Escape" = "__disabled__"` removes it on purpose.
 func DefaultCustomModeHotkeys() map[string]StringOrStringArray {
 	return map[string]StringOrStringArray{
 		KeyDisplayEscape: {CmdIdle},
@@ -537,6 +483,9 @@ func defaultHints() HintsConfig {
 			SquareIconSlack:   DefaultContourSquareIconSlack,
 			DetectText:        false,
 		},
+		Segment: HintsSegmentConfig{
+			Targets: domain.SegmentTargetsWords,
+		},
 
 		IncludeMenubarHints:           false,
 		AdditionalMenubarHintsTargets: []string{},
@@ -575,7 +524,7 @@ func defaultGrid() GridConfig {
 		SublayerKeys:   domainGrid.DefaultCharacters,
 		MaxLabelLength: domainGrid.DefaultMaxLabelLength,
 
-		// Empty is the meaning, not a missing default: "" tells the grid to
+		// Empty is the meaning, not a missing default. "" tells the grid to
 		// infer its row and column labels from the characters it is drawn
 		// with, so shipping a value here would take that inference away
 		// from everyone who only sets characters.
@@ -618,8 +567,8 @@ func defaultGrid() GridConfig {
 }
 
 // defaultRegionGridUI is the appearance the recursive grid and bisect share by
-// default: one drawing, so one starting point, with each mode's section free
-// to depart from it.
+// default. They are one drawing, so they get one starting point, and each
+// mode's section is free to depart from it.
 func defaultRegionGridUI() RecursiveGridUI {
 	return RecursiveGridUI{
 		LineColor:                       Color{},
@@ -691,7 +640,7 @@ func defaultBisect() BisectConfig {
 			DurationMS: DefaultRecursiveGridAnimationDurationMS,
 		},
 		UI: defaultRegionGridUI(),
-		// AppConfigs ships empty: per-app overrides are the user's.
+		// AppConfigs ships empty, because per-app overrides are the user's.
 		AppConfigs: []AppConfig{},
 		Hotkeys: map[string]StringOrStringArray{
 			KeyDisplayEscape:    {CmdIdle},
@@ -773,14 +722,14 @@ const (
 )
 
 // defaultModeIndicatorMode is one mode's row of the indicator table. Enabled
-// and Text differ per mode; the three color overrides do not, and writing them
+// and Text differ per mode. The three color overrides do not, and writing them
 // once here is what keeps their default a stated one.
 func defaultModeIndicatorMode(enabled bool, text string) ModeIndicatorModeConfig {
 	return ModeIndicatorModeConfig{
 		Enabled: enabled,
 		Text:    text,
 
-		// Empty is the meaning, not a missing default: an unset per-mode color
+		// Empty is the meaning, not a missing default. An unset per-mode color
 		// inherits the matching [mode_indicator.ui] value, light and dark leg
 		// independently (Color.ForThemeWithOverride). Shipping a value here
 		// would take that inheritance away from everyone who only styles the
@@ -937,6 +886,6 @@ func defaultHeldRepeat() HeldRepeatConfig {
 
 func defaultSystray() SystrayConfig {
 	return SystrayConfig{
-		Enabled: true, // Enabled by default
+		Enabled: true,
 	}
 }

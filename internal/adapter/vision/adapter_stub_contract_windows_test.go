@@ -8,25 +8,27 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/y3owk1n/neru/internal/adapter/vision"
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/derrors"
 )
 
-// Windows implements both halves of ports.VisionPort — capture through BitBlt
-// off the desktop DC and recognition through Windows.Media.Ocr — so this file
-// pins the shape of each answer rather than a refusal: every method returns a
+// Windows implements both halves of ports.VisionPort, capture through BitBlt
+// off the desktop DC and recognition through Windows.Media.Ocr, so this file
+// pins the shape of each answer rather than a refusal. Every method returns a
 // result or a live reason, never neither and never both. The one
 // CodeNotSupported recognition may answer with is a missing OCR language
 // pack, and that answer has to say so, because it is the failure a user can
 // fix.
 //
-// The tests here run on a headless CI runner too: capture accepts a live
+// The tests here run on a headless CI runner too. Capture accepts a live
 // failure (no interactive desktop), recognition accepts a missing language
 // pack, and both reject only the answers a caller could misread.
 
 // TestVisionAdapter_RecognitionAnswersOnWindows is the half that protects the
-// user: a nil from DetectElements or Health would select the vision strategy
+// user. A nil from DetectElements or Health would select the vision strategy
 // and then silently produce no hints, and an unexplained CodeNotSupported
 // would send them to the wrong remedy.
 func TestVisionAdapter_RecognitionAnswersOnWindows(t *testing.T) {
@@ -79,7 +81,7 @@ func TestVisionAdapter_RecognitionAnswersOnWindows(t *testing.T) {
 }
 
 // TestVisionAdapter_CaptureAnswersOnWindows pins that capture and contour
-// are implemented: they hand back a frame or a live failure, and never the
+// are implemented. They hand back a frame or a live failure, and never the
 // CodeNotSupported the `other` slot answers with, which would tell the hint
 // pipeline the contour strategy is unavailable on a platform that has it.
 func TestVisionAdapter_CaptureAnswersOnWindows(t *testing.T) {
@@ -117,10 +119,26 @@ func TestVisionAdapter_CaptureAnswersOnWindows(t *testing.T) {
 			err,
 		)
 	}
+
+	segments, err := adapter.DetectSegments(
+		ctx,
+		image.Rect(0, 0, 100, 100),
+		config.DefaultConfig().Hints.Segment,
+	)
+	if err != nil && segments != nil {
+		t.Errorf("DetectSegments returned %d elements alongside its error %v", len(segments), err)
+	}
+
+	if derrors.IsNotSupported(err) {
+		t.Errorf(
+			"DetectSegments reports CodeNotSupported on Windows, which has a capture backend: %v",
+			err,
+		)
+	}
 }
 
 // TestVisionAdapter_DetectionRefusesAnEmptyRegion pins the one input that
-// must not be widened: an empty rectangle would otherwise be read as "the
+// must not be widened. An empty rectangle would otherwise be read as "the
 // whole screen" by the capture underneath, and a caller asking for a window
 // must never receive the display.
 func TestVisionAdapter_DetectionRefusesAnEmptyRegion(t *testing.T) {
@@ -140,6 +158,19 @@ func TestVisionAdapter_DetectionRefusesAnEmptyRegion(t *testing.T) {
 		t.Error("DetectContours returned elements alongside its error")
 	}
 
+	segments, err := adapter.DetectSegments(
+		ctx,
+		image.Rectangle{},
+		config.DefaultConfig().Hints.Segment,
+	)
+	if err == nil {
+		t.Fatalf("DetectSegments accepted an empty region and returned %d elements", len(segments))
+	}
+
+	if segments != nil {
+		t.Error("DetectSegments returned elements alongside its error")
+	}
+
 	elements, err := adapter.DetectElements(
 		ctx,
 		image.Rectangle{},
@@ -152,5 +183,43 @@ func TestVisionAdapter_DetectionRefusesAnEmptyRegion(t *testing.T) {
 
 	if elements != nil {
 		t.Error("DetectElements returned elements alongside its error")
+	}
+}
+
+// TestVisionAdapter_DetectionHonorsBothHalvesOff pins the one documented
+// "neither" answer. With hints.vision.detect_text and detect_rectangles both
+// off there is nothing to run, which is the user's own instruction rather than
+// a failure, so it is an empty result and not an error.
+func TestVisionAdapter_DetectionHonorsBothHalvesOff(t *testing.T) {
+	cfg := config.DefaultConfig().Hints.Vision
+	cfg.DetectText = false
+	cfg.DetectRectangles = false
+
+	elements, err := vision.NewAdapter(nil).DetectElements(
+		context.Background(),
+		image.Rect(0, 0, 100, 100),
+		cfg,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("DetectElements failed with both halves off: %v", err)
+	}
+
+	if len(elements) != 0 {
+		t.Errorf("got %d elements with both halves off, want none", len(elements))
+	}
+}
+
+// TestVisionAdapter_CaptureExcludesOwnWindowsFromWindows10Version2004 pins
+// that Windows leaves Neru's own windows out of a capture exactly from build
+// 19041, the first to honor WDA_EXCLUDEFROMCAPTURE. A hints refresh that reads
+// the screen takes the old labels off first only when this is false, so a
+// true on an older build would let it read them back as targets.
+func TestVisionAdapter_CaptureExcludesOwnWindowsFromWindows10Version2004(t *testing.T) {
+	want := windows.RtlGetVersion().BuildNumber >= 19041
+
+	if got := vision.NewAdapter(nil).CaptureExcludesOwnWindows(); got != want {
+		t.Errorf("CaptureExcludesOwnWindows() = %v on build %d, want %v",
+			got, windows.RtlGetVersion().BuildNumber, want)
 	}
 }

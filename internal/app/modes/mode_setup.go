@@ -5,7 +5,9 @@ import (
 
 	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/domain/action"
+	"github.com/y3owk1n/neru/internal/domain/event"
 	"github.com/y3owk1n/neru/internal/domain/modecmd"
+	"github.com/y3owk1n/neru/internal/domain/state"
 )
 
 // CurrModeString returns the current mode as a string.
@@ -14,8 +16,20 @@ func (h *handlerState) CurrModeString() string {
 }
 
 func (h *handlerState) setAppMode(mode domain.Mode) {
+	// Read before SetMode, which clears the reason on the way into a mode.
+	reason := h.appState.PendingModeExitReason()
+
 	h.modeSession++
 	h.appState.SetMode(mode)
+
+	// The idle between two modes of a transition publishes nothing. The old
+	// mode's exit goes out here when the next mode opens, or from the
+	// transition's release if none does.
+	if !h.switchPending {
+		h.publishModeChange(reason)
+	} else if mode != domain.ModeIdle {
+		h.publishSwitch(state.ModeExitReasonSwitched)
+	}
 
 	// Reset sticky modifier state before enabling detection for the new session.
 	// Activation-hotkey modifiers are suppressed explicitly by the hotkey path.
@@ -28,12 +42,91 @@ func (h *handlerState) setAppMode(mode domain.Mode) {
 
 	// Settle the keymap for the mode being entered before anything reads it.
 	// Entering a mode is a one-shot the user is waiting on, which is where
-	// learning the focused app from the platform is allowed to happen; doing it
+	// learning the focused app from the platform is allowed to happen. Doing it
 	// here is what leaves the keystrokes after it with nothing to ask (ADR 0005).
 	h.settledKeymap()
 
 	h.syncModifierPassthrough(mode)
 	h.syncStickyModifierToggle(mode)
+}
+
+// publishModeChange publishes the exit of the mode last reported open and the
+// entry of the one open now, when they differ. It compares names rather than
+// modes, so moving between two declared modes is a change, and so is every
+// path into a mode, including scroll and declared modes, which are entered
+// without passing through idle.
+func (h *handlerState) publishModeChange(reason state.ModeExitReason) {
+	idle := domain.ModeString(domain.ModeIdle)
+
+	exitAction := h.exitAction
+	h.exitAction = ""
+
+	current := h.appState.ModeName()
+	if current == h.publishedMode {
+		return
+	}
+
+	if h.publishedMode != idle {
+		exit := event.Event{
+			Name:   event.ModeExit,
+			Mode:   h.publishedMode,
+			Reason: exitReason(reason),
+		}
+		if exit.Reason == event.ExitCompleted {
+			exit.Action = exitAction
+		}
+
+		h.events.Publish(exit)
+	}
+
+	if current != idle {
+		h.events.Publish(event.Event{Name: event.ModeEnter, Mode: current})
+	}
+
+	h.publishedMode = current
+}
+
+// publishSwitch settles a transition's held-back exit: the old mode's exit
+// with reason, then the entry of the mode open now, if any. Unlike
+// publishModeChange it publishes both even when the names match, because
+// re-opening a mode from inside itself, such as the monitor picker, really
+// does close it and open it again.
+func (h *handlerState) publishSwitch(reason state.ModeExitReason) {
+	idle := domain.ModeString(domain.ModeIdle)
+
+	h.switchPending = false
+	h.exitAction = ""
+
+	if h.publishedMode != idle {
+		h.events.Publish(event.Event{
+			Name:   event.ModeExit,
+			Mode:   h.publishedMode,
+			Reason: exitReason(reason),
+		})
+	}
+
+	current := h.appState.ModeName()
+	if current != idle {
+		h.events.Publish(event.Event{Name: event.ModeEnter, Mode: current})
+	}
+
+	h.publishedMode = current
+}
+
+// exitReason names a recorded exit reason for an event. A mode that closed
+// with nothing recorded, such as on Escape, was canceled, which is how
+// wait_for_mode_exit --bail reads it too.
+func exitReason(reason state.ModeExitReason) event.ExitReason {
+	switch reason {
+	case state.ModeExitReasonCompleted:
+		return event.ExitCompleted
+	case state.ModeExitReasonSwitched:
+		return event.ExitSwitched
+	case state.ModeExitReasonNone, state.ModeExitReasonCancelled:
+		return event.ExitCancelled
+	}
+
+	return event.ExitCancelled
 }
 
 func (h *handlerState) syncStickyModifierToggle(mode domain.Mode) {
@@ -50,9 +143,8 @@ func (h *handlerState) syncStickyModifierToggle(mode domain.Mode) {
 	h.setStickyModifierToggle(enabled)
 }
 
-// SetModeIdle switches the application to idle mode, disabling active navigation modes.
-// This function resets the application state to idle, disables event tapping,
-// and takes whatever was on screen off it.
+// SetModeIdle switches the application to idle, disables the event tap, and
+// takes whatever was on screen off it.
 //
 // NOTE: Every code path that calls appState.SetMode() must also call
 // syncModifierPassthrough() with the same mode to keep the event tap
@@ -85,7 +177,7 @@ func (h *handlerState) enterMode(appMode domain.Mode) {
 
 // activateModeBase performs common activation steps for all modes.
 //
-//nolint:unparam // every mode enters with the move-mouse action and no app scope today; the parameters are the seam a mode that differs would use
+//nolint:unparam // every mode enters with the move-mouse action and no app scope today. The parameters are the seam a mode that differs would use
 func (h *handlerState) activateModeBase(
 	modeName string,
 	enabled bool,
@@ -96,24 +188,24 @@ func (h *handlerState) activateModeBase(
 	if err != nil {
 		h.logger.Debug("Mode activation refused", zap.String("mode", modeName), zap.Error(err))
 
+		h.activationRefusal = err
+
 		return action.TypeMoveMouse, false
 	}
 
-	// Prepare for mode activation (reset transient mode state)
 	h.prepareForModeActivation()
 
 	// The overlay is not sized here. Every mode that reaches this hands over a
 	// Frame, and sizing to the active screen is the first step of realizing
-	// one; doing it here as well is a second trip to the main thread for a
+	// one. Doing it here as well is a second trip to the main thread for a
 	// screen the frame is about to ask for anyway.
 
 	return actionEnum, true
 }
 
-// SetModeHints switches the application to hints mode for accessibility-based
-// navigation. This function sets the application state to hints mode and
-// enables event tapping for capturing keyboard input. The overlay comes up
-// when the mode hands over its Frame, not here.
+// SetModeHints switches the application to hints mode and enables the event
+// tap to capture the keyboard. The overlay comes up when the mode hands over
+// its Frame, not here.
 func (h *Handler) SetModeHints() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -121,10 +213,9 @@ func (h *Handler) SetModeHints() {
 	h.enterMode(domain.ModeHints)
 }
 
-// SetModeGrid switches the application to grid mode for coordinate-based
-// navigation. This function sets the application state to grid mode and
-// enables event tapping for capturing keyboard input. The overlay comes up
-// when the mode hands over its Frame, not here.
+// SetModeGrid switches the application to grid mode and enables the event
+// tap to capture the keyboard. The overlay comes up when the mode hands over
+// its Frame, not here.
 func (h *Handler) SetModeGrid() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -132,10 +223,9 @@ func (h *Handler) SetModeGrid() {
 	h.enterMode(domain.ModeGrid)
 }
 
-// SetModeRecursiveGrid switches the application to recursive-grid mode for
-// recursive cell navigation. This function sets the application state to
-// recursive-grid mode and enables event tapping for capturing keyboard input.
-// The overlay comes up when the mode hands over its Frame, not here.
+// SetModeRecursiveGrid switches the application to recursive-grid mode and
+// enables the event tap to capture the keyboard. The overlay comes up when the
+// mode hands over its Frame, not here.
 func (h *Handler) SetModeRecursiveGrid() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -143,10 +233,9 @@ func (h *Handler) SetModeRecursiveGrid() {
 	h.enterMode(domain.ModeRecursiveGrid)
 }
 
-// SetModeScroll switches the application to scroll mode for scroll-based
-// navigation. This function sets the application state to scroll mode and
-// enables event tapping for capturing keyboard input. The overlay comes up
-// when the mode hands over its Frame, not here.
+// SetModeScroll switches the application to scroll mode and enables the event
+// tap to capture the keyboard. The overlay comes up when the mode hands over
+// its Frame, not here.
 func (h *Handler) SetModeScroll() {
 	h.mu.Lock()
 	defer h.mu.Unlock()

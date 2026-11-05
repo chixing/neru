@@ -1,8 +1,6 @@
 package app
 
 import (
-	"go.uber.org/zap"
-
 	"github.com/y3owk1n/neru/internal/domain/modecmd"
 )
 
@@ -12,22 +10,9 @@ func (a *App) ActivateMode(mode Mode) {
 	a.modes.ActivateMode(modecmd.Activation{Mode: mode})
 }
 
-// IsFocusedAppExcluded checks if the focused app is excluded.
-func (a *App) IsFocusedAppExcluded() bool {
-	excluded, excludedErr := a.actionService.IsFocusedAppExcluded(a.ctx)
-	if excludedErr != nil {
-		a.logger.Warn("Failed to check exclusion", zap.Error(excludedErr))
-
-		return false
-	}
-
-	return excluded
-}
-
 // ExitMode exits the current mode.
 func (a *App) ExitMode() { a.modes.ExitMode() }
 
-// SetModeHints sets the mode to hints.
 // SetModeHints switches the application to hints mode.
 func (a *App) SetModeHints() { a.modes.SetModeHints() }
 

@@ -26,7 +26,7 @@ func TestMain(m *testing.M) {
 
 func TestProcessClickableNodesConcurrent_CancelledBeforeStart(t *testing.T) {
 	logger := zap.NewNop()
-	adapter := NewAdapter(logger, nil, nil, &MockAXClient{}, false)
+	adapter := NewAdapter(logger, &MockAXClient{}, false)
 
 	nodeCount := ConcurrentProcessingThreshold + 50
 
@@ -72,7 +72,7 @@ func (n *holdNode) Bounds() image.Rectangle {
 
 func TestProcessClickableNodesConcurrent_CancelledMidProcessing(t *testing.T) {
 	logger := zap.NewNop()
-	adapter := NewAdapter(logger, nil, nil, &MockAXClient{}, false)
+	adapter := NewAdapter(logger, &MockAXClient{}, false)
 
 	nodeCount := ConcurrentProcessingThreshold * 4
 	started := make(chan struct{})
@@ -112,7 +112,7 @@ func TestProcessClickableNodesConcurrent_CancelledMidProcessing(t *testing.T) {
 	}()
 
 	// Wait for a worker to begin processing a node, then cancel mid-flight
-	// while the worker is still blocked on Bounds(). Both waits are bounded:
+	// while the worker is still blocked on Bounds(). Both waits are bounded, because
 	// "no worker ever started" and "the call never returned after cancellation"
 	// are precisely the regressions under test, and a bare receive would turn
 	// either into a hang that takes down the whole test binary.
@@ -144,7 +144,7 @@ func TestProcessClickableNodesConcurrent_CancelledMidProcessing(t *testing.T) {
 
 func TestProcessClickableNodesConcurrent_HappyPath(t *testing.T) {
 	logger := zap.NewNop()
-	adapter := NewAdapter(logger, nil, nil, &MockAXClient{}, false)
+	adapter := NewAdapter(logger, &MockAXClient{}, false)
 
 	nodeCount := ConcurrentProcessingThreshold + 50
 
@@ -171,9 +171,9 @@ func TestProcessClickableNodesConcurrent_HappyPath(t *testing.T) {
 
 func TestProcessClickableNodesConcurrent_BelowThreshold(t *testing.T) {
 	logger := zap.NewNop()
-	adapter := NewAdapter(logger, nil, nil, &MockAXClient{}, false)
+	adapter := NewAdapter(logger, &MockAXClient{}, false)
 
-	// Below the concurrent processing threshold — tests the sequential path
+	// Below the concurrent processing threshold, so this tests the sequential path.
 	nodeCount := ConcurrentProcessingThreshold - 10
 
 	nodes := make([]ax.Node, nodeCount)

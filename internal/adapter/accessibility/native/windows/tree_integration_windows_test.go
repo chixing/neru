@@ -5,7 +5,10 @@ package windows
 import (
 	"context"
 	"image"
+	"maps"
 	"runtime"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 	"unsafe"
@@ -18,15 +21,15 @@ import (
 
 // Real UI Automation test against a fixture window this process owns. The
 // fixture nests a button inside a child pane so the walk has to reach depth
-// two below the window: a walk that only reads the window's direct children
+// two below the window. A walk that only reads the window's direct children
 // reports three controls where four exist.
 //
-// The window is a caption-less popup: an overlapped window's title bar adds
+// The window is a caption-less popup, because an overlapped window's title bar adds
 // Minimize, Maximize and Close as Button hints of its own. Controls are
 // counted by role because a Win32 edit box takes its UIA Name from a
 // neighboring label rather than its own text.
 //
-// The window and the query share one locked thread: Win32 controls answer the
+// The window and the query share one locked thread, because Win32 controls answer the
 // MSAA proxy's WM_GETTEXT with SendMessage, which is synchronous on the
 // creating thread and would need a message pump from any other.
 
@@ -35,19 +38,30 @@ var (
 	modkernel32              = windows.NewLazySystemDLL("kernel32.dll")
 	procFixtureCreateWindowW = moduser32.NewProc("CreateWindowExW")
 	procFixtureDestroyWindow = moduser32.NewProc("DestroyWindow")
+	procFixtureSetWindowLong = moduser32.NewProc("SetWindowLongPtrW")
+	procFixtureSetForeground = moduser32.NewProc("SetForegroundWindow")
+	procFixtureGetForeground = moduser32.NewProc("GetForegroundWindow")
+	procFixtureSetFocus      = moduser32.NewProc("SetFocus")
+	procFixtureSetWindowPos  = moduser32.NewProc("SetWindowPos")
 	procFixtureModuleHandleW = modkernel32.NewProc("GetModuleHandleW")
 )
 
 const (
-	fixturePopup       = 0x80000000
-	fixtureVisible     = 0x10000000
-	fixtureChild       = 0x40000000
-	fixtureCheckBox    = 0x2
+	fixturePopup    = 0x80000000
+	fixtureVisible  = 0x10000000
+	fixtureChild    = 0x40000000
+	fixtureCheckBox = 0x2
+	fixtureDisabled = 0x08000000
+	fixturePassword = 0x20
+	// fixtureControlID is a control id the Win32 UIA proxy reports as the
+	// control's AutomationId, and gwlpID is the window slot that holds it.
+	fixtureControlID   = 4242
+	gwlpID             = ^uintptr(11) // GWLP_ID, -12
 	fixtureWindowSize  = 320
 	fixtureControlSize = 40
 
 	// fixtureDeadline is the budget hints mode gives element collection
-	// (modes.HintTimeout); the adapter cannot import modes, so the value is
+	// (modes.HintTimeout). The adapter cannot import modes, so the value is
 	// restated here.
 	fixtureDeadline = 5 * time.Second
 )
@@ -165,4 +179,314 @@ func TestBuildTree_ReportsControlsNestedBelowTheWindow(t *testing.T) {
 	}
 
 	t.Logf("built tree with %d hints in %v", len(hints), time.Since(started))
+}
+
+func TestBuildTree_ReadsNoDeeperThanMaxDepth(t *testing.T) {
+	runtime.LockOSThread()
+
+	defer runtime.UnlockOSThread()
+
+	const (
+		child  = fixtureChild | fixtureVisible
+		depth1 = "neru-depth-1"
+		depth2 = "neru-depth-2"
+	)
+
+	window := createFixtureWindow(t, "STATIC", "neru-uia-depth-fixture",
+		fixturePopup|fixtureVisible,
+		image.Pt(0, 0), fixtureWindowSize, fixtureWindowSize, 0)
+
+	createFixtureWindow(t, "BUTTON", depth1, child,
+		image.Pt(10, 10), fixtureControlSize*3, fixtureControlSize, window)
+
+	pane := createFixtureWindow(t, "STATIC", "neru-depth-pane", child,
+		image.Pt(10, 60), fixtureControlSize*4, fixtureControlSize*2, window)
+	createFixtureWindow(t, "BUTTON", depth2, child,
+		image.Pt(10, 10), fixtureControlSize*3, fixtureControlSize, pane)
+
+	tests := []struct {
+		name     string
+		maxDepth int
+		want     []string
+	}{
+		{"one level", 1, []string{depth1}},
+		{"two levels", 2, []string{depth1, depth2}},
+		{"unlimited", 0, []string{depth1, depth2}},
+		{"the default", config.DefaultMaxDepth, []string{depth1, depth2}},
+	}
+
+	// The cases run inline, not as subtests. t.Run would move each one to
+	// another goroutine, off the thread that owns the fixture window, and the
+	// Win32 controls would then block the query, as the file comment explains.
+	for _, test := range tests {
+		opts := DefaultTreeOptions(zap.NewNop())
+		opts.SetRoles(map[string]struct{}{uiaControlButton: {}})
+		opts.SetMaxDepth(test.maxDepth)
+
+		ctx, cancel := context.WithTimeout(context.Background(), fixtureDeadline)
+
+		tree, err := BuildTree(ctx, &Element{hwnd: window}, opts)
+
+		cancel()
+
+		if err != nil {
+			t.Fatalf("%s: BuildTree failed: %v", test.name, err)
+		}
+
+		hints := ProcessClickableNodes(tree, config.HintsConfig{})
+
+		got := make([]string, 0, len(hints))
+		for _, hint := range hints {
+			got = append(got, hint.Info().Title())
+		}
+
+		slices.Sort(got)
+
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%s: hinted %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
+// staticConfig is a config.Provider that always returns the same configuration.
+type staticConfig struct{ cfg *config.Config }
+
+func (s staticConfig) Get() *config.Config { return s.cfg }
+
+func TestBuildTree_KeepsDisabledControlsWhenTheClickableCheckIsIgnored(t *testing.T) {
+	runtime.LockOSThread()
+
+	defer runtime.UnlockOSThread()
+
+	const child = fixtureChild | fixtureVisible
+
+	window := createFixtureWindow(t, "STATIC", "neru-uia-ignore-fixture",
+		fixturePopup|fixtureVisible,
+		image.Pt(0, 0), fixtureWindowSize, fixtureWindowSize, 0)
+
+	createFixtureWindow(t, "BUTTON", "neru-ignore-button", child,
+		image.Pt(10, 10), fixtureControlSize*3, fixtureControlSize, window)
+	createFixtureWindow(t, "BUTTON", "neru-ignore-disabled", child|fixtureDisabled,
+		image.Pt(10, 60), fixtureControlSize*3, fixtureControlSize, window)
+	createFixtureWindow(t, "STATIC", "neru-ignore-label", child,
+		image.Pt(10, 110), fixtureControlSize*3, fixtureControlSize, window)
+
+	roles := map[string]struct{}{uiaControlButton: {}}
+
+	// The cases run inline, not as subtests, for the reason
+	// TestBuildTree_ReadsNoDeeperThanMaxDepth gives.
+	for _, ignore := range []bool{false, true} {
+		cfg := config.DefaultConfig()
+		cfg.Hints.IgnoreClickableCheck = ignore
+
+		opts := DefaultTreeOptions(zap.NewNop())
+		opts.SetRoles(roles)
+		opts.SetConfigProvider(staticConfig{cfg})
+
+		ctx, cancel := context.WithTimeout(context.Background(), fixtureDeadline)
+
+		tree, err := BuildTree(ctx, &Element{hwnd: window}, opts)
+
+		cancel()
+
+		if err != nil {
+			t.Fatalf("ignore %v: BuildTree failed: %v", ignore, err)
+		}
+
+		hints := tree.FindClickableElements(roles, nil, ignore)
+
+		// got maps each hinted control to whether it reports itself enabled.
+		got := make(map[string]bool, len(hints))
+		for _, hint := range hints {
+			got[hint.Info().Title()] = hint.Info().IsEnabled()
+		}
+
+		want := map[string]bool{"neru-ignore-button": true}
+		if ignore {
+			want["neru-ignore-disabled"] = false
+		}
+
+		if !maps.Equal(got, want) {
+			t.Errorf("ignore %v: hinted %v, want %v", ignore, got, want)
+		}
+	}
+}
+
+func TestBuildTree_VisibleCheckDropsCoveredControlsOnly(t *testing.T) {
+	runtime.LockOSThread()
+
+	defer runtime.UnlockOSThread()
+
+	const (
+		child = fixtureChild | fixtureVisible
+		// swpNoSizeNoMove keeps a window's size and position in SetWindowPos.
+		swpNoSizeNoMove = 0x3
+		hwndTopmost     = ^uintptr(0) // HWND_TOPMOST, -1
+	)
+
+	window := createFixtureWindow(t, "STATIC", "neru-uia-visible-fixture",
+		fixturePopup|fixtureVisible,
+		image.Pt(0, 0), fixtureWindowSize, fixtureWindowSize, 0)
+
+	// The hit-test asks the screen, so the fixture must be above every other
+	// window on the desktop.
+	discardCall(procFixtureSetWindowPos.Call(window, hwndTopmost, 0, 0, 0, 0, swpNoSizeNoMove))
+
+	createFixtureWindow(t, "BUTTON", "neru-visible-plain", child,
+		image.Pt(10, 10), fixtureControlSize*3, fixtureControlSize, window)
+
+	// The hit-test at this button's center lands on the edit box inside it,
+	// so keeping it takes the walk up from the hit.
+	nested := createFixtureWindow(t, "BUTTON", "neru-visible-nested", child,
+		image.Pt(10, 60), fixtureControlSize*3, fixtureControlSize, window)
+	createFixtureWindow(t, "EDIT", "", child,
+		image.Pt(10, 5), fixtureControlSize*2, fixtureControlSize-10, nested)
+
+	createFixtureWindow(t, "BUTTON", "neru-visible-covered", child,
+		image.Pt(20, 115), fixtureControlSize, fixtureControlSize/2, window)
+
+	cover := createFixtureWindow(t, "BUTTON", "neru-visible-cover", child,
+		image.Pt(10, 110), fixtureControlSize*3, fixtureControlSize, window)
+	discardCall(procFixtureSetWindowPos.Call(cover, 0, 0, 0, 0, 0, swpNoSizeNoMove))
+
+	cfg := config.DefaultConfig()
+	cfg.Hints.VisibleCheckEnabled = true
+
+	want := []string{"neru-visible-cover", "neru-visible-nested", "neru-visible-plain"}
+
+	// The default depth reads through FindAll, a lower one walks. The cases
+	// run inline, not as subtests, for the reason
+	// TestBuildTree_ReadsNoDeeperThanMaxDepth gives.
+	for _, depth := range []int{config.DefaultMaxDepth, 5} {
+		opts := DefaultTreeOptions(zap.NewNop())
+		opts.SetRoles(map[string]struct{}{uiaControlButton: {}})
+		opts.SetMaxDepth(depth)
+		opts.SetConfigProvider(staticConfig{cfg})
+
+		ctx, cancel := context.WithTimeout(context.Background(), fixtureDeadline)
+
+		tree, err := BuildTree(ctx, &Element{hwnd: window}, opts)
+
+		cancel()
+
+		if err != nil {
+			t.Fatalf("depth %d: BuildTree failed: %v", depth, err)
+		}
+
+		hints := ProcessClickableNodes(tree, config.HintsConfig{})
+
+		got := make([]string, 0, len(hints))
+		for _, hint := range hints {
+			got = append(got, hint.Info().Title())
+		}
+
+		slices.Sort(got)
+
+		if !slices.Equal(got, want) {
+			t.Errorf("depth %d: hinted %v, want %v", depth, got, want)
+		}
+	}
+}
+
+func TestBuildTree_ReportsTextIdentifierAndFocusButNoDisabledOrPassword(t *testing.T) {
+	runtime.LockOSThread()
+
+	defer runtime.UnlockOSThread()
+
+	const child = fixtureChild | fixtureVisible
+
+	window := createFixtureWindow(t, "STATIC", "neru-uia-fixture",
+		fixturePopup|fixtureVisible,
+		image.Pt(0, 0), fixtureWindowSize, fixtureWindowSize, 0)
+
+	edit := createFixtureWindow(t, "EDIT", "neru-fixture-edit-text", child,
+		image.Pt(10, 10), fixtureControlSize*3, fixtureControlSize, window)
+	enabled := createFixtureWindow(t, "BUTTON", "neru-fixture-enabled", child,
+		image.Pt(10, 60), fixtureControlSize*3, fixtureControlSize, window)
+	createFixtureWindow(t, "BUTTON", "neru-fixture-disabled", child|fixtureDisabled,
+		image.Pt(10, 110), fixtureControlSize*3, fixtureControlSize, window)
+	createFixtureWindow(t, "EDIT", "neru-fixture-password", child|fixturePassword,
+		image.Pt(10, 160), fixtureControlSize*3, fixtureControlSize, window)
+
+	discardCall(procFixtureSetWindowLong.Call(enabled, gwlpID, fixtureControlID))
+
+	// UI Automation reports keyboard focus only inside the foreground window,
+	// which a runner may refuse to hand over, so focus is expected only when
+	// the window got it.
+	discardCall(procFixtureSetForeground.Call(window))
+	discardCall(procFixtureSetFocus.Call(edit))
+
+	foreground, _, _ := procFixtureGetForeground.Call()
+	if foreground != window {
+		t.Log("the fixture window could not take the foreground, so focus is not checked")
+	}
+
+	scan := func(readState bool) []*TreeNode {
+		opts := DefaultTreeOptions(zap.NewNop())
+		opts.SetRoles(map[string]struct{}{uiaControlButton: {}, uiaControlEdit: {}})
+		opts.SetReadState(readState)
+
+		ctx, cancel := context.WithTimeout(context.Background(), fixtureDeadline)
+		defer cancel()
+
+		tree, err := BuildTree(ctx, &Element{hwnd: window}, opts)
+		if err != nil {
+			t.Fatalf("BuildTree failed: %v", err)
+		}
+
+		return ProcessClickableNodes(tree, config.HintsConfig{})
+	}
+
+	var editValues []string
+
+	for _, hint := range scan(false) {
+		if hint.Info().Role() == uiaControlEdit {
+			editValues = append(editValues, hint.Info().Value())
+		}
+	}
+
+	// A Win32 edit takes its UIA name from a neighboring label, so the two
+	// edits are told apart by their values. The plain edit reports its text
+	// and the password edit reports none.
+	slices.Sort(editValues)
+
+	if !slices.Equal(editValues, []string{"", "neru-fixture-edit-text"}) {
+		t.Errorf("edit values = %q, want the plain edit's text and an empty password value",
+			editValues)
+	}
+
+	for _, readState := range []bool{true, false} {
+		buttons := map[string]string{}
+		editFocused := false
+
+		for _, hint := range scan(readState) {
+			info := hint.Info()
+
+			switch {
+			case info.Role() == uiaControlButton:
+				buttons[info.Title()] = info.Identifier()
+			case info.Value() == "neru-fixture-edit-text":
+				editFocused = info.IsFocused()
+			}
+		}
+
+		want := map[string]string{"neru-fixture-enabled": ""}
+		if readState {
+			want["neru-fixture-enabled"] = strconv.Itoa(fixtureControlID)
+		}
+
+		if !maps.Equal(buttons, want) {
+			t.Errorf(
+				"read state %v: buttons and identifiers = %v, want %v (the disabled one skipped)",
+				readState,
+				buttons,
+				want,
+			)
+		}
+
+		if wantFocused := readState && foreground == window; editFocused != wantFocused {
+			t.Errorf("read state %v: the focused edit reported focused %v, want %v",
+				readState, editFocused, wantFocused)
+		}
+	}
 }

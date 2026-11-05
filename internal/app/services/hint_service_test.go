@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -232,10 +233,10 @@ func TestHintService_GenerateHintsVisionWithNilPortReturnsSupplementaryElements(
 // about a failure a log line cannot fix.
 //
 // When vision detection reports CodeNotSupported the machine cannot run the
-// strategy at all — no tesseract language data, no capture backend, a build
-// with no engine in it — and the error names what to install. Swallowing that
-// leaves the user pressing the hotkey and getting an overlay with nothing on
-// it, since the supplementary elements the pipeline keeps are macOS surfaces
+// strategy at all. There is no tesseract language data, no capture backend,
+// or a build with no engine in it, and the error names what to install.
+// Swallowing that leaves the user pressing the hotkey and getting an overlay
+// with nothing on it, since the supplementary elements the pipeline keeps are macOS surfaces
 // with no counterpart elsewhere. The message has to reach a person, which is
 // what ADR 0002 says a log line does not do.
 func TestHintService_GenerateHintsVisionNotifiesWhenTheStrategyIsUnavailable(t *testing.T) {
@@ -282,7 +283,7 @@ func TestHintService_GenerateHintsVisionNotifiesWhenTheStrategyIsUnavailable(t *
 		t.Fatal("vision reported CodeNotSupported and the user was never told")
 	}
 
-	// Three activations, one notification: a user who keeps pressing the hotkey
+	// Three activations, one notification. A user who keeps pressing the hotkey
 	// is told once, not once per press.
 	select {
 	case extra := <-notified:
@@ -291,12 +292,61 @@ func TestHintService_GenerateHintsVisionNotifiesWhenTheStrategyIsUnavailable(t *
 	}
 }
 
+// TestHintService_ProbeHints_ReturnsAFailedCaptureDetection pins the other
+// half. A caller that reports the hints learns the scan failed, in the code it
+// failed with, instead of getting what else was collected as if the scan had
+// found nothing. A report has no overlay for the user to wonder about, so it
+// notifies nobody.
+func TestHintService_ProbeHints_ReturnsAFailedCaptureDetection(t *testing.T) {
+	for _, strategy := range []string{domain.StrategyVision, domain.StrategyContour, domain.StrategySegment} {
+		t.Run(strategy, func(t *testing.T) {
+			notified := make(chan string, 1)
+
+			mockSystem := &mocks.MockSystemPort{}
+			mockSystem.FocusedWindowBoundsFunc = func(context.Context) (image.Rectangle, bool, error) {
+				return image.Rect(0, 0, 200, 200), true, nil
+			}
+			mockSystem.ShowNotificationFunc = func(_ context.Context, _, message string) error {
+				notified <- message
+
+				return nil
+			}
+
+			generator, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionNormal)
+			service := services.NewHintService(
+				&mocks.MockAccessibilityPort{},
+				&mocks.MockOverlayPort{},
+				mockSystem,
+				generator,
+				config.HintsConfig{},
+				logger.Get(),
+				&mockVisionPort{
+					detectErr: derrors.New(derrors.CodeNotSupported, "no language data"),
+				},
+			)
+
+			_, err := service.ProbeHints(
+				context.Background(), nil, nil, "com.example.app", strategy, "", "", false,
+			)
+			if !derrors.IsNotSupported(err) {
+				t.Fatalf("ProbeHints() error = %v, want the detection's CodeNotSupported", err)
+			}
+
+			select {
+			case message := <-notified:
+				t.Errorf("a probe notified the user: %q", message)
+			case <-time.After(200 * time.Millisecond):
+			}
+		})
+	}
+}
+
 // TestHintService_GenerateHintsVisionNoticeSurvivesTheActivationContext is the
 // regression test for the way this notification is easiest to lose.
 //
 // Every caller that reaches vision detection under the mode handler's lock
 // builds its context with a hint timeout and cancels it on return, microseconds
-// after the notification is queued — and the Linux notification path honors a
+// after the notification is queued, and the Linux notification path honors a
 // caller's deadline. A notice that carried that context would be canceled
 // before the first send, which is also the send that dials the session bus, and
 // the user would be told nothing.
@@ -383,7 +433,7 @@ func TestHintService_GenerateHintsVisionRetriesANoticeThatFailedToSend(t *testin
 
 	// The release of a failed notice happens on the sending goroutine, so which
 	// later activation retries is a scheduling detail rather than a promise.
-	// What is asserted is that one of them does: a dedupe that remembered the
+	// What is asserted is that one of them does. A dedupe that remembered the
 	// attempt would let none of them.
 	seen := 0
 	deadline := time.After(5 * time.Second)
@@ -480,8 +530,8 @@ func TestHintService_UpdateGenerator(t *testing.T) {
 
 	service.UpdateGenerator(context.Background(), normal)
 
-	// The registered generator must be retrievable under its own direction —
-	// this is what the per-activation `hints --label-direction` override reads.
+	// The registered generator must be retrievable under its own direction.
+	// This is what the per-activation `hints --label-direction` override reads.
 	got := service.Generator(hint.LabelDirectionNormal.String())
 	if got == nil {
 		t.Fatal("Generator(normal) = nil after UpdateGenerator")
@@ -596,7 +646,7 @@ func TestHintService_GenerateHintsPicksDirectionGenerator(t *testing.T) {
 
 	// Five elements force both algorithms into the two-character tier, where
 	// reverse and normal produce *different* label sequences. The exact
-	// normal sequence is [A S D FA FS]; the exact reverse sequence is
+	// normal sequence is [A S D FA FS], and the exact reverse sequence is
 	// [AA SA DA FA AS]. The 4th and 5th labels expose the difference.
 	mockAcc.ClickableElementsFunc = func(_ context.Context, _ ports.ElementFilter) ([]*element.Element, error) {
 		return []*element.Element{
@@ -642,7 +692,7 @@ func TestHintService_GenerateHintsPicksDirectionGenerator(t *testing.T) {
 	}
 
 	// With a reverse override, the override must resolve to the registered
-	// reverse generator — not silently fall back to the default normal one.
+	// reverse generator, not silently fall back to the default normal one.
 	// The reverse algorithm fills all 4 single-char slots ([AA SA DA FA])
 	// before yielding a 2-char label ([AS]). The 1st and 5th labels (AA, AS)
 	// prove the override actually engaged.
@@ -696,7 +746,6 @@ func TestHintService_Health(t *testing.T) {
 		nil,
 	)
 
-	// Setup mocks
 	mockAcc.HealthFunc = func(_ context.Context) error {
 		return nil
 	}
@@ -782,9 +831,23 @@ func (m *mockVisionPort) DetectContours(
 	return m.detectedElements, nil
 }
 
+func (m *mockVisionPort) DetectSegments(
+	context.Context,
+	image.Rectangle,
+	config.HintsSegmentConfig,
+) ([]*element.Element, error) {
+	if m.detectErr != nil {
+		return nil, m.detectErr
+	}
+
+	return m.detectedElements, nil
+}
+
 func (m *mockVisionPort) CaptureScreen(context.Context) (*image.RGBA, error) {
 	return nil, derrors.New(derrors.CodeBridgeFailed, "capture screen not implemented")
 }
+
+func (m *mockVisionPort) CaptureExcludesOwnWindows() bool { return false }
 
 func (m *mockVisionPort) Health(context.Context) error {
 	return nil
@@ -798,7 +861,7 @@ func TestHintService_GenerateHintsContour(t *testing.T) {
 		image.Rect(100, 100, 150, 120),
 		element.RoleButton,
 		element.WithClickable(true),
-		element.WithVisionOnly(),
+		element.WithSource(element.SourceContour),
 	)
 	if err != nil {
 		t.Fatalf("NewElement failed: %v", err)
@@ -916,7 +979,7 @@ func TestHintService_GenerateHintsContour_ScansFocusedWindow(t *testing.T) {
 		image.Rect(200, 150, 300, 190),
 		element.RoleButton,
 		element.WithClickable(true),
-		element.WithVisionOnly(),
+		element.WithSource(element.SourceContour),
 	)
 	if err != nil {
 		t.Fatalf("NewElement failed: %v", err)
@@ -1127,7 +1190,7 @@ func TestHintService_GenerateHintsRejectsSplitWordForNonVisionStrategy(t *testin
 
 // TestHintService_GenerateHintsRoleFilterResolvingToNothing pins the behavior
 // of a role filter that is configured but resolves to no native role on this
-// platform — for example a config carrying only Linux entries, run on macOS.
+// platform, for example a config carrying only Linux entries, run on macOS.
 //
 // An empty ports.ElementFilter.Roles means "match every role", so the naive
 // outcome is that an unusable filter hints *everything*. It must hint nothing.
@@ -1202,7 +1265,7 @@ func TestHintService_GenerateHintsRoleFilterResolvingToNothing(t *testing.T) {
 }
 
 // TestHintService_GenerateHintsRoleFlagOverridesConfig covers the happy path of
-// `neru hints --role ...`: the flag replaces the configured roles entirely and
+// `neru hints --role ...`. The flag replaces the configured roles entirely and
 // is resolved through the same vocabulary, so it accepts semantic names and
 // vocabulary-prefixed native names alike.
 func TestHintService_GenerateHintsRoleFlagOverridesConfig(t *testing.T) {
@@ -1300,11 +1363,11 @@ func newVisionHintService(
 // TestHintService_GenerateHintsVisionSaysWhyItFellBackToTheScreen pins the
 // difference between the two ways vision ends up scanning a whole monitor.
 //
-// A platform that cannot report focused-window geometry — a wlroots compositor
-// with no IPC, a KWin bridge that never installed — is not the same event as a
-// desktop with nothing focused, and it used to be logged as if it were. Scoping
-// OCR to the entire screen instead of one window is slower and noisier, and the
-// reason has to be readable without a debug build.
+// A platform that cannot report focused-window geometry, such as a wlroots
+// compositor with no IPC or a KWin bridge that never installed, is not the same
+// event as a desktop with nothing focused, and it used to be logged as if it
+// were. Scoping OCR to the entire screen instead of one window is slower and
+// noisier, and the reason has to be readable without a debug build.
 func TestHintService_GenerateHintsVisionSaysWhyItFellBackToTheScreen(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1373,6 +1436,107 @@ func TestHintService_GenerateHintsVisionSaysWhyItFellBackToTheScreen(t *testing.
 	}
 }
 
+// TestHintService_GenerateHints_VisionDuringUpdateConfig pins that a vision
+// scan reads its settings from the snapshot taken under the lock, so a config
+// reload during a scan is not a data race. It only fails under -race.
+func TestHintService_GenerateHints_VisionDuringUpdateConfig(t *testing.T) {
+	t.Parallel()
+
+	service := newVisionHintService(zap.NewNop(),
+		func(context.Context) (image.Rectangle, bool, error) {
+			return image.Rect(0, 0, 200, 200), true, nil
+		})
+
+	const iterations = 200
+
+	var racing sync.WaitGroup
+
+	racing.Go(func() {
+		for range iterations {
+			_, err := service.GenerateHints(
+				context.Background(), nil, nil, "com.example.app",
+				domain.StrategyVision, "", "", false,
+			)
+			if err != nil {
+				t.Errorf("GenerateHints() unexpected error: %v", err)
+
+				return
+			}
+		}
+	})
+
+	racing.Go(func() {
+		for i := range iterations {
+			service.UpdateConfig(config.HintsConfig{
+				Vision: config.HintsVisionConfig{RequestTimeoutMS: i},
+			})
+		}
+	})
+
+	racing.Wait()
+}
+
+// TestHintService_GenerateHints_VisionKeepsItsStartingSettings pins that a
+// reload after a scan has started does not reach that scan's detector, so one
+// scan never mixes settings from two configs. The reload runs inside the
+// focused-window lookup, which happens after the snapshot and before the
+// detection call.
+func TestHintService_GenerateHints_VisionKeepsItsStartingSettings(t *testing.T) {
+	t.Parallel()
+
+	starting := config.HintsVisionConfig{RequestTimeoutMS: 100}
+	reloaded := config.HintsVisionConfig{RequestTimeoutMS: 999}
+
+	var (
+		service *services.HintService
+		got     config.HintsVisionConfig
+	)
+
+	mockSystem := &mocks.MockSystemPort{}
+	mockSystem.FocusedWindowBoundsFunc = func(context.Context) (image.Rectangle, bool, error) {
+		service.UpdateConfig(config.HintsConfig{Vision: reloaded})
+
+		return image.Rect(0, 0, 200, 200), true, nil
+	}
+
+	mockVision := &mocks.MockVisionPort{
+		DetectElementsFunc: func(
+			_ context.Context,
+			_ image.Rectangle,
+			visionConfig config.HintsVisionConfig,
+			_ bool,
+		) ([]*element.Element, error) {
+			got = visionConfig
+
+			return nil, nil
+		},
+	}
+
+	generator, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionNormal)
+	service = services.NewHintService(
+		&mocks.MockAccessibilityPort{},
+		&mocks.MockOverlayPort{},
+		mockSystem,
+		generator,
+		config.HintsConfig{Vision: starting},
+		zap.NewNop(),
+		mockVision,
+	)
+
+	_, err := service.GenerateHints(
+		context.Background(), nil, nil, "com.example.app",
+		domain.StrategyVision, "", "", false,
+	)
+	if err != nil {
+		t.Fatalf("GenerateHints() unexpected error: %v", err)
+	}
+
+	if got != starting {
+		t.Errorf("DetectElements() got request_timeout_ms %d, want the starting %d",
+			got.RequestTimeoutMS, starting.RequestTimeoutMS)
+	}
+}
+
 // foreignRolesForCurrentPlatform returns native role entries that belong to
 // platforms other than the one running the tests, so they resolve to nothing
 // here. Returns nil on a platform with no accessibility backend.
@@ -1382,4 +1546,194 @@ func foreignRolesForCurrentPlatform() []string {
 		"linux":   {"ax:AXButton", "uia:Button"},
 		"windows": {"ax:AXButton", "atspi:push button"},
 	}[runtime.GOOS]
+}
+
+// TestHintService_ProbeHints_AsksForElementStateHintsModeSkips pins that only
+// a caller reporting the hints asks the scan for the element state, so hints
+// mode never pays for the reads behind it.
+func TestHintService_ProbeHints_AsksForElementStateHintsModeSkips(t *testing.T) {
+	t.Parallel()
+
+	var asked []bool
+
+	mockAcc := &mocks.MockAccessibilityPort{}
+	mockAcc.ClickableElementsFunc = func(
+		_ context.Context,
+		filter ports.ElementFilter,
+	) ([]*element.Element, error) {
+		asked = append(asked, filter.ReadElementState)
+
+		return []*element.Element{mustNewElement("e1", image.Rect(0, 0, 10, 10))}, nil
+	}
+
+	generator, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionNormal)
+	service := services.NewHintService(
+		mockAcc,
+		&mocks.MockOverlayPort{},
+		&mocks.MockSystemPort{},
+		generator,
+		config.HintsConfig{},
+		logger.Get(),
+		nil,
+	)
+
+	ctx := context.Background()
+
+	_, err := service.GenerateHints(ctx, nil, nil, "com.example.app", "", "", "", false)
+	if err != nil {
+		t.Fatalf("GenerateHints() unexpected error: %v", err)
+	}
+
+	_, err = service.ProbeHints(ctx, nil, nil, "com.example.app", "", "", "", false)
+	if err != nil {
+		t.Fatalf("ProbeHints() unexpected error: %v", err)
+	}
+
+	if !slices.Equal(asked, []bool{false, true}) {
+		t.Errorf("read element state asked %v for hints mode then the query, want [false true]",
+			asked)
+	}
+}
+
+// TestHintService_GenerateHintsSegment_ScansFocusedWindow pins that the
+// segment strategy reads the focused window, as the other capture strategies
+// do, and keeps the accessibility supplement beside what it found there.
+func TestHintService_GenerateHintsSegment_ScansFocusedWindow(t *testing.T) {
+	t.Parallel()
+
+	supplementElement := mustNewElement("menubar", image.Rect(10, 0, 60, 20))
+
+	windowElement, err := element.NewElement(
+		element.ID("window-label"),
+		image.Rect(200, 150, 300, 170),
+		element.RoleButton,
+		element.WithClickable(true),
+		element.WithSource(element.SourceSegment),
+	)
+	if err != nil {
+		t.Fatalf("NewElement failed: %v", err)
+	}
+
+	var capturedRegion image.Rectangle
+
+	mockAcc := &mocks.MockAccessibilityPort{}
+	mockAcc.ClickableElementsFunc = func(
+		_ context.Context,
+		filter ports.ElementFilter,
+	) ([]*element.Element, error) {
+		if !filter.SkipWindowElements {
+			t.Error("accessibility should not collect window elements when using segment strategy")
+
+			return nil, nil
+		}
+
+		return []*element.Element{supplementElement}, nil
+	}
+
+	generator, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionNormal)
+	service := services.NewHintService(
+		mockAcc,
+		&mocks.MockOverlayPort{},
+		&mocks.MockSystemPort{
+			ScreenBoundsFunc: func(context.Context) (image.Rectangle, error) {
+				return image.Rect(0, 0, 1920, 1080), nil
+			},
+			FocusedWindowBoundsFunc: func(context.Context) (image.Rectangle, bool, error) {
+				return image.Rect(100, 100, 800, 600), true, nil
+			},
+		},
+		generator,
+		config.HintsConfig{
+			ClickableRoles:      []string{string(element.SemanticButton)},
+			IncludeMenubarHints: true,
+		},
+		zap.NewNop(),
+		&mocks.MockVisionPort{
+			DetectSegmentsFunc: func(_ context.Context, region image.Rectangle, _ config.HintsSegmentConfig) ([]*element.Element, error) {
+				capturedRegion = region
+
+				return []*element.Element{windowElement}, nil
+			},
+		},
+	)
+
+	hints, err := service.GenerateHints(
+		context.Background(),
+		nil,
+		nil,
+		"com.example.app",
+		domain.StrategySegment, "",
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("GenerateHints() failed: %v", err)
+	}
+
+	seen := map[element.ID]int{}
+	for _, generatedHint := range hints {
+		seen[generatedHint.Element().ID()]++
+	}
+
+	if seen[supplementElement.ID()] != 1 || seen[windowElement.ID()] != 1 {
+		t.Errorf("hint ids = %v, want one supplementary and one window element", seen)
+	}
+
+	if want := image.Rect(100, 100, 800, 600); capturedRegion != want {
+		t.Errorf(
+			"DetectSegments captured region = %v, want focused window %v",
+			capturedRegion,
+			want,
+		)
+	}
+}
+
+// TestHintService_GenerateHintsSegment_PassesTargets pins that
+// hints.segment.targets reaches the detector.
+func TestHintService_GenerateHintsSegment_PassesTargets(t *testing.T) {
+	t.Parallel()
+
+	var got string
+
+	cfg := config.DefaultConfig().Hints
+	cfg.Segment.Targets = domain.SegmentTargetsControls
+
+	generator, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionNormal)
+	service := services.NewHintService(
+		&mocks.MockAccessibilityPort{},
+		&mocks.MockOverlayPort{},
+		&mocks.MockSystemPort{
+			FocusedWindowBoundsFunc: func(context.Context) (image.Rectangle, bool, error) {
+				return image.Rect(0, 0, 800, 600), true, nil
+			},
+		},
+		generator,
+		cfg,
+		zap.NewNop(),
+		&mocks.MockVisionPort{
+			DetectSegmentsFunc: func(_ context.Context, _ image.Rectangle, segmentCfg config.HintsSegmentConfig) ([]*element.Element, error) {
+				got = segmentCfg.Targets
+
+				return nil, nil
+			},
+		},
+	)
+
+	_, err := service.GenerateHints(
+		context.Background(),
+		nil,
+		nil,
+		"com.example.app",
+		domain.StrategySegment,
+		"",
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("GenerateHints() failed: %v", err)
+	}
+
+	if got != domain.SegmentTargetsControls {
+		t.Errorf("detector got targets %q, want %q", got, domain.SegmentTargetsControls)
+	}
 }

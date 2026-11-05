@@ -14,6 +14,7 @@ import (
 	"github.com/y3owk1n/neru/internal/domain"
 	domainGrid "github.com/y3owk1n/neru/internal/domain/grid"
 	"github.com/y3owk1n/neru/internal/domain/modecmd"
+	"github.com/y3owk1n/neru/internal/domain/state"
 	portmocks "github.com/y3owk1n/neru/internal/ports/mocks"
 )
 
@@ -66,6 +67,8 @@ func TestHandleGridModeKey_CompleteSelectionDoesNotMoveWhenCursorFollowSelection
 			Context: &gridcomponent.Context{},
 		},
 		screenBounds: image.Rect(0, 0, 100, 100),
+		// A completed selection reports itself under the mode's name.
+		appState: state.NewAppState(),
 	})
 
 	handler.grid.Context.SetCursorFollowSelection(false)
@@ -146,7 +149,7 @@ func TestHandleGridModeKey_EnteringSubgridDoesNotMoveWhenCursorFollowSelectionDi
 // TestApplyGridFlags_TellsAbsentOnExitFromEmptyOne pins the --on-exit contract
 // for grid, where nil and empty are different values rather than two spellings
 // of nothing. A repeat re-activation carries no --on-exit and must keep the
-// steps the mode was activated with; a command that gave --on-exit no steps is
+// steps the mode was activated with. A command that gave --on-exit no steps is
 // asking for none to run.
 func TestApplyGridFlags_TellsAbsentOnExitFromEmptyOne(t *testing.T) {
 	stored := []string{"exec done"}

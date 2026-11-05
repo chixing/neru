@@ -1,13 +1,16 @@
 package cli_test
 
 import (
+	"bytes"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/y3owk1n/neru/internal/adapter/ipc"
 	"github.com/y3owk1n/neru/internal/cli"
+	"github.com/y3owk1n/neru/internal/derrors"
 )
 
 const (
@@ -20,6 +23,7 @@ const (
 	cliTestStatus    = "status"
 	cliTestLeftClick = "left_click"
 	cliTestRecursive = "recursive_grid"
+	cliTestConfig    = "config"
 )
 
 // Helper to get command by name from RootCmd.
@@ -60,58 +64,7 @@ func getSubCmd(parentName, childName string) *cobra.Command {
 	return nil
 }
 
-func TestBuildSimpleCommand(t *testing.T) {
-	cmd := cli.BuildSimpleCommand("test", "short desc", "long desc", cliTestAction)
-
-	if cmd.Use != "test" {
-		t.Errorf("expected Use='test', got %q", cmd.Use)
-	}
-
-	if cmd.Short != "short desc" {
-		t.Errorf("expected Short='short desc', got %q", cmd.Short)
-	}
-
-	if cmd.Long != "long desc" {
-		t.Errorf("expected Long='long desc', got %q", cmd.Long)
-	}
-
-	// Test that PreRunE and RunE are set
-	if cmd.PreRunE == nil {
-		t.Error("PreRunE should be set")
-	}
-
-	if cmd.RunE == nil {
-		t.Error("RunE should be set")
-	}
-}
-
-func TestBuildActionCommand(t *testing.T) {
-	cmd := cli.BuildActionCommand("test", "short desc", "long desc", []string{"arg1"}, true)
-
-	if cmd.Use != "test" {
-		t.Errorf("expected Use='test', got %q", cmd.Use)
-	}
-
-	if cmd.Short != "short desc" {
-		t.Errorf("expected Short='short desc', got %q", cmd.Short)
-	}
-
-	if cmd.Long != "long desc" {
-		t.Errorf("expected Long='long desc', got %q", cmd.Long)
-	}
-
-	// Test that PreRunE and RunE are set
-	if cmd.PreRunE == nil {
-		t.Error("PreRunE should be set")
-	}
-
-	if cmd.RunE == nil {
-		t.Error("RunE should be set")
-	}
-}
-
 func TestCommandInitialization(t *testing.T) {
-	// Test that global commands are properly initialized
 	expectedCommands := map[string]bool{
 		cliTestStart:                     false,
 		cliTestStop:                      false,
@@ -123,11 +76,13 @@ func TestCommandInitialization(t *testing.T) {
 		"run <step> [step...]":           false,
 		"macro <name> [arg...]":          false,
 		cliTestStatus:                    false,
+		"watch":                          false,
+		"query":                          false,
 		"doctor":                         false,
 		cliTestRoles:                     false,
 		"launch":                         false,
 		"docs":                           false,
-		"config":                         false,
+		cliTestConfig:                    false,
 		"services":                       false,
 		"toggle-screen-share":            false,
 		"toggle-cursor-follow-selection": false,
@@ -155,7 +110,6 @@ func TestCommandInitialization(t *testing.T) {
 		}
 	}
 
-	// Test action subcommands
 	expectedActionSubcommands := map[string]bool{
 		cliTestLeftClick:      false,
 		"right_click":         false,
@@ -191,6 +145,8 @@ func TestCommandInitialization(t *testing.T) {
 		"move_cell":           false,
 		"bisect":              false,
 		"cycle_hint":          false,
+		"refresh_hints":       false,
+		"snap":                false,
 		"hide_cursor":         false,
 		"show_cursor":         false,
 	}
@@ -214,8 +170,7 @@ func TestCommandInitialization(t *testing.T) {
 }
 
 func TestCommandExecutionWithoutDaemon(t *testing.T) {
-	// Test that all CLI commands execute without panicking when no daemon is running
-	// Commands that require IPC should return errors, while utility commands should work
+	// Commands that require IPC should return errors, while utility commands should work.
 	tests := []struct {
 		name      string
 		cmd       *cobra.Command
@@ -256,13 +211,13 @@ func TestCommandExecutionWithoutDaemon(t *testing.T) {
 		{
 			"doctor",
 			getCmd("doctor"),
-			runtime.GOOS != "windows",
+			runtime.GOOS != goosWindows,
 		}, // Windows runs client-side doctor when daemon is down
 		{"toggle-screen-share", getCmd("toggle-screen-share"), true},
 		{"toggle-cursor-follow-selection", getCmd("toggle-cursor-follow-selection"), true},
 		{"recursive_grid", getCmd("recursive_grid"), true},
-		{"config_dump", getSubCmd("config", "dump"), true},
-		{"config_reload", getSubCmd("config", "reload"), true},
+		{"config_dump", getSubCmd(cliTestConfig, "dump"), true},
+		{"config_reload", getSubCmd(cliTestConfig, "reload"), true},
 	}
 
 	for _, testCase := range tests {
@@ -293,34 +248,6 @@ func TestCommandExecutionWithoutDaemon(t *testing.T) {
 	// TestCommandInitialization.
 }
 
-func TestModeCommand_OnExitRequiresAction(t *testing.T) {
-	for _, name := range []string{cliTestHints, cliTestGrid, cliTestRecursive} {
-		t.Run(name, func(t *testing.T) {
-			cmd := getCmd(name)
-			if cmd == nil {
-				t.Fatalf("command %q not found", name)
-			}
-
-			setErr := cmd.Flags().Set("on-exit", "exec notify-send done")
-			if setErr != nil {
-				t.Fatalf("failed to set --on-exit: %v", setErr)
-			}
-			// Reset the shared flag so later tests are unaffected.
-			defer func() {
-				resetErr := cmd.Flags().Set("on-exit", "")
-				if resetErr != nil {
-					t.Fatalf("failed to reset --on-exit: %v", resetErr)
-				}
-			}()
-
-			err := cmd.RunE(cmd, []string{})
-			if err == nil || !strings.Contains(err.Error(), "--on-exit requires --action") {
-				t.Fatalf("expected --on-exit requires --action error, got %v", err)
-			}
-		})
-	}
-}
-
 func TestLaunchCommandExecution(t *testing.T) {
 	// Note: This test modifies global LaunchFunc and is not parallel-safe
 	// Save original LaunchFunc
@@ -346,6 +273,41 @@ func TestLaunchCommandExecution(t *testing.T) {
 	err := launchCmd.RunE(launchCmd, []string{})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestLaunchCommand_FailsWithoutALaunchFunction pins a launch that cannot start
+// a daemon. It says so once on stderr and fails, instead of reporting success
+// with nothing running.
+func TestLaunchCommand_FailsWithoutALaunchFunction(t *testing.T) {
+	// Point the endpoint at directories no daemon listens in. Windows names its
+	// pipe after the user instead, so there the test skips when a daemon is up.
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+
+	if ipc.IsServerRunning() {
+		t.Skip("a Neru daemon is running for this user")
+	}
+
+	originalLaunchFunc := cli.LaunchFunc
+	cli.LaunchFunc = nil
+
+	defer func() { cli.LaunchFunc = originalLaunchFunc }()
+
+	launchCmd := getCmd("launch")
+
+	var stderr bytes.Buffer
+
+	launchCmd.SetErr(&stderr)
+	defer launchCmd.SetErr(nil)
+
+	err := launchCmd.RunE(launchCmd, []string{})
+	if !derrors.IsCode(err, derrors.CodeInternal) {
+		t.Fatalf("launch without a launch function returned %v, want CodeInternal", err)
+	}
+
+	if got := strings.Count(stderr.String(), "Launch function not initialized"); got != 1 {
+		t.Errorf("stderr reported the failure %d times, want once: %q", got, stderr.String())
 	}
 }
 

@@ -24,7 +24,7 @@ func testTaskPath(t *testing.T) string {
 func requireTaskScheduler(t *testing.T, path string) {
 	t.Helper()
 
-	status := statusServiceTask(path)
+	status := statusServiceTask(path).Message
 	if strings.HasPrefix(status, "Service status unavailable") {
 		t.Skipf("skipping: %s", status)
 	}
@@ -34,7 +34,7 @@ func requireTaskScheduler(t *testing.T, path string) {
 // the real scheduler, which is the only reader whose opinion of the XML counts.
 //
 // The action is this test binary with `launch` as its argument, which exits at
-// once, so the task's state after Run may already be back to ready; the
+// once, so the task's state after Run may already be back to ready. The
 // assertion is that Run was accepted, and that status reports an installed
 // task, not that a daemon stays up.
 func TestServiceTask_RoundTrip(t *testing.T) {
@@ -43,7 +43,7 @@ func TestServiceTask_RoundTrip(t *testing.T) {
 
 	t.Cleanup(func() { _ = uninstallServiceTask(path) })
 
-	if status := statusServiceTask(path); !strings.Contains(status, "not installed") {
+	if status := statusServiceTask(path).Message; !strings.Contains(status, "not installed") {
 		t.Fatalf("statusServiceTask() before install = %q, want not installed", status)
 	}
 
@@ -57,24 +57,39 @@ func TestServiceTask_RoundTrip(t *testing.T) {
 		t.Errorf("second installServiceTask() error = %v, want %v", err, derrors.CodeInvalidInput)
 	}
 
-	status := statusServiceTask(path)
+	status := statusServiceTask(path).Message
 	if !strings.HasPrefix(status, "Service installed: ") ||
 		!strings.Contains(status, "enabled at login") {
 		t.Errorf("statusServiceTask() after install = %q, want installed and enabled", status)
 	}
 
-	for _, step := range []struct {
-		name string
-		call func(string) error
-	}{
-		{name: "stop", call: func(p string) error { return driveServiceTask("stop", p, stopTask) }},
-		{name: "start", call: func(p string) error { return driveServiceTask("start", p, runTask) }},
-		{name: "restart", call: func(p string) error { return driveServiceTask("restart", p, restartTask) }},
-	} {
-		err = step.call(path)
-		if err != nil {
-			t.Errorf("%s error = %v", step.name, err)
-		}
+	err = driveServiceTask("stop", path, disableAndStopTask)
+	if err != nil {
+		t.Fatalf("stop error = %v", err)
+	}
+
+	if status := statusServiceTask(path).Message; !strings.Contains(status, "disabled at login") {
+		t.Errorf("statusServiceTask() after stop = %q, want disabled at login", status)
+	}
+
+	err = driveServiceTask("restart", path, restartTask)
+	if !derrors.IsCode(err, derrors.CodeInvalidInput) {
+		t.Errorf("restart of a stopped task error = %v, want %v", err, derrors.CodeInvalidInput)
+	}
+
+	err = driveServiceTask("start", path, enableAndRunTask)
+	if err != nil {
+		t.Fatalf("start error = %v", err)
+	}
+
+	if status := statusServiceTask(path).Message; !strings.Contains(status, "enabled at login") ||
+		strings.Contains(status, "disabled at login") {
+		t.Errorf("statusServiceTask() after start = %q, want enabled at login", status)
+	}
+
+	err = driveServiceTask("restart", path, restartTask)
+	if err != nil {
+		t.Errorf("restart error = %v", err)
 	}
 
 	err = uninstallServiceTask(path)
@@ -82,7 +97,7 @@ func TestServiceTask_RoundTrip(t *testing.T) {
 		t.Fatalf("uninstallServiceTask() error = %v", err)
 	}
 
-	if status := statusServiceTask(path); !strings.Contains(status, "not installed") {
+	if status := statusServiceTask(path).Message; !strings.Contains(status, "not installed") {
 		t.Errorf("statusServiceTask() after uninstall = %q, want not installed", status)
 	}
 
@@ -98,7 +113,7 @@ func TestDriveServiceTask_RefusesWhenNothingIsInstalled(t *testing.T) {
 	path := testTaskPath(t)
 	requireTaskScheduler(t, path)
 
-	err := driveServiceTask("start", path, runTask)
+	err := driveServiceTask("start", path, enableAndRunTask)
 	if !derrors.IsCode(err, derrors.CodeInvalidInput) {
 		t.Fatalf("driveServiceTask() error = %v, want %v", err, derrors.CodeInvalidInput)
 	}

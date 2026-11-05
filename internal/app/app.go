@@ -17,6 +17,7 @@ import (
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/config/loader"
 	"github.com/y3owk1n/neru/internal/domain"
+	"github.com/y3owk1n/neru/internal/domain/event"
 	"github.com/y3owk1n/neru/internal/domain/state"
 	"github.com/y3owk1n/neru/internal/ports"
 )
@@ -57,15 +58,20 @@ type App struct {
 	systemPort    ports.SystemPort
 	motion        *heldmotion.Controller
 	accessibility ports.AccessibilityPort
+	vision        ports.VisionPort
 
 	appState    *state.AppState
 	cursorState *state.CursorState
+	// events carries every lifecycle event the daemon raises (Events).
+	events *event.Bus
+	// hookRunner runs the [hooks] steps for those events (hooks.go).
+	hookRunner *hookRunner
 
 	// Core services
 	//
 	// overlayManager is the backend the composition root built the port over.
-	// Only the composition root names it — construction in phase 1, the port in
-	// phase 3, its render components in phase 4 — and everything the running
+	// Only the composition root names it, with construction in phase 1, the port
+	// in phase 3 and its render components in phase 4. Everything the running
 	// app says to the overlay goes through overlayPort instead.
 	overlayManager OverlayManager
 	// overlayPort is the one contract the app has with the overlay: frames for
@@ -83,12 +89,12 @@ type App struct {
 	modes *modes.Handler
 
 	// sequenceExecutor runs action sequences. It is built during initialization
-	// from the App's own components; see newSequenceExecutor.
+	// from the App's own components. See newSequenceExecutor.
 	sequenceExecutor *sequence.Executor
 
 	// axClient is stored so it can be closed during Cleanup.
 	// On Linux this resets AT-SPI accessibility status and releases the
-	// D-Bus connection; on other platforms it is a no-op.
+	// D-Bus connection. On other platforms it is a no-op.
 	axClient io.Closer
 
 	// Control channels
@@ -100,12 +106,24 @@ type App struct {
 	// concurrent writers (theme change observer, IPC config reload, systray reload).
 	configMu sync.RWMutex
 
+	// configApplyMu is held by `config set` and reload from reading the new
+	// config until every reader has it. Two commands arriving together then
+	// apply one after the other, and the later one wins. They take it after
+	// the active mode has exited, since an on-exit step may itself change the
+	// config.
+	configApplyMu sync.Mutex
+
 	// enabledMu orders a pause or resume with its effects on the mode handler
 	// and the hotkey binder, so a stop racing a start cannot exit a mode the
 	// start allowed. It is taken before modes.Handler's lock and never under it.
 	enabledMu sync.Mutex
 
-	// New Architecture Services
+	// primingMu guards primingCancel, which stops the accessibility priming
+	// the last application activation started.
+	primingMu     sync.Mutex
+	primingCancel context.CancelFunc
+
+	// Services
 	hintService   *services.HintService
 	gridService   *services.GridService
 	actionService *services.ActionService
@@ -131,7 +149,7 @@ type App struct {
 	// setup functions and consumed by the shared entry points in
 	// observers.go. Closures keep platform types off this struct.
 	//
-	// observerMu guards the three: Run assigns them after the IPC server is
+	// observerMu guards the three. Run assigns them after the IPC server is
 	// already accepting a reload, and the reload path reads postReloadVerify.
 	observerMu        sync.Mutex
 	themeObserverStop func()

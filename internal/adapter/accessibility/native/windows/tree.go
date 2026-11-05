@@ -93,7 +93,7 @@ func (n *TreeNode) FindClickableElements(
 	return out
 }
 
-// Release is a no-op: Windows nodes hold no live COM references.
+// Release is a no-op, since Windows nodes hold no live COM references.
 func (n *TreeNode) Release(_ map[*Element]struct{}) {}
 
 // TreeOptions defines options for tree building.
@@ -101,12 +101,15 @@ type TreeOptions struct {
 	MaxDepth int
 	Bounds   image.Rectangle
 	logger   *zap.Logger
-	// configProvider answers the per-app visible check; nil means off.
+	// configProvider answers the per-app visible check. nil means off.
 	configProvider config.Provider
 	// Roles is the set of UIA control-type names to enumerate. An empty set
 	// falls back to the shipped defaults. It is applied during enumeration so
 	// unwanted controls are rejected before their properties are read.
 	Roles map[string]struct{}
+	// readState asks for each control's identifier and focused state, which
+	// only `neru query hints` reports.
+	readState bool
 }
 
 // DefaultTreeOptions returns the default tree options.
@@ -118,13 +121,12 @@ func DefaultTreeOptions(logger *zap.Logger) TreeOptions {
 	return TreeOptions{logger: logger}
 }
 
-// SetCache is a no-op on Windows: the UIA cache request is built inside every
+// SetCache is a no-op on Windows. The UIA cache request is built inside every
 // enumeration rather than handed in by the caller.
 func (o *TreeOptions) SetCache(_ any) {}
 
-// SetMaxDepth records the maximum tree depth. The UIA query has no depth
-// knob (TreeScope_Descendants is all or nothing), so the value is recorded and
-// not applied; hints.max_depth is declared inert on Windows for that reason.
+// SetMaxDepth sets the deepest control-view level enumeration reads, 0 for
+// unlimited.
 func (o *TreeOptions) SetMaxDepth(depth int) { o.MaxDepth = depth }
 
 // SetBundleID is a no-op on Windows.
@@ -138,6 +140,22 @@ func (o *TreeOptions) SetFilterFunc(_ func(*ElementInfo) bool) {}
 
 // SetRoles records the UIA control-type names to enumerate.
 func (o *TreeOptions) SetRoles(roles map[string]struct{}) { o.Roles = roles }
+
+// SetReadState records whether to read each control's identifier and focused
+// state.
+func (o *TreeOptions) SetReadState(readState bool) { o.readState = readState }
+
+// ignoreClickableCheckFor resolves hints.ignore_clickable_check for the
+// window's application, per-app override first.
+func (o *TreeOptions) ignoreClickableCheckFor(bundleID string) bool {
+	if o.configProvider == nil {
+		return false
+	}
+
+	cfg := o.configProvider.Get()
+
+	return cfg != nil && cfg.ShouldIgnoreClickableCheckForApp(bundleID)
+}
 
 // visibleCheckFor resolves hints.visible_check_enabled for the window's
 // application, per-app override first.
@@ -158,10 +176,11 @@ func (o *TreeOptions) visibleCheckFor(bundleID string) bool {
 // via UI Automation and returns a root node with one child per control. For
 // non-window elements (no HWND) it returns an empty root.
 //
-// The UIA query is one blocking COM call and cannot be interrupted, so the
-// context is honored at its edges: a deadline that has already passed skips
-// the query, and one that passes during it discards the result rather than
-// handing stale elements to a caller that has stopped waiting.
+// The default UIA query is one blocking COM call that cannot be interrupted,
+// so the context is checked before and after it. A deadline that has already
+// passed skips the query. One that passes during it discards the result
+// instead of handing stale elements to a caller that has stopped waiting. The
+// depth-limited walk also stops between its calls once the context is done.
 func BuildTree(ctx context.Context, root *Element, opts TreeOptions) (*TreeNode, error) {
 	if root == nil {
 		return &TreeNode{}, nil
@@ -184,10 +203,13 @@ func BuildTree(ctx context.Context, root *Element, opts TreeOptions) (*TreeNode,
 
 	started := time.Now()
 
-	controls := enumerateClickableElements(root.hwnd, enumerateOptions{
+	controls := enumerateClickableElements(ctx, root.hwnd, enumerateOptions{
 		frame:        winplatform.WindowFrame(root.hwnd),
 		roles:        opts.Roles,
+		maxDepth:     opts.MaxDepth,
+		anyState:     opts.ignoreClickableCheckFor(root.bundleIdentifier),
 		visibleCheck: opts.visibleCheckFor(root.bundleIdentifier),
+		readState:    opts.readState,
 	})
 
 	if ctx.Err() != nil {
@@ -202,12 +224,16 @@ func BuildTree(ctx context.Context, root *Element, opts TreeOptions) (*TreeNode,
 
 	for _, control := range controls {
 		info := &ElementInfo{
-			position:  control.bounds.Min,
-			size:      image.Pt(control.bounds.Dx(), control.bounds.Dy()),
-			title:     control.name,
-			role:      control.role,
-			isEnabled: true,
-			clickable: true,
+			position:    control.bounds.Min,
+			size:        image.Pt(control.bounds.Dx(), control.bounds.Dy()),
+			title:       control.name,
+			description: control.description,
+			value:       control.value,
+			identifier:  control.identifier,
+			role:        control.role,
+			isEnabled:   control.enabled,
+			isFocused:   control.focused,
+			clickable:   true,
 		}
 
 		children = append(children, &TreeNode{
@@ -230,13 +256,11 @@ func ProcessClickableNodes(root *TreeNode, _ config.HintsConfig) []*TreeNode {
 	return root.FindClickableElements(nil, nil, false)
 }
 
-// ReleaseTree is a no-op: Windows nodes hold no live COM references.
+// ReleaseTree is a no-op, since Windows nodes hold no live COM references.
 func ReleaseTree(_ *TreeNode) {}
 
-// ReleaseTreeExcept releases all AXUIElementRefs in the tree except those
-// belonging to the keep list. This prevents leaking CFRetain'd refs from
-// NeruGetChildren/NeruGetVisibleRows that are stored in tree nodes but never returned
-// to callers.
+// ReleaseTreeExcept releases the tree except the nodes in keep. Windows nodes
+// hold no live COM references, so nothing is freed.
 func ReleaseTreeExcept(tree *TreeNode, keep []*TreeNode) {
 	keepSet := make(map[*Element]struct{}, len(keep))
 	for _, node := range keep {

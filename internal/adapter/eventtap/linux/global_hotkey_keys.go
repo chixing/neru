@@ -5,14 +5,16 @@ package linux
 import (
 	"sort"
 	"strings"
+
+	"github.com/y3owk1n/neru/internal/domain/action"
 )
 
-// Canonicalizes hotkey chord strings into a stable, order-independent signature
-// so config keybindings and live evdev key events compare reliably.
-// Does NOT read devices or fire callbacks; that lives in the cgo listener.
+// This file canonicalizes hotkey chords into an order-independent signature so
+// config keybindings and live evdev key events compare equal. Reading devices
+// and firing callbacks is the cgo listener's job.
 //
-// Canonical base-key spellings shared between config parsing and the evdev
-// decoder so both sides compare equal without drifting on string literals.
+// The constants are the base-key spellings config parsing and the evdev decoder
+// share, so the two sides cannot drift on string literals.
 const (
 	canonicalKeyReturn    = "return"
 	canonicalKeySpace     = "space"
@@ -21,16 +23,16 @@ const (
 	canonicalKeyBackspace = "backspace"
 
 	// canonicalKeyDelete is the spelling a configured "Delete" arrives as. It
-	// is a binding-side name only: canonicalBindingBaseKey folds it to
+	// is a binding-side name only, because canonicalBindingBaseKey folds it to
 	// canonicalKeyBackspace, so no stored chord ever carries it.
 	canonicalKeyDelete = "delete"
 )
 
 // canonicalBindingSignature is canonicalChordSignature for a chord read from
 // the config, the side that can spell "Delete". In [hotkeys] that name means
-// the backspace key on every platform — kVK_Delete on macOS, VK_BACK on
-// Windows, XK_BackSpace on X11 — so it is folded to the signature a press of
-// that key produces. A live press never takes this fold: the forward-delete
+// the backspace key on every platform, which is kVK_Delete on macOS, VK_BACK on
+// Windows and XK_BackSpace on X11. So it is folded to the signature a press of
+// that key produces. A live press never takes this fold. The forward-delete
 // key keeps the "delete" signature, which no configured chord can carry, and
 // so matches nothing, as it does on the other platforms.
 func canonicalBindingSignature(chord string) string {
@@ -39,15 +41,15 @@ func canonicalBindingSignature(chord string) string {
 
 // canonicalChordSignature normalizes a chord such as "Ctrl+Shift+G" or the
 // evdev-decoded "Shift+Ctrl+g" into a stable signature like "ctrl+shift+g":
-// modifiers lowercased, de-duplicated and sorted, base key lowercased/normalized.
+// modifiers lowercased, de-duplicated and sorted, and the base key normalized.
 // This lets the config side and the live keyboard side match regardless of the
 // order or casing each produced.
 func canonicalChordSignature(chord string) string {
 	return chordSignature(chord, canonicalBaseKey)
 }
 
-// chordSignature is the normalization both signatures share; baseKey is how
-// the non-modifier key is spelled.
+// chordSignature is the normalization both signatures share. baseKey spells
+// the non-modifier key.
 func chordSignature(chord string, baseKey func(string) string) string {
 	chord = strings.TrimSpace(chord)
 	if chord == "" {
@@ -55,9 +57,6 @@ func chordSignature(chord string, baseKey func(string) string) string {
 	}
 
 	parts := strings.Split(chord, "+")
-	if len(parts) == 0 {
-		return ""
-	}
 
 	base := baseKey(parts[len(parts)-1])
 	if base == "" {
@@ -87,13 +86,16 @@ func chordSignature(chord string, baseKey func(string) string) string {
 }
 
 // canonicalModifierToken maps the many modifier spellings Neru and the various
-// platforms use down to one of four canonical tokens. "Primary" resolves to
-// ctrl here because it is already Ctrl on Linux by the time hotkeys register.
+// platforms use down to one of four canonical tokens. Hotkeys register with
+// Primary already resolved. A "primary" that still reaches this function
+// resolves to the modifier general.primary_modifier set.
 func canonicalModifierToken(token string) string {
 	switch strings.ToLower(strings.TrimSpace(token)) {
+	case "primary":
+		return canonicalModifierToken(action.PrimaryModifier().Canonical())
 	case evdevModifierShift:
 		return evdevModifierShift
-	case evdevModifierCtrl, evdevModifierAliasControl, "primary":
+	case evdevModifierCtrl, evdevModifierAliasControl:
 		return evdevModifierCtrl
 	case evdevModifierAlt, evdevModifierAliasOption, "opt":
 		return evdevModifierAlt
@@ -105,7 +107,7 @@ func canonicalModifierToken(token string) string {
 }
 
 // canonicalBindingBaseKey is canonicalBaseKey plus the fold
-// canonicalBindingSignature describes: "Delete" names the backspace key.
+// canonicalBindingSignature describes, in which "Delete" names the backspace key.
 func canonicalBindingBaseKey(base string) string {
 	switch strings.ToLower(strings.TrimSpace(base)) {
 	case canonicalKeyDelete:
@@ -116,7 +118,7 @@ func canonicalBindingBaseKey(base string) string {
 }
 
 // canonicalBaseKey normalizes the non-modifier key. Single characters are
-// lowercased; common named keys are folded to one spelling.
+// lowercased, and common named keys are folded to one spelling.
 func canonicalBaseKey(base string) string {
 	lowered := strings.ToLower(strings.TrimSpace(base))
 

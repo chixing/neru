@@ -20,8 +20,11 @@ var HintsCmd = BuildModeCommand(ModeConfig{
   instead of navigating by hint keys directly.
 
   Use --hide-on-empty-search with --search to hide all hints when the
-  search query is empty. Hints appear only as you type a query, making
-  it easier to focus on matching results.
+  search query is empty. Hints appear only as you type a query.
+
+  In a search, a label typed after a space narrows the matches to that
+  label. Use --confirm-on-label to act on the match as soon as the label
+  leaves one, without pressing Return.
 
   Use --exit-on-unmatched to exit hints mode when a pressed key does not
   start any hint label.
@@ -31,28 +34,34 @@ var HintsCmd = BuildModeCommand(ModeConfig{
     --text "Submit,Cancel"        Only hint elements containing "Submit" or "Cancel"
 
   Use --strategy vision to detect elements by recognizing what is on screen
-  instead of walking the accessibility tree — the Vision framework on macOS,
-  tesseract OCR on Linux, where it finds text only. Not available on Windows.
+  instead of walking the accessibility tree. It uses the Vision framework on
+  macOS, tesseract OCR on Linux and Windows.Media.Ocr on Windows, with button
+  shapes from the contour detector on both.
 
   Use --strategy contour to detect interactive targets (buttons, icons,
   text) by edge and contour analysis of the focused window's pixels, an
   algorithm ported from wl-kbptr. Faster than vision and needs no OCR engine,
-  but yields no text to search. Not available on Windows.
+  but yields no text to search.
 
-  Both capture strategies scan the focused window. Use --capture-scope screen
+  Use --strategy segment to split the focused window's pixels into controls,
+  pictures and words. It puts one hint on each button or field and on each
+  word, so every link is reachable, including controls drawn over a photo.
+  It is faster than contour, has no options to tune, and likewise yields no
+  text to search.
+
+  The capture strategies scan the focused window. Use --capture-scope screen
   to scan the whole active screen instead, so notifications, panels and
   adjacent windows get hints too.
 
   Use --split-word to split detected text into word-level regions (requires
   vision strategy).
 
-  Use --debug to probe the focused window and print the clickable elements
-  that would be hinted (count plus a sample) without showing the overlay.
-  This is handy for verifying the platform accessibility pipeline.
+  To list what hints would label without showing the overlay, run
+  'neru query hints'.
 
   Use --label-direction to override the configured hint label enumeration
   for this activation. "normal" (default) uses the prefix-avoidance
-  algorithm and prefers shorter labels; "reverse" spreads labels across
+  algorithm and prefers shorter labels. "reverse" spreads labels across
   the alphabet so same-prefix labels never cluster.
 
   Examples:
@@ -61,16 +70,15 @@ var HintsCmd = BuildModeCommand(ModeConfig{
     neru hints --action left_click --repeat  Click multiple elements in sequence
     neru hints --search                      Start with search input shown
     neru hints --search --hide-on-empty-search  Start search with hints hidden until you type
+    neru hints --action left_click --search --confirm-on-label  Click as soon as a typed label leaves one match
     neru hints --action left_click --exit-on-unmatched Exit overlay if key matches no hint
     neru hints --role button                 Hint only buttons
     neru hints --strategy vision             Detect elements by screen recognition
     neru hints --strategy contour           Detect buttons and icons via contour analysis
     neru hints --strategy contour --capture-scope screen  Hint the whole screen, not just the window
+    neru hints --strategy segment           Detect controls and words from pixels
     neru hints --strategy vision --split-word  Use vision strategy with word-level splitting
-    neru hints --debug                       Print detected elements, no overlay (used on windows),
     neru hints --label-direction reverse     Use spread labels for this run`,
-
-	SupportDebug: true,
 })
 
 func init() {

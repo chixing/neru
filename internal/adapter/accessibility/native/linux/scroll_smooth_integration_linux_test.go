@@ -14,12 +14,13 @@ import (
 
 // probeNotchPixels is what this test calls one wheel notch. It is stated here
 // rather than taken from the package so the measurement does not inherit the
-// conversion it is checking; TestScrollAtCursor_ConvertsPixelsToNotchesTheWayTheProbeExpects
-// fails if the two ever disagree.
+// conversion it is checking.
+// TestScrollAtCursor_ConvertsPixelsToNotchesTheWayTheProbeExpects fails if the
+// two ever disagree.
 const probeNotchPixels = 30
 
 // axisSourceContinuous is wl_pointer.axis_source's `continuous` member, spelled
-// out here rather than imported for the same reason: this is the independent
+// out here rather than imported for the same reason. This is the independent
 // statement of what has to arrive on the wire.
 const axisSourceContinuous = 2
 
@@ -31,7 +32,7 @@ func (f fixedConfig) Get() *config.Config { return f.cfg }
 
 // requireDesktop skips unless this run opted into tests that drive the real
 // desktop. `just test-desktop` sets the variable, and the headless-sway CI leg
-// is what runs it; plain `just test` stays hands-off the machine.
+// is what runs it. Plain `just test` stays hands-off the machine.
 func requireDesktop(t *testing.T) {
 	t.Helper()
 
@@ -45,7 +46,7 @@ func requireDesktop(t *testing.T) {
 }
 
 // TestScrollAtCursor_ConvertsPixelsToNotchesTheWayTheProbeExpects keeps the
-// measurement honest: the two tests below read a delivered value against
+// measurement honest. The two tests below read a delivered value against
 // probeNotchPixels, which means nothing if the injection path scales by
 // something else.
 func TestScrollAtCursor_ConvertsPixelsToNotchesTheWayTheProbeExpects(t *testing.T) {
@@ -100,7 +101,7 @@ func aimAtTheProbe(t *testing.T, probe *scrollProbe) {
 }
 
 // TestScrollAtCursor_DeliversSubNotchStepsWithSmoothScroll is the measurement
-// the smooth-scroll work rests on: with smooth_scroll.enabled, one scroll
+// the smooth-scroll work rests on. With smooth_scroll.enabled, one scroll
 // reaches a real application as a sequence of continuous deltas, at least one
 // of which is shorter than a wheel notch and none of which carries a notch
 // count.
@@ -124,7 +125,7 @@ func TestScrollAtCursor_DeliversSubNotchStepsWithSmoothScroll(t *testing.T) {
 	SetConfigProvider(fixedConfig{cfg: cfg})
 	t.Cleanup(func() { SetConfigProvider(nil) })
 
-	// One notch's worth of scroll over sixteen steps: every step is a
+	// One notch's worth of scroll over sixteen steps. Every step is a
 	// sixteenth of a notch, so a backend that could only move in notches would
 	// deliver one event, or none.
 	err := ScrollAtCursor(0, -probeNotchPixels, 0)
@@ -204,5 +205,61 @@ func TestScrollAtCursor_DeliversWholeNotchesWithoutSmoothScroll(t *testing.T) {
 		if math.Abs(event.value) < probeNotchPixels {
 			t.Errorf("an unanimated scroll delivered %v, less than one notch", event.value)
 		}
+	}
+}
+
+// TestScrollAtCursor_ScrollsLeftOnPositiveDeltaX pins the horizontal sign
+// where an application reads it. A positive deltaX is a scroll to the left
+// everywhere in Neru. Wayland reads a positive horizontal axis as right, so the
+// value the application receives has the opposite sign of the deltaX passed in.
+func TestScrollAtCursor_ScrollsLeftOnPositiveDeltaX(t *testing.T) {
+	requireDesktop(t)
+
+	tests := []struct {
+		name   string
+		deltaX int
+		want   string
+	}{
+		{name: "positive deltaX scrolls left", deltaX: probeNotchPixels, want: "left"},
+		{name: "negative deltaX scrolls right", deltaX: -probeNotchPixels, want: "right"},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			probe := startProbe(t)
+			aimAtTheProbe(t, probe)
+
+			cfg := config.DefaultConfig()
+			cfg.SmoothScroll.Enabled = false
+
+			SetConfigProvider(fixedConfig{cfg: cfg})
+			t.Cleanup(func() { SetConfigProvider(nil) })
+
+			err := ScrollAtCursor(testCase.deltaX, 0, 0)
+			if err != nil {
+				t.Fatalf("ScrollAtCursor(%d, 0) failed: %v", testCase.deltaX, err)
+			}
+
+			pump(probe, 2*time.Second)
+
+			var total float64
+			for _, event := range probe.axisEvents() {
+				total += event.horizontal
+			}
+
+			if total == 0 {
+				t.Fatal("the probe received no horizontal scroll at all")
+			}
+
+			got := "left"
+			if total > 0 {
+				got = "right"
+			}
+
+			if got != testCase.want {
+				t.Errorf("ScrollAtCursor(%d, 0) scrolled %s by %v, want %s",
+					testCase.deltaX, got, math.Abs(total), testCase.want)
+			}
+		})
 	}
 }

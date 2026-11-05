@@ -14,8 +14,8 @@ import (
 // TestResolveCaptureRegion covers the one piece of capture logic that is not
 // native: turning the caller's request into the concrete rectangle the backends
 // receive. An empty rectangle is the port's CaptureScreen contract ("the
-// current screen"), anything else is a region the caller wants honored —
-// grabbing the whole display for a focused window is the difference between
+// current screen"), and anything else is a region the caller wants honored.
+// Grabbing the whole display for a focused window is the difference between
 // usable and not on a 4K screen.
 func TestResolveCaptureRegion(t *testing.T) {
 	screen := image.Rect(0, 0, 3840, 2160)
@@ -113,7 +113,7 @@ func TestCaptureScreenRegion_UnknownBackendReportsNotSupported(t *testing.T) {
 		{name: "other wayland", backend: "wayland-other", want: "wayland-other"},
 		{name: "no backend detected", backend: "", want: "no display backend"},
 		// What DetectLinuxBackend actually returns for a session it could not
-		// identify — the label the production caller passes, and the one an
+		// identify. It is the label the production caller passes, and the one an
 		// earlier version of this code missed.
 		{name: "detection answered unknown", backend: "unknown", want: "no display backend"},
 	}
@@ -260,6 +260,45 @@ func TestCaptureError(t *testing.T) {
 					"captureError said %q, which does not mention %q",
 					err.Error(),
 					testCase.wantSubstring,
+				)
+			}
+		})
+	}
+}
+
+// TestCaptureScreenRegion_GivesUpWhenTheDeadlinePassesWhileTheOverlayComesOff
+// pins the check each capture makes once the overlay is off. Taking the
+// overlay off waits for its render lock, which can outlast the caller's
+// deadline. A capture that read the screen anyway would hold that lock past
+// the deadline too. The hider here ends ctx before it runs the capture.
+// With no display set, a capture that skipped the check would answer
+// CodeNotSupported instead.
+func TestCaptureScreenRegion_GivesUpWhenTheDeadlinePassesWhileTheOverlayComesOff(t *testing.T) {
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+
+	for _, backend := range []string{backendX11, backendWaylandWlroots} {
+		t.Run(backend, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			SetOwnWindowsHider(func(capture func() error) error {
+				cancel()
+
+				return capture()
+			})
+			t.Cleanup(func() { SetOwnWindowsHider(nil) })
+
+			img, err := CaptureScreenRegion(ctx, backend, image.Rect(0, 0, 10, 10))
+			if img != nil {
+				t.Error("CaptureScreenRegion returned an image after its deadline passed")
+			}
+
+			if code := derrors.GetCode(err); code != derrors.CodeContextCanceled {
+				t.Errorf(
+					"CaptureScreenRegion returned code %q, want %q",
+					code,
+					derrors.CodeContextCanceled,
 				)
 			}
 		})

@@ -19,7 +19,7 @@ import (
 // Service management on Windows is a Task Scheduler task with a logon trigger,
 // registered for the current user. A Run key would start the daemon at login
 // too, but it cannot say whether the daemon is running, stop it, or start it
-// again — the four verbs besides install and uninstall — so the scheduler is
+// again (the four verbs besides install and uninstall), so the scheduler is
 // what gives `status`, `start`, `stop` and `restart` something real to mean.
 //
 // CGO is off on Windows, so the scheduler is driven through raw COM vtable
@@ -34,8 +34,8 @@ const (
 	serviceTaskPath = `\Neru`
 
 	// serviceTaskMarker is written into the task's description, and is the
-	// only positive evidence that a \Neru task is Neru's to stop and delete —
-	// a user or a deployment tool can register a task by the same name.
+	// only positive evidence that a \Neru task is Neru's to stop and delete. A
+	// user or a deployment tool can register a task by the same name.
 	serviceTaskMarker = "Installed by `neru services install`"
 )
 
@@ -46,7 +46,7 @@ const (
 // starts with that user's session and only that one. ExecutionTimeLimit PT0S
 // lifts the scheduler's default three-day limit on a running task, which would
 // otherwise kill the daemon on the fourth day. Priority 4 is the normal process
-// class with the main thread above normal; the scheduler's own default, 7, is
+// class with the main thread above normal. The scheduler's own default, 7, is
 // below-normal, and latency is the product. RestartOnFailure is the counterpart
 // of launchd's KeepAlive and systemd's Restart=on-failure.
 const serviceTaskTemplate = `<?xml version="1.0" encoding="UTF-16"?>
@@ -181,8 +181,8 @@ const (
 	taskStateReady    = 3
 	taskStateRunning  = 4
 
-	// Vtable slots. IUnknown holds 0–2 and IDispatch 3–6 on every interface
-	// here; the rest follow the order in taskschd.h.
+	// Vtable slots. IUnknown holds 0 to 2 and IDispatch 3 to 6 on every
+	// interface here. The rest follow the order in taskschd.h.
 	vtRelease = 2
 
 	vtServiceGetFolder = 7
@@ -194,6 +194,7 @@ const (
 
 	vtTaskGetState   = 9
 	vtTaskGetEnabled = 10
+	vtTaskPutEnabled = 11
 	vtTaskRun        = 12
 	vtTaskGetXML     = 20
 	vtTaskStop       = 23
@@ -210,7 +211,7 @@ func guidMust(value string) windows.GUID {
 
 // variant is a VARIANT laid out for 64-bit Windows. Every VARIANT the
 // scheduler takes here is VT_EMPTY, and every one is passed by value, which on
-// x64 and ARM64 means a pointer to a copy: the struct is larger than a
+// x64 and ARM64 means a pointer to a copy. The struct is larger than a
 // register, so both ABIs pass it by reference. The copy lives in a variable
 // the caller owns across the call and keeps alive after it, so the collector
 // cannot take it back while COM reads it.
@@ -228,7 +229,7 @@ func (v *variant) ptr() uintptr {
 // length prefix, the UTF-16 text, and a NUL terminator, with the pointer
 // handed out aimed at the text. Every string that crosses into COM here is
 // copied by the callee before the call returns, so nothing needs SysAllocString
-// or a matching free; the buffer only has to stay alive across the call, which
+// or a matching free. The buffer only has to stay alive across the call, which
 // is what the runtime.KeepAlive after each call is for.
 type bstr struct {
 	buf []uint16
@@ -276,10 +277,18 @@ func readBSTR(value *uint16) string {
 	return text
 }
 
-// discardCall consumes a fire-and-forget COM call result; the release and
+// discardCall consumes a fire-and-forget COM call result. The release and
 // free calls it sinks have no actionable failure path.
 func discardCall(uintptr, uintptr, error) {}
 
+// comCall invokes the method at vtable slot index on the COM object this.
+//
+// The out-parameter addresses in args are uintptrs, which the runtime does
+// not track. If the stack grows before SyscallN runs, the caller's variables
+// move and COM writes into the old frame. //go:uintptrescapes moves them to
+// the heap and keeps them alive for the call, as it does for syscall.Proc.Call.
+//
+//go:uintptrescapes
 func comCall(this unsafe.Pointer, index int, args ...uintptr) uintptr {
 	vtbl := *(*unsafe.Pointer)(this)
 	method := *(*uintptr)(unsafe.Add(vtbl, uintptr(index)*unsafe.Sizeof(uintptr(0))))
@@ -306,7 +315,7 @@ func release(object unsafe.Pointer) {
 // hresultError turns a failed COM call into an error that quotes the system's
 // own explanation. FormatMessage knows the scheduler's SCHED_E_* codes as well
 // as the Win32 ones, so "The task XML is malformed" reaches the user rather
-// than a bare number — and the number is kept for the ones it does not know.
+// than a bare number. The number is kept for the ones it does not know.
 func hresultError(attempt string, hresult uintptr) error {
 	return derrors.Newf(
 		derrors.CodeExecFailed,
@@ -324,8 +333,8 @@ type taskFolder struct {
 }
 
 // withTaskFolder connects to the scheduler and runs body against its root
-// folder. All COM work happens on a single locked OS thread — initialize,
-// create, connect, body, release — and nothing COM escapes the closure.
+// folder. All COM work happens on a single locked OS thread (initialize,
+// create, connect, body, release), and nothing COM escapes the closure.
 func withTaskFolder(body func(taskFolder) error) error {
 	runtime.LockOSThread()
 
@@ -335,7 +344,7 @@ func withTaskFolder(body func(taskFolder) error) error {
 
 	// S_OK and S_FALSE mean this call owns initialization on the thread and
 	// must balance it with CoUninitialize. RPC_E_CHANGED_MODE means COM is
-	// already up in another mode; leave it alone.
+	// already up in another mode, so leave it alone.
 	switch uint32(hresult) {
 	case hresultSOK, hresultSFalse:
 		defer func() { discardCall(procCoUninitialize.Call()) }()
@@ -513,6 +522,26 @@ func taskEnabled(task unsafe.Pointer) (bool, error) {
 	return enabled != 0, nil
 }
 
+// variantTrue is VARIANT_TRUE, a VARIANT_BOOL of -1, in the low 16 bits of
+// the argument register.
+const variantTrue = 0xFFFF
+
+// setTaskEnabled is IRegisteredTask::put_Enabled. The scheduler stores the
+// flag, so a disabled task stays off at every login until something enables it.
+func setTaskEnabled(task unsafe.Pointer, enabled bool) error {
+	var value uintptr
+	if enabled {
+		value = variantTrue
+	}
+
+	hresult := comCall(task, vtTaskPutEnabled, value)
+	if failed(hresult) {
+		return hresultError("set whether the task is enabled", hresult)
+	}
+
+	return nil
+}
+
 // taskXML reads IRegisteredTask::get_Xml, the definition as registered.
 func taskXML(task unsafe.Pointer) (string, error) {
 	var xml *uint16
@@ -559,7 +588,7 @@ func stopTask(task unsafe.Pointer) error {
 // requireOwnTask stops uninstall from stopping or deleting a \Neru task
 // somebody else registered: a deployment tool, or a user who set one up by
 // hand before this feature existed. The path says nothing about who wrote it,
-// so ownership is read out of the definition — the marker line Neru writes into
+// so ownership is read out of the definition. The marker line Neru writes into
 // the description is the one thing only an install puts there.
 func requireOwnTask(task unsafe.Pointer, path string) error {
 	xml, err := taskXML(task)
@@ -667,7 +696,7 @@ func uninstallServiceTask(path string) error {
 			return err
 		}
 
-		// Reported rather than swallowed: a stop that fails leaves the daemon
+		// Reported rather than swallowed, because a stop that fails leaves the daemon
 		// running while the CLI would otherwise print success.
 		err = stopTask(task)
 		if err != nil {
@@ -689,8 +718,8 @@ func errNotInstalled(action, path string) error {
 	)
 }
 
-// driveServiceTask runs verb against the installed task, or refuses when there
-// is none.
+// driveServiceTask runs verb against the installed task. It refuses when there
+// is none, and, like uninstall, when Neru did not register the task.
 func driveServiceTask(action, path string, verb func(unsafe.Pointer) error) error {
 	return withTaskFolder(func(folder taskFolder) error {
 		task, found, err := folder.getTask(path)
@@ -704,12 +733,54 @@ func driveServiceTask(action, path string, verb func(unsafe.Pointer) error) erro
 
 		defer release(task)
 
+		err = requireOwnTask(task, path)
+		if err != nil {
+			return err
+		}
+
 		return verb(task)
 	})
 }
 
+// enableAndRunTask undoes disableAndStopTask. It enables the task again, so it
+// runs at login too, and runs it now.
+func enableAndRunTask(task unsafe.Pointer) error {
+	err := setTaskEnabled(task, true)
+	if err != nil {
+		return err
+	}
+
+	return runTask(task)
+}
+
+// disableAndStopTask disables the task and ends it, so it stays stopped across
+// logins until enableAndRunTask. Ending it alone would last only until the
+// next login.
+func disableAndStopTask(task unsafe.Pointer) error {
+	err := setTaskEnabled(task, false)
+	if err != nil {
+		return err
+	}
+
+	return stopTask(task)
+}
+
+// restartTask refuses a task that disableAndStopTask disabled, since restarting
+// it would run the daemon while it stays off at login.
 func restartTask(task unsafe.Pointer) error {
-	err := stopTask(task)
+	enabled, err := taskEnabled(task)
+	if err != nil {
+		return err
+	}
+
+	if !enabled {
+		return derrors.New(
+			derrors.CodeInvalidInput,
+			"the service is stopped; run `neru services start` to start it",
+		)
+	}
+
+	err = stopTask(task)
 	if err != nil {
 		return err
 	}
@@ -726,11 +797,11 @@ func uninstallService() error {
 }
 
 func startService() error {
-	return driveServiceTask("start", serviceTaskPath, runTask)
+	return driveServiceTask("start", serviceTaskPath, enableAndRunTask)
 }
 
 func stopService() error {
-	return driveServiceTask("stop", serviceTaskPath, stopTask)
+	return driveServiceTask("stop", serviceTaskPath, disableAndStopTask)
 }
 
 func restartService() error {
@@ -746,7 +817,7 @@ type serviceTaskState struct {
 	path string
 	// state is the scheduler's TASK_STATE. enabled is the task's Enabled flag
 	// and triggerEnabled the logon trigger's own, which Task Scheduler's window
-	// lets a person switch off separately; both have to hold for the task to
+	// lets a person switch off separately. Both have to hold for the task to
 	// start at login.
 	state          int32
 	enabled        bool
@@ -809,7 +880,7 @@ func describeServiceStatus(state serviceTaskState) string {
 	return "Service installed: " + taskStateWord(state.state) + ", " + enabled + " at login"
 }
 
-func statusServiceTask(path string) string {
+func statusServiceTask(path string) serviceStatus {
 	state := serviceTaskState{path: path}
 
 	err := withTaskFolder(func(folder taskFolder) error {
@@ -846,12 +917,27 @@ func statusServiceTask(path string) string {
 		return nil
 	})
 	if err != nil {
-		return "Service status unavailable: " + err.Error()
+		return serviceStatus{
+			Supported: true,
+			Message:   "Service status unavailable: " + err.Error(),
+			Error:     err.Error(),
+		}
 	}
 
-	return describeServiceStatus(state)
+	return reportServiceStatus(state)
 }
 
-func statusService() string {
+// reportServiceStatus is a gathered state as `neru services status` reports it.
+func reportServiceStatus(state serviceTaskState) serviceStatus {
+	return serviceStatus{
+		Supported:     true,
+		Installed:     state.installed,
+		Running:       state.state == taskStateRunning,
+		StartsAtLogin: state.enabled && state.triggerEnabled,
+		Message:       describeServiceStatus(state),
+	}
+}
+
+func statusService() serviceStatus {
 	return statusServiceTask(serviceTaskPath)
 }

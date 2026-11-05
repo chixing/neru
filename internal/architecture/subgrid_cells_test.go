@@ -8,30 +8,35 @@ import (
 )
 
 // subgridCellDecider is the one package allowed to work out where the cells of
-// a subgrid fall: it is where SubgridCells lives, and the manager there is one
+// a subgrid fall. It is where SubgridCells lives, and the manager there is one
 // of the callers whose answer has to be that one.
 const subgridCellDecider = "internal/domain/grid"
 
 // subgridKeySetCall and subgridCellSetCall are the two answers a subgrid is
-// drawn from — which keys it has, and which rectangles they sit on.
+// drawn from: which keys it has, and which rectangles they sit on.
 const (
 	subgridKeySetCall  = "SubgridKeys"
 	subgridCellSetCall = "SubgridCells"
 )
 
+// subgridDrawBackendFloor is the fewest subgrid draws this pin expects to read,
+// one in each of the macOS, Linux and Windows overlays. A walk that stops
+// recognizing any one backend falls below it.
+const subgridDrawBackendFloor = 3
+
 // TestSubgridCellsAreComputedOnce keeps the cell a person sees and the point
 // the cursor lands in the same rectangle. The breakpoint arithmetic that
-// divides a grid cell into a subgrid was written four times — once in the
-// manager, deciding where the cursor goes, and once in each overlay backend,
-// deciding where the cell is drawn — with the 0.5 it rounds by declared under
-// three names. They agreed by coincidence, and a copy that drifted would draw
+// divides a grid cell into a subgrid was written four times, with the 0.5 it
+// rounds by declared under three names. One copy was in the manager, deciding
+// where the cursor goes, and one in each overlay backend, deciding where the
+// cell is drawn. They agreed by coincidence, and a copy that drifted would draw
 // a cell in one place and click in another with no test to notice (#1287).
 //
 // The shape it catches is a backend that asks which keys a subgrid has and
-// then works out its own rectangles for them: outside the package that owns
+// then works out its own rectangles for them. Outside the package that owns
 // both answers, the two calls travel together. That is a tripwire on the way
-// back to a second implementation rather than proof there is only one — a
-// backend that called SubgridCells and then ignored it would pass — but it is
+// back to a second implementation rather than proof there is only one, since a
+// backend that called SubgridCells and then ignored it would pass. But it is
 // the check that reaches the Linux and Windows drawing code from a macOS host,
 // which no unit test on this machine compiles.
 func TestSubgridCellsAreComputedOnce(t *testing.T) {
@@ -81,11 +86,10 @@ func TestSubgridCellsAreComputedOnce(t *testing.T) {
 
 	// Every backend renaming its draw would otherwise leave this passing over
 	// nothing, which is the failure mode a guardrail can least afford.
-	if checked == 0 {
-		t.Errorf(
-			"found no function outside %s calling %s; the walk is broken and this "+
-				"check would pass vacuously",
-			subgridCellDecider, subgridKeySetCall,
-		)
-	}
+	assertWalkedAtLeast(
+		t,
+		"functions outside "+subgridCellDecider+" calling "+subgridKeySetCall,
+		checked,
+		subgridDrawBackendFloor,
+	)
 }

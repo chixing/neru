@@ -1,7 +1,6 @@
 package ipcctrl
 
 import (
-	"context"
 	"slices"
 	"testing"
 
@@ -9,11 +8,11 @@ import (
 	"github.com/y3owk1n/neru/internal/domain"
 )
 
-// probeCommand builds a probe request the way the CLI sends one: the action
+// probeCommand builds a probe request the way the CLI sends one. The action
 // names the probe, and the arguments carry only the flags that decide which
 // elements are collected.
 func probeCommand(args ...string) ipc.Command {
-	return ipc.Command{Action: domain.CommandHintsProbe, Args: args}
+	return ipc.Command{Action: domain.CommandQueryHints, Args: args}
 }
 
 func TestExtractProbeOptions_ReadsEveryCollectionFlag(t *testing.T) {
@@ -23,6 +22,7 @@ func TestExtractProbeOptions_ReadsEveryCollectionFlag(t *testing.T) {
 		"--role=AXButton,AXLink",
 		"--text=OK",
 		"--strategy=vision",
+		"--label-direction=reverse",
 		"--split-word",
 	))
 	if resp != nil {
@@ -39,6 +39,10 @@ func TestExtractProbeOptions_ReadsEveryCollectionFlag(t *testing.T) {
 
 	if opts.Strategy != domain.StrategyVision {
 		t.Errorf("Strategy = %q, want %q", opts.Strategy, domain.StrategyVision)
+	}
+
+	if opts.LabelDirection != domain.LabelDirectionReverse {
+		t.Errorf("LabelDirection = %q, want %q", opts.LabelDirection, domain.LabelDirectionReverse)
 	}
 
 	if !opts.SplitWord {
@@ -58,7 +62,6 @@ func TestExtractProbeOptions_RefusesActivationFlags(t *testing.T) {
 		flagToggle,
 		"--on-exit=scroll",
 		"--search",
-		"--label-direction=reverse",
 		"--cursor-selection-mode=hold",
 		leftClick,
 	} {
@@ -76,7 +79,7 @@ func TestExtractProbeOptions_RefusesActivationFlags(t *testing.T) {
 func TestExtractProbeOptions_RefusesAMissingValue(t *testing.T) {
 	handler := &ModesHandler{}
 
-	for _, arg := range []string{"--role", "--text", "--strategy"} {
+	for _, arg := range []string{"--role", "--text", "--strategy", "--label-direction"} {
 		t.Run(arg, func(t *testing.T) {
 			_, resp := handler.extractProbeOptions(probeCommand(arg))
 			if resp == nil {
@@ -86,28 +89,19 @@ func TestExtractProbeOptions_RefusesAMissingValue(t *testing.T) {
 	}
 }
 
-func TestExtractProbeOptions_RefusesAnInvalidStrategy(t *testing.T) {
+func TestExtractProbeOptions_RefusesAnInvalidValue(t *testing.T) {
 	handler := &ModesHandler{}
 
-	_, resp := handler.extractProbeOptions(probeCommand("--strategy=telepathy"))
-	if resp == nil {
-		t.Fatal("an unknown strategy was accepted")
-	}
+	for _, arg := range []string{"--strategy=telepathy", "--label-direction=sideways"} {
+		t.Run(arg, func(t *testing.T) {
+			_, resp := handler.extractProbeOptions(probeCommand(arg))
+			if resp == nil {
+				t.Fatalf("%s was accepted", arg)
+			}
 
-	if resp.Code != ipc.CodeInvalidInput {
-		t.Errorf("code = %s, want %s", resp.Code, ipc.CodeInvalidInput)
-	}
-}
-
-// The probe is registered under its own action, so a caller reaches it without
-// spelling a mode command at all.
-func TestRegisterHandlers_ExposesTheProbeAsItsOwnCommand(t *testing.T) {
-	handler := &ModesHandler{}
-	handlers := map[string]func(context.Context, ipc.Command) ipc.Response{}
-
-	handler.RegisterHandlers(handlers)
-
-	if _, registered := handlers[domain.CommandHintsProbe]; !registered {
-		t.Errorf("%q is not registered as a command", domain.CommandHintsProbe)
+			if resp.Code != ipc.CodeInvalidInput {
+				t.Errorf("code = %s, want %s", resp.Code, ipc.CodeInvalidInput)
+			}
+		})
 	}
 }

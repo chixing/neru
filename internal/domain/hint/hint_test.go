@@ -3,6 +3,7 @@ package hint_test
 import (
 	"context"
 	"image"
+	"maps"
 	"testing"
 
 	"github.com/y3owk1n/neru/internal/domain/element"
@@ -107,17 +108,15 @@ func TestHint_Methods(t *testing.T) {
 	elem, _ := element.NewElement("test", image.Rect(10, 10, 50, 50), element.RoleButton)
 	testHint, _ := hint.NewHint("AS", elem, image.Point{X: 30, Y: 30})
 
-	// Test Element()
 	if testHint.Element() != elem {
 		t.Error("Element() returned wrong element")
 	}
 
-	// Test MatchedPrefix() - initially empty
+	// MatchedPrefix starts empty.
 	if testHint.MatchedPrefix() != "" {
 		t.Errorf("MatchedPrefix() = %q, want empty string", testHint.MatchedPrefix())
 	}
 
-	// Test WithMatchedPrefix()
 	hintWithPrefix := testHint.WithMatchedPrefix("A")
 	if hintWithPrefix.MatchedPrefix() != "A" {
 		t.Errorf(
@@ -127,12 +126,11 @@ func TestHint_Methods(t *testing.T) {
 		)
 	}
 
-	// Test that WithMatchedPrefix returns a new instance
+	// WithMatchedPrefix returns a new instance.
 	if hintWithPrefix == testHint {
 		t.Error("WithMatchedPrefix() should return a new instance")
 	}
 
-	// Test Bounds()
 	bounds := testHint.Bounds()
 
 	expectedBounds := image.Rect(10, 10, 50, 50)
@@ -140,7 +138,6 @@ func TestHint_Methods(t *testing.T) {
 		t.Errorf("Bounds() = %v, want %v", bounds, expectedBounds)
 	}
 
-	// Test IsVisible()
 	screenBounds := image.Rect(0, 0, 100, 100)
 	if !testHint.IsVisible(screenBounds) {
 		t.Error("IsVisible() should return true for element within screen bounds")
@@ -151,7 +148,6 @@ func TestHint_Methods(t *testing.T) {
 		t.Error("IsVisible() should return false for element outside screen bounds")
 	}
 
-	// Test MatchesLabel()
 	if !testHint.MatchesLabel("AS") {
 		t.Error("MatchesLabel() should return true for exact match")
 	}
@@ -165,7 +161,7 @@ func TestHint_Methods(t *testing.T) {
 	}
 }
 
-func TestCollection_FilterByText_Normalizes(t *testing.T) {
+func TestCollection_FilterBySearch_Normalizes(t *testing.T) {
 	cafeElem, _ := element.NewElement(
 		"cafe",
 		image.Rect(10, 10, 50, 50),
@@ -184,20 +180,20 @@ func TestCollection_FilterByText_Normalizes(t *testing.T) {
 
 	collection := hint.NewCollection([]*hint.Interface{cafeHint, cjkHint})
 
-	if got := collection.FilterByText("cafe").Count(); got != 1 {
-		t.Fatalf("FilterByText(%q) = %d, want 1", "cafe", got)
+	if got := collection.FilterBySearch("cafe").Count(); got != 1 {
+		t.Fatalf("FilterBySearch(%q) = %d, want 1", "cafe", got)
 	}
 
-	if got := collection.FilterByText("CAFÉ").Count(); got != 1 {
-		t.Fatalf("FilterByText(%q) = %d, want 1", "CAFÉ", got)
+	if got := collection.FilterBySearch("CAFÉ").Count(); got != 1 {
+		t.Fatalf("FilterBySearch(%q) = %d, want 1", "CAFÉ", got)
 	}
 
-	if got := collection.FilterByText("你好").Count(); got != 1 { //nolint:gosmopolitan
-		t.Fatalf("FilterByText(%q) = %d, want 1", "你好", got) //nolint:gosmopolitan
+	if got := collection.FilterBySearch("你好").Count(); got != 1 { //nolint:gosmopolitan
+		t.Fatalf("FilterBySearch(%q) = %d, want 1", "你好", got) //nolint:gosmopolitan
 	}
 }
 
-func TestCollection_FilterByText_SearchesAdditionalText(t *testing.T) {
+func TestCollection_FilterBySearch_SearchesAdditionalText(t *testing.T) {
 	rowElem, _ := element.NewElement(
 		"note-row",
 		image.Rect(10, 10, 100, 50),
@@ -208,8 +204,8 @@ func TestCollection_FilterByText_SearchesAdditionalText(t *testing.T) {
 
 	collection := hint.NewCollection([]*hint.Interface{rowHint})
 
-	if got := collection.FilterByText("planning").Count(); got != 1 {
-		t.Fatalf("FilterByText(%q) = %d, want 1", "planning", got)
+	if got := collection.FilterBySearch("planning").Count(); got != 1 {
+		t.Fatalf("FilterBySearch(%q) = %d, want 1", "planning", got)
 	}
 }
 
@@ -219,7 +215,6 @@ func TestAlphabetGenerator_Generate(t *testing.T) {
 		t.Fatalf("NewAlphabetGenerator() error: %v", generatorErr)
 	}
 
-	// Create test elements
 	elements := make([]*element.Element, 10)
 	for index := range elements {
 		elements[index], _ = element.NewElement(
@@ -586,7 +581,7 @@ func TestLabelDirectionFromString(t *testing.T) {
 		{dirNormalStr, hint.LabelDirectionNormal},
 		{"", hint.LabelDirectionNormal},       // empty defaults to normal
 		{"typo", hint.LabelDirectionNormal},   // unknown defaults to normal
-		{"NORMAL", hint.LabelDirectionNormal}, // case-sensitive: unknown → default
+		{"NORMAL", hint.LabelDirectionNormal}, // matching is case-sensitive
 	}
 
 	for _, testCase := range tests {
@@ -677,7 +672,6 @@ func TestNewCollection(t *testing.T) {
 		t.Errorf("Count() = %d, want 5", collection.Count())
 	}
 
-	// Test FindByLabel
 	hint := collection.FindByLabel("AS")
 	if hint == nil {
 		t.Error("FindByLabel(\"AS\") returned nil")
@@ -685,7 +679,6 @@ func TestNewCollection(t *testing.T) {
 		t.Errorf("FindByLabel(\"AS\") returned hint with label %q", hint.Label())
 	}
 
-	// Test FilterByPrefix
 	filtered := collection.FilterByPrefix("A")
 	if len(filtered) != 4 { // A, AS, AD, AF
 		t.Errorf("FilterByPrefix(\"A\") returned %d hints, want 4", len(filtered))
@@ -734,7 +727,7 @@ func TestCollection_FilterByPrefix(t *testing.T) {
 	}
 }
 
-func TestCollection_FilterByText(t *testing.T) {
+func TestCollection_FilterBySearch(t *testing.T) {
 	saveButton, _ := element.NewElement(
 		"save",
 		image.Rect(0, 0, 50, 50),
@@ -775,10 +768,10 @@ func TestCollection_FilterByText(t *testing.T) {
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			filtered := collection.FilterByText(testCase.query)
+			filtered := collection.FilterBySearch(testCase.query)
 			if filtered.Count() != len(testCase.want) {
 				t.Fatalf(
-					"FilterByText(%q) count = %d, want %d",
+					"FilterBySearch(%q) count = %d, want %d",
 					testCase.query,
 					filtered.Count(),
 					len(testCase.want),
@@ -787,14 +780,107 @@ func TestCollection_FilterByText(t *testing.T) {
 
 			for _, label := range testCase.want {
 				if filtered.FindByLabel(label) == nil {
-					t.Fatalf("FilterByText(%q) missing label %q", testCase.query, label)
+					t.Fatalf("FilterBySearch(%q) missing label %q", testCase.query, label)
 				}
 			}
 		})
 	}
 }
 
-// Helper function for tests.
+func TestCollection_FilterBySearch_NarrowsByTrailingLabel(t *testing.T) {
+	titled := func(id, title string) *element.Element {
+		elem, _ := element.NewElement(
+			element.ID(id),
+			image.Rect(0, 0, 50, 50),
+			element.RoleButton,
+			element.WithTitle(title),
+		)
+
+		return elem
+	}
+
+	collection := hint.NewCollection([]*hint.Interface{
+		mustNewHint("AB", titled("save", "Save")),
+		mustNewHint("SD", titled("save-as", "Save As")),
+		mustNewHint("FJ", titled("autosave", "Autosave")),
+		mustNewHint("AF", titled("cancel", "Cancel")),
+	})
+
+	tests := []struct {
+		name  string
+		query string
+		// want maps each label left to the matched prefix drawn on it.
+		want map[string]string
+	}{
+		{
+			name:  "text alone reads as text",
+			query: "save",
+			want:  map[string]string{"AB": "", "SD": "", "FJ": ""},
+		},
+		{
+			name:  "trailing space keeps every match of the words before it",
+			query: "save ",
+			want:  map[string]string{"AB": "", "SD": "", "FJ": ""},
+		},
+		{
+			name:  "label start narrows and text still matching stays",
+			query: "save a",
+			want:  map[string]string{"AB": "A", "SD": ""},
+		},
+		{
+			name:  "whole label narrows to one",
+			query: "save ab",
+			want:  map[string]string{"AB": "AB"},
+		},
+		{
+			name:  "label is case-insensitive",
+			query: "save SD",
+			want:  map[string]string{"SD": "SD"},
+		},
+		{
+			name:  "word on screen still matches as text",
+			query: "save as",
+			want:  map[string]string{"SD": ""},
+		},
+		{
+			name:  "label outside the text matches is not offered",
+			query: "save af",
+			want:  map[string]string{},
+		},
+		{
+			name:  "double space reads like one",
+			query: "save  ab",
+			want:  map[string]string{"AB": "AB"},
+		},
+		{
+			name:  "leading space narrows every hint by label",
+			query: " f",
+			want:  map[string]string{"FJ": "F"},
+		},
+		{
+			name:  "no text and no label matches nothing",
+			query: "save x",
+			want:  map[string]string{},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			filtered := collection.FilterBySearch(testCase.query)
+
+			got := make(map[string]string, filtered.Count())
+			for _, filteredHint := range filtered.All() {
+				got[filteredHint.Label()] = filteredHint.MatchedPrefix()
+			}
+
+			if !maps.Equal(got, testCase.want) {
+				t.Fatalf("FilterBySearch(%q) = %v, want %v", testCase.query, got, testCase.want)
+			}
+		})
+	}
+}
+
+// mustNewHint builds a hint at the origin and panics on error.
 func mustNewHint(label string, elem *element.Element) *hint.Interface {
 	hint, hintErr := hint.NewHint(label, elem, image.Point{})
 	if hintErr != nil {

@@ -8,15 +8,17 @@ import (
 	"strings"
 	"testing"
 
+	platformlinux "github.com/y3owk1n/neru/internal/adapter/platform/linux"
 	"github.com/y3owk1n/neru/internal/adapter/vision"
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/derrors"
+	"github.com/y3owk1n/neru/internal/domain/element"
 )
 
 // Linux implements both halves of ports.VisionPort: screen capture through
 // wlr-screencopy or XGetImage, and text recognition through tesseract. Neither
 // half can be exercised for real on a runner with no display server and,
-// depending on the image, no language data — so this file pins the *shape* of
+// depending on the image, no language data, so this file pins the *shape* of
 // every answer, which is where a half-implemented port does its damage.
 //
 // The rule these tests share: never neither, never both. A method returns a
@@ -25,7 +27,7 @@ import (
 
 // TestVisionAdapter_DetectElementsAnswersOnLinux is the half that protects the
 // user. Reporting no elements and no error is how a strategy silently produces
-// no hints: the hint pipeline logs nothing a user sees and shows an empty
+// no hints. The hint pipeline logs nothing a user sees and shows an empty
 // overlay. Detection either finds text, finds none because there is none, or
 // says what stopped it.
 func TestVisionAdapter_DetectElementsAnswersOnLinux(t *testing.T) {
@@ -47,18 +49,18 @@ func TestVisionAdapter_DetectElementsAnswersOnLinux(t *testing.T) {
 	}
 }
 
-// TestVisionAdapter_DetectElementsHonorsDetectTextOff is the one documented
+// TestVisionAdapter_DetectElementsHonorsBothHalvesOff is the one documented
 // "neither" answer, and it is worth pinning precisely because it looks like the
 // failure the rule above forbids.
 //
-// Text is the whole of what this backend detects — rectangle detection has no
-// OCR equivalent and is declared macOS-only — so hints.vision.detect_text = false
-// leaves nothing to run. That is the user's own instruction rather than a
-// failure, so it is an empty result and not an error, and it must come back
-// without capturing the screen first.
-func TestVisionAdapter_DetectElementsHonorsDetectTextOff(t *testing.T) {
+// With hints.vision.detect_text and detect_rectangles both off there is
+// nothing to run. That is the user's own instruction rather than a failure, so
+// it is an empty result and not an error, and it must come back without
+// capturing the screen first.
+func TestVisionAdapter_DetectElementsHonorsBothHalvesOff(t *testing.T) {
 	cfg := config.DefaultConfig().Hints.Vision
 	cfg.DetectText = false
+	cfg.DetectRectangles = false
 
 	elements, err := vision.NewAdapter(nil).DetectElements(
 		context.Background(),
@@ -67,17 +69,17 @@ func TestVisionAdapter_DetectElementsHonorsDetectTextOff(t *testing.T) {
 		false,
 	)
 	if err != nil {
-		t.Fatalf("DetectElements failed with text detection off: %v", err)
+		t.Fatalf("DetectElements failed with both halves off: %v", err)
 	}
 
 	if len(elements) != 0 {
-		t.Errorf("got %d elements with text detection off, want none", len(elements))
+		t.Errorf("got %d elements with both halves off, want none", len(elements))
 	}
 }
 
 // TestVisionAdapter_DetectElementsRefusesAnEmptyRegion pins the one request
 // that has no correct answer. The region is what places every result on the
-// screen, so an empty one cannot be read as "capture everything" — hints would
+// screen, so an empty one cannot be read as "capture everything". Hints would
 // land wherever the frame happened to start.
 func TestVisionAdapter_DetectElementsRefusesAnEmptyRegion(t *testing.T) {
 	adapter := vision.NewAdapter(nil)
@@ -123,19 +125,19 @@ func TestVisionAdapter_DetectElementsIsCancelable(t *testing.T) {
 
 // TestVisionAdapter_HealthNamesWhatIsMissingOnLinux is the acceptance criterion
 // for the pieces no linking decision can settle. The strategy needs two things
-// this machine may not have — a display server that can be captured, and
+// this machine may not have: a display server that can be captured, and
 // tesseract language data, which is a package separate from the library Neru
-// links — so a build that starts perfectly well can still be unable to run it.
+// links. A build that starts perfectly well can still be unable to run it.
 // When that is the case Health must report CodeNotSupported *naming which one*,
 // because "the vision strategy is unavailable" is not something a user can act
 // on.
 func TestVisionAdapter_HealthNamesWhatIsMissingOnLinux(t *testing.T) {
 	// The pieces Health can find missing, each named by the word a user would
-	// search for. A runner with no session hits the first; a machine with the
-	// library and no language pack hits "traineddata"; a CGO_ENABLED=0 build
+	// search for. A runner with no session hits the first. A machine with the
+	// library and no language pack hits "traineddata". A CGO_ENABLED=0 build
 	// hits "CGO".
 	//
-	// Which one this run hits is not chosen here: the display backend is
+	// Which one this run hits is not chosen here. The display backend is
 	// detected once per process (platform.DetectLinuxBackend caches it), so a
 	// test cannot put this adapter on a different display server than the one
 	// the suite is running under. What is pinned is that whichever half is
@@ -146,7 +148,7 @@ func TestVisionAdapter_HealthNamesWhatIsMissingOnLinux(t *testing.T) {
 
 	err := adapter.Health(context.Background())
 	if err == nil {
-		// A session that can be captured, with the language data installed —
+		// A session that can be captured, with the language data installed, is
 		// the state a machine with the documented dependencies is in.
 		return
 	}
@@ -166,7 +168,7 @@ func TestVisionAdapter_HealthNamesWhatIsMissingOnLinux(t *testing.T) {
 }
 
 // TestVisionAdapter_HealthIsRepeatable guards the engine cache behind
-// recognition: Health warms tesseract, and a warm-up that answered differently
+// recognition. Health warms tesseract, and a warm-up that answered differently
 // the second time would make the strategy's availability depend on how many
 // times it had been asked about.
 func TestVisionAdapter_HealthIsRepeatable(t *testing.T) {
@@ -234,7 +236,7 @@ func TestVisionAdapter_CaptureScreenIsCancelable(t *testing.T) {
 }
 
 // TestVisionAdapter_NilLoggerIsAcceptedOnLinux covers the constructor contract
-// shared with every other adapter in the tree: a nil logger falls back to a
+// shared with every other adapter in the tree. A nil logger falls back to a
 // no-op rather than panicking on first use. Capture is the method that logs, so
 // it is the one worth exercising.
 func TestVisionAdapter_NilLoggerIsAcceptedOnLinux(t *testing.T) {
@@ -244,4 +246,72 @@ func TestVisionAdapter_NilLoggerIsAcceptedOnLinux(t *testing.T) {
 	}
 
 	_, _ = adapter.CaptureScreen(context.Background())
+}
+
+// TestVisionAdapter_PixelDetectorsKeepTheContractOnLinux pins the contour and
+// segment detectors to the same rule as recognition. Each returns a result or
+// a reason, never both. An empty region is refused rather than read as the
+// whole screen, and a caller that has given up is spared the capture.
+func TestVisionAdapter_PixelDetectorsKeepTheContractOnLinux(t *testing.T) {
+	adapter := vision.NewAdapter(nil)
+	detectors := map[string]func(context.Context, image.Rectangle) ([]*element.Element, error){
+		"DetectContours": func(ctx context.Context, region image.Rectangle) ([]*element.Element, error) {
+			return adapter.DetectContours(ctx, region, config.DefaultConfig().Hints.Contour)
+		},
+		"DetectSegments": func(ctx context.Context, region image.Rectangle) ([]*element.Element, error) {
+			return adapter.DetectSegments(ctx, region, config.DefaultConfig().Hints.Segment)
+		},
+	}
+
+	for name, detect := range detectors {
+		t.Run(name, func(t *testing.T) {
+			elements, err := detect(context.Background(), image.Rect(0, 0, 100, 100))
+			if err != nil && elements != nil {
+				t.Errorf("returned %d elements alongside its error %v", len(elements), err)
+			}
+
+			elements, err = detect(context.Background(), image.Rectangle{})
+			if err == nil || elements != nil {
+				t.Errorf(
+					"empty region = %d elements, %v; want an error and nothing else",
+					len(elements),
+					err,
+				)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			elements, err = detect(ctx, image.Rect(0, 0, 100, 100))
+			if derrors.GetCode(err) != derrors.CodeContextCanceled || elements != nil {
+				t.Errorf(
+					"canceled = %d elements, %v; want CodeContextCanceled and nothing else",
+					len(elements),
+					err,
+				)
+			}
+		})
+	}
+}
+
+// TestVisionAdapter_CaptureExcludesOwnWindowsOnceTheOverlayRegisters pins that
+// Linux says its capture leaves Neru's own windows out only while an overlay
+// has registered the hider that takes it off the screen. A hints refresh that
+// reads the screen takes the old labels off first only when this is false, so
+// a true with no hider would let it read them back as targets.
+func TestVisionAdapter_CaptureExcludesOwnWindowsOnceTheOverlayRegisters(t *testing.T) {
+	adapter := vision.NewAdapter(nil)
+
+	platformlinux.SetOwnWindowsHider(nil)
+
+	if adapter.CaptureExcludesOwnWindows() {
+		t.Error("CaptureExcludesOwnWindows() = true with no overlay to take off the screen")
+	}
+
+	platformlinux.SetOwnWindowsHider(func(capture func() error) error { return capture() })
+	t.Cleanup(func() { platformlinux.SetOwnWindowsHider(nil) })
+
+	if !adapter.CaptureExcludesOwnWindows() {
+		t.Error("CaptureExcludesOwnWindows() = false with an overlay that takes itself off")
+	}
 }

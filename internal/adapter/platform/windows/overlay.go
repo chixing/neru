@@ -122,7 +122,10 @@ var (
 	errOverlayClass   error
 	overlayWndProcPtr uintptr
 
-	overlayRegistry sync.Map
+	// afterBoundsSnapshot is nil outside tests. A test sets it to stop
+	// createHWNDLocked on the UI thread right after the bounds snapshot, so
+	// it can land a ResizeTo in that gap.
+	afterBoundsSnapshot func(*OverlayWindow)
 )
 
 type wndClassEx struct {
@@ -154,8 +157,8 @@ const (
 
 // drawCmd is one queued primitive. Commands are kept in the order they were
 // queued and painted in that order, so a later shape always lands over an
-// earlier one — the ordering every other backend has, and the one a hint
-// badge drawn over its neighbor relies on.
+// earlier one. Every other backend orders them the same way, and a hint
+// badge drawn over its neighbor relies on it.
 type drawCmd struct {
 	kind     drawKind
 	rect     image.Rectangle
@@ -173,7 +176,7 @@ type drawCmd struct {
 func (c drawCmd) bounds() image.Rectangle {
 	if c.kind != drawTriangle {
 		// A text command paints one pixel of anti-aliasing padding around
-		// its rectangle (gdiTextRenderer.paint); the same inset serves every
+		// its rectangle (gdiTextRenderer.paint). The same inset serves every
 		// rectangular command.
 		return c.rect.Inset(-1)
 	}
@@ -191,16 +194,16 @@ func (c drawCmd) bounds() image.Rectangle {
 
 // frame is what Flush hands the UI thread: the commands queued since the last
 // Flush, and whether the surface is to be cleared before they are painted.
-// Frames coalesce — a Flush that finds one still waiting appends to it, and a
-// Clear folds every waiting command away — so a burst of keystrokes presents
+// Frames coalesce. A Flush that finds one still waiting appends to it, and a
+// Clear folds every waiting command away, so a burst of keystrokes presents
 // once, with the newest state.
 type frame struct {
 	clear bool
 	cmds  []drawCmd
 }
 
-// FrameStats describes one presented frame: what it cost and where. Counts,
-// durations and rectangles only; nothing about what was drawn.
+// FrameStats describes one presented frame: what it cost and where. It holds
+// counts, durations and rectangles only, and nothing about what was drawn.
 type FrameStats struct {
 	// Backend names the surface that presented: "direct2d" or "gdi".
 	Backend string
@@ -212,16 +215,17 @@ type FrameStats struct {
 	Raster time.Duration
 	// Present is how long handing the pixels to the compositor took.
 	Present time.Duration
-	// Err is why the frame was not presented, when it was not: the surface
+	// Err is set when the frame was not presented because the surface
 	// failed and could not be rebuilt on GDI. Flush returns before the paint,
 	// so this is the only place that failure surfaces.
 	Err error
 }
 
 // overlaySurface is what actually holds pixels for a window. The window owns
-// the command queue and the HWND; the surface owns whatever the pixels live in
-// — a DIB the layered window is updated from, or a DirectComposition swapchain
-// — and paints one frame at a time. Every method runs on the overlay UI thread.
+// the command queue and the HWND. The surface owns whatever the pixels live in,
+// either a DIB the layered window is updated from or a DirectComposition
+// swapchain, and paints one frame at a time. Every method runs on the overlay
+// UI thread.
 type overlaySurface interface {
 	// name is the value FrameStats.Backend carries.
 	name() string
@@ -246,9 +250,9 @@ const maxRecordedCmds = 50000
 // OverlayWindow is a fullscreen click-through HWND with per-pixel alpha.
 //
 // Drawing is a queue of commands. Flush hands the queue to the overlay UI
-// thread and returns at once; the thread paints and presents when it gets to
-// it, and coalesces frames that pile up. Nothing on the caller's thread — the
-// keyboard hook's, on a keystroke — waits for pixels.
+// thread and returns at once. The thread paints and presents when it gets to
+// it, and coalesces frames that pile up. Nothing on the caller's thread, which
+// is the keyboard hook's on a keystroke, waits for pixels.
 type OverlayWindow struct {
 	mu      sync.Mutex
 	hwnd    windows.HWND
@@ -287,7 +291,7 @@ type OverlayWindow struct {
 
 func overlayWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	// Click-through. WS_EX_TRANSPARENT makes a layered window pass the mouse
-	// on; a DirectComposition window is not layered, so answer the hit test
+	// on. A DirectComposition window is not layered, so answer the hit test
 	// directly and both kinds behave the same.
 	if msg == wmNCHitTest {
 		return htTransparent
@@ -405,6 +409,9 @@ func (o *OverlayWindow) Visible() bool {
 
 // Bounds returns the overlay rectangle in screen coordinates.
 func (o *OverlayWindow) Bounds() image.Rectangle {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	return o.bounds
 }
 
@@ -475,8 +482,10 @@ func (o *OverlayWindow) SetColorBlendRGB(uint32) {}
 
 // Show displays the overlay without taking focus.
 //
-// A frame still waiting is presented first, so the window comes up showing
-// what was last drawn rather than the frame before it.
+// It presents everything queued first, flushed or not, so the window comes up
+// with what was last drawn rather than the frame before it. A mode exit queues
+// a clear and hides without flushing it, and the next mode must not come up
+// on the previous mode's pixels (#1906).
 func (o *OverlayWindow) Show() {
 	if o == nil {
 		return
@@ -489,6 +498,10 @@ func (o *OverlayWindow) Show() {
 				return
 			}
 		}
+
+		o.mu.Lock()
+		o.stageQueuedLocked()
+		o.mu.Unlock()
 
 		o.renderPending()
 
@@ -552,15 +565,16 @@ func (o *OverlayWindow) ResizeToActiveScreen() error {
 		return err
 	}
 
+	o.mu.Lock()
 	if bounds == o.bounds && o.width == bounds.Dx() && o.height == bounds.Dy() {
 		// A scaling change keeps the monitor's physical bounds, so the
 		// factor is refreshed even when there is nothing to move.
-		o.mu.Lock()
 		o.scale = DPIScaleAt(rectCenter(bounds))
 		o.mu.Unlock()
 
 		return nil
 	}
+	o.mu.Unlock()
 
 	return o.ResizeTo(bounds.Min.X, bounds.Min.Y, bounds.Dx(), bounds.Dy())
 }
@@ -608,7 +622,7 @@ func (o *OverlayWindow) ResizeTo(posX, posY, width, height int) error {
 		))
 
 		// The indicator badges are moved to the cursor every tick at the size
-		// they already have; that is a move, and the pixel store stays. A
+		// they already have. That is a move, and the pixel store stays. A
 		// released surface grows to the new size when it next paints.
 		if o.surface != nil && !sameSize && !o.released {
 			resizeErr = o.surface.resize(width, height)
@@ -655,9 +669,9 @@ func (o *OverlayWindow) StrokeRect(bounds image.Rectangle, color uint32, lineWid
 // FillRoundedRect fills a rounded rectangle with an ARGB color.
 //
 // A rectangle hanging off the surface is queued whole, unlike the square fill
-// above: the shape is derived from the rectangle's own center and
+// above. The shape is derived from the rectangle's own center and
 // half-extents, so handing it a clipped rectangle would round the corners of
-// the *visible* part instead — a badge at the screen edge would be redrawn as
+// the *visible* part instead. A badge at the screen edge would be redrawn as
 // a smaller, differently rounded badge, while its stroke and its label (which
 // are not clipped here) stayed where the real one was. The surface clips its
 // own painting to the buffer, so nothing is drawn out of bounds either way.
@@ -702,7 +716,7 @@ func (o *OverlayWindow) StrokeRoundedRect(
 // anti-aliased.
 //
 // It is painted in queue order, so a triangle drawn to tie a badge back to its
-// target lands over the badge's own fill; the badge's stroke, queued after it,
+// target lands over the badge's own fill. The badge's stroke, queued after it,
 // closes the shared edge.
 func (o *OverlayWindow) FillTriangle(vertexA, vertexB, vertexC image.Point, color uint32) {
 	if o == nil {
@@ -780,7 +794,7 @@ func (o *OverlayWindow) DrawPointerGlyph(
 }
 
 // Flush hands the queued commands to the overlay UI thread and returns. The
-// thread paints and presents them when it gets to them; a Flush that arrives
+// thread paints and presents them when it gets to them. A Flush that arrives
 // while an earlier frame is still waiting joins that frame, so the window is
 // never more than one paint behind the newest state and the caller never
 // waits for one.
@@ -791,10 +805,29 @@ func (o *OverlayWindow) Flush() error {
 
 	o.mu.Lock()
 
-	if !o.dirty {
+	if !o.stageQueuedLocked() {
 		o.mu.Unlock()
 
 		return nil
+	}
+
+	enqueue := !o.renderQueued
+	o.renderQueued = true
+	o.mu.Unlock()
+
+	if enqueue {
+		postOnOverlayUI(o.renderPending)
+	}
+
+	return nil
+}
+
+// stageQueuedLocked moves the commands queued since the last Flush, and a
+// clear queued with them, into the frame waiting to be painted. It reports
+// false when nothing was queued. The caller holds o.mu.
+func (o *OverlayWindow) stageQueuedLocked() bool {
+	if !o.dirty {
+		return false
 	}
 
 	o.dirty = false
@@ -812,18 +845,10 @@ func (o *OverlayWindow) Flush() error {
 	o.pending.cmds = append(o.pending.cmds, o.cmds...)
 	o.cmds = o.cmds[:0]
 
-	enqueue := !o.renderQueued
-	o.renderQueued = true
-	o.mu.Unlock()
-
-	if enqueue {
-		postOnOverlayUI(o.renderPending)
-	}
-
-	return nil
+	return true
 }
 
-// handle reads the window handle under the lock: a rebuild on the UI thread
+// handle reads the window handle under the lock, because a rebuild on the UI thread
 // (rebuildOnGDI) replaces it mid-life, and every caller off that thread
 // reads it through here.
 func (o *OverlayWindow) handle() windows.HWND {
@@ -869,10 +894,14 @@ func (o *OverlayWindow) releaseSurface() {
 	o.released = true
 }
 
-// restoreSurface grows a released surface back to the window's size and
-// repaints what it showed, so the next frame paints over the same pixels it
-// would have before the release. UI thread only.
-func (o *OverlayWindow) restoreSurface() error {
+// restoreSurface grows a released surface back to the window's size. When
+// repaint is set it also repaints what the surface showed, so the next frame
+// paints over the same pixels it would have before the release. The caller
+// leaves repaint off for a frame that clears, because that frame keeps none of
+// those pixels and the repaint would present the previous overlay for one more
+// frame (#1906). observer receives the repaint like any other presented frame.
+// UI thread only.
+func (o *OverlayWindow) restoreSurface(repaint bool, observer func(FrameStats)) error {
 	if !o.released {
 		return nil
 	}
@@ -888,11 +917,14 @@ func (o *OverlayWindow) restoreSurface() error {
 
 	o.released = false
 
-	if len(o.drawn) == 0 {
+	if !repaint || len(o.drawn) == 0 {
 		return nil
 	}
 
-	_, err = o.surface.render(&frame{clear: true, cmds: o.drawn})
+	stats, err := o.surface.render(&frame{clear: true, cmds: o.drawn})
+	if err == nil && observer != nil {
+		observer(stats)
+	}
 
 	return err
 }
@@ -932,7 +964,9 @@ func (o *OverlayWindow) renderPending() {
 		return
 	}
 
-	restoreErr := o.restoreSurface()
+	repaint := pending == nil || !pending.clear
+
+	restoreErr := o.restoreSurface(repaint, observer)
 	if restoreErr != nil {
 		// Growing the surface back failed the way a lost device does. Rebuild
 		// the window on GDI and repaint what it showed.
@@ -940,7 +974,7 @@ func (o *OverlayWindow) renderPending() {
 			return
 		}
 
-		if len(o.drawn) > 0 {
+		if repaint && len(o.drawn) > 0 {
 			_, _ = o.surface.render(&frame{clear: true, cmds: o.drawn})
 		}
 	}
@@ -952,7 +986,7 @@ func (o *OverlayWindow) renderPending() {
 	stats, err := o.surface.render(pending)
 	if err != nil {
 		// The surface is gone (a lost device, most likely). Come back on GDI
-		// and paint the frame there; the commands are just rectangles.
+		// and paint the frame there. The commands are just rectangles.
 		rebuildErr := o.rebuildOnGDI(err)
 		if rebuildErr != nil {
 			stats = FrameStats{Err: fmt.Errorf("%w; rebuilding on gdi: %w", err, rebuildErr)}
@@ -1008,27 +1042,33 @@ func (o *OverlayWindow) rebuildOnGDI(reason error) error {
 
 // createHWNDLocked creates the window and its surface. UI thread only.
 //
-// DirectComposition is tried first where the build supports it; the window
+// DirectComposition is tried first where the build supports it. The window
 // it needs is not a layered one, so a surface that fails to come up costs the
 // HWND too, and the GDI surface gets a fresh layered window of its own.
 func (o *OverlayWindow) createHWNDLocked() error {
-	width := o.bounds.Dx()
+	// The window starts from a snapshot of the bounds. createWindowWithSurface
+	// moves it to any bounds a ResizeTo recorded in the meantime.
+	o.mu.Lock()
+	bounds := o.bounds
+	o.mu.Unlock()
 
-	height := o.bounds.Dy()
-	if width <= 0 || height <= 0 {
-		return fmt.Errorf("%w: %v", errInvalidOverlayBounds, o.bounds)
+	if afterBoundsSnapshot != nil {
+		afterBoundsSnapshot(o)
+	}
+
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return fmt.Errorf("%w: %v", errInvalidOverlayBounds, bounds)
 	}
 
 	if !o.noDComp {
 		err := dcompUnavailable()
 		if err == nil {
-			// Layered as well: WS_EX_TRANSPARENT only lets input through to
+			// Layered as well, because WS_EX_TRANSPARENT only lets input through to
 			// other processes on a layered window, and a click lands while
 			// the overlay is still up. Without the redirection bitmap the
 			// layered style changes nothing about how the frame is drawn.
 			err = o.createWindowWithSurface(
-				width,
-				height,
+				bounds,
 				wsExNoRedirectionBitmap|wsExLayered,
 				newDCompSurface,
 			)
@@ -1041,11 +1081,11 @@ func (o *OverlayWindow) createHWNDLocked() error {
 		o.dcompErr = err
 	}
 
-	return o.createWindowWithSurface(width, height, wsExLayered, newGDISurface)
+	return o.createWindowWithSurface(bounds, wsExLayered, newGDISurface)
 }
 
 func (o *OverlayWindow) createWindowWithSurface(
-	width, height int,
+	bounds image.Rectangle,
 	exStyle uintptr,
 	newSurface func(hwnd windows.HWND, width, height int) (overlaySurface, error),
 ) error {
@@ -1054,13 +1094,15 @@ func (o *OverlayWindow) createWindowWithSurface(
 		return err
 	}
 
+	width, height := bounds.Dx(), bounds.Dy()
+
 	hwnd, _, err := procCreateWindowExW.Call(
 		exStyle|wsExTransparent|wsExTopmost|wsExToolWindow|wsExNoActivate,
 		uintptr(unsafe.Pointer(className)),
 		0,
 		wsPopup,
-		uintptr(o.bounds.Min.X),
-		uintptr(o.bounds.Min.Y),
+		uintptr(bounds.Min.X),
+		uintptr(bounds.Min.Y),
 		uintptr(width),
 		uintptr(height),
 		0,
@@ -1072,8 +1114,20 @@ func (o *OverlayWindow) createWindowWithSurface(
 		return fmt.Errorf("CreateWindowExW: %w", err)
 	}
 
+	// DWM fades a hidden window out from its last frame, and a Show during
+	// that fade brings the frame back. Switching modes quickly flashed the
+	// previous mode's overlay that way (#1906). An overlay has no use for the
+	// fade, so it is off.
+	disabled := int32(1)
+	discardCall(procDwmSetWindowAttribute.Call(
+		hwnd,
+		dwmTransitionsForceDisabled,
+		uintptr(unsafe.Pointer(&disabled)),
+		unsafe.Sizeof(disabled),
+	))
+
 	// A layered window stays invisible until it has attributes. The GDI
-	// surface sets them with every UpdateLayeredWindow; the DirectComposition
+	// surface sets them with every UpdateLayeredWindow. The DirectComposition
 	// window never calls that, so it is made opaque once here and its own
 	// frames carry the alpha.
 	if exStyle&wsExNoRedirectionBitmap != 0 {
@@ -1087,12 +1141,54 @@ func (o *OverlayWindow) createWindowWithSurface(
 		return err
 	}
 
-	o.setHandle(windows.HWND(hwnd))
-	o.width = width
-	o.height = height
+	// A ResizeTo that lands while the handle is still 0 records its bounds and
+	// moves nothing, so the window catches up to them here before any caller
+	// can see its handle. The section that confirms the bounds also sets the
+	// handle and size, so a caller that reads the new handle reads the size of
+	// the window it names.
+	for {
+		o.mu.Lock()
+
+		current := o.bounds
+		if current == bounds {
+			o.hwnd = windows.HWND(hwnd)
+			o.width = width
+			o.height = height
+			o.mu.Unlock()
+
+			break
+		}
+
+		o.mu.Unlock()
+
+		discardCall(procSetWindowPos.Call(
+			hwnd,
+			hwndTopMost,
+			uintptr(current.Min.X),
+			uintptr(current.Min.Y),
+			uintptr(current.Dx()),
+			uintptr(current.Dy()),
+			swpNoActivate,
+		))
+
+		if current.Size() != bounds.Size() {
+			err = surface.resize(current.Dx(), current.Dy())
+			if err != nil {
+				surface.destroy()
+				discardCall(procDestroyWindow.Call(hwnd))
+
+				return err
+			}
+		}
+
+		bounds = current
+		width, height = current.Dx(), current.Dy()
+	}
+
 	o.surface = surface
 	o.released = false
-	overlayRegistry.Store(windows.HWND(hwnd), o)
+
+	registerOwnWindow(hwnd)
 
 	discardCall(procSetWindowPos.Call(
 		hwnd,
@@ -1119,13 +1215,16 @@ func (o *OverlayWindow) destroyHWNDLocked() {
 	}
 
 	if hwnd := o.handle(); hwnd != 0 {
-		overlayRegistry.Delete(hwnd)
+		unregisterOwnWindow(uintptr(hwnd))
 		discardCall(procDestroyWindow.Call(uintptr(hwnd)))
 		o.setHandle(0)
 	}
 }
 
 func (o *OverlayWindow) localBounds() image.Rectangle {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	return image.Rect(0, 0, o.width, o.height)
 }
 

@@ -28,9 +28,6 @@ const (
 	// CodeIPCFailed indicates IPC communication failed.
 	CodeIPCFailed Code = "IPC_FAILED"
 
-	// CodeIPCAlreadyRunning indicates the IPC server is already running.
-	CodeIPCAlreadyRunning Code = "IPC_ALREADY_RUNNING"
-
 	// CodeIPCServerNotRunning indicates the IPC server is not running.
 	CodeIPCServerNotRunning Code = "IPC_SERVER_NOT_RUNNING"
 
@@ -205,13 +202,11 @@ func IsCode(err error, code Code) bool {
 	return false
 }
 
-// Message returns the sentence an error says, without the code a domain error
-// carries alongside it.
+// Message returns an error's message without the code a domain error carries.
 //
-// The code is for a caller to branch on and travels in whatever field the
-// caller answers with; the sentence is what a person reads. Every door that
-// shows an error to someone — an IPC response, a configuration warning —
-// shows it through this, so the same fault reads the same wherever it surfaces.
+// Callers branch on the code and send it in a separate field. The message is
+// what a person reads. IPC responses and configuration warnings both show
+// errors through this, so the same fault reads the same in both places.
 func Message(err error) string {
 	if err == nil {
 		return ""
@@ -233,28 +228,13 @@ func GetCode(err error) Code {
 	return CodeInternal
 }
 
-// Is is a helper function that checks if an error is of a specific type.
+// Is reports whether err matches target. It calls errors.Is.
 func Is(err error, target error) bool {
 	return errors.Is(err, target)
 }
 
-// IsAccessibilityError checks if an error is accessibility-related.
-func IsAccessibilityError(err error) bool {
-	return IsCode(err, CodeAccessibilityDenied) || IsCode(err, CodeAccessibilityFailed)
-}
-
-// IsUserError checks if an error is due to user input/configuration.
-func IsUserError(err error) bool {
-	return IsCode(err, CodeInvalidConfig) || IsCode(err, CodeInvalidInput)
-}
-
-// IsTransient checks if an error is potentially transient (retryable).
-func IsTransient(err error) bool {
-	return IsCode(err, CodeTimeout) || IsCode(err, CodeIPCFailed)
-}
-
 // IsNotSupported checks if an error indicates an unimplemented platform feature.
-// Use this in callers that should degrade gracefully when a feature is unavailable.
+// Callers use it to fall back when a feature is unavailable.
 func IsNotSupported(err error) bool {
 	return IsCode(err, CodeNotSupported)
 }

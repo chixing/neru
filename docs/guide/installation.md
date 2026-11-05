@@ -58,6 +58,61 @@ brew install --cask y3owk1n/tap/neru-nightly    # nightly, upgrade with brew upg
 
 Nightly upgrades need `--greedy`, or brew skips rolling releases.
 
+## oku
+
+[oku](https://github.com/y3owk1n/oku) installs Neru from the repo's
+`oku.pkg.toml` on macOS, Linux and Windows. It takes the release zip for your
+machine, checks it against the release's build attestation and `.sha256`
+file, and adds man pages and shell completions. It installs stable releases
+only.
+
+> [!NOTE]
+> On Linux, install the [runtime libraries](linux.md#runtime-libraries)
+> first. oku runs `neru` once to write the completions, and the install fails
+> if a library is missing.
+
+```bash
+oku add -g github:y3owk1n/neru --service   # with the login service
+```
+
+`-g` adds it to your global list. Inside a project directory oku installs
+only the program and skips `Neru.app` and the service. To keep it in your
+`oku.toml` instead:
+
+```toml
+[packages]
+neru = { ref = "github:y3owk1n/neru", service = true }
+```
+
+- **macOS:** oku copies `Neru.app` to `~/Applications`, and `neru` on your
+  `PATH` runs that copy, so the CLI and the daemon share its Accessibility and
+  Screen Recording permissions. macOS may ask for them again after an update.
+- **Login service:** `--service` registers the daemon with launchd on macOS,
+  Task Scheduler on Windows and a systemd user unit on Linux. `oku service`
+  controls it.
+- **Login service on Linux:** needs oku 0.18.0 or later. oku's unit starts
+  and stops with your graphical session, like the one `neru services install`
+  writes, so the same [session setup](linux.md#systemd-user-service) applies.
+  With an older oku, leave out `--service` and use
+  [`neru services install`](#login-service).
+- **With `neru services install` on Linux:** its unit points at the build in
+  oku's store, so after `oku update neru` run `neru services uninstall` and
+  `neru services install` again.
+- **One service only:** use oku's service or `neru services install`, not
+  both. `neru services install` does not see oku's service.
+- **From source:** `oku add -g github:y3owk1n/neru --from-source` builds the
+  release tag with Go, which oku installs, and writes `from_source = true` to
+  your list so every update builds too. A Linux machine with musl libc has no
+  release zip and always builds. The build needs what
+  [From source](#from-source) lists, and oku names any missing part.
+- **Latest main:** `oku add -g github:y3owk1n/neru#neru-main` builds the
+  newest commit of `main` instead of a release, and needs the same tools. Its
+  version is the date and commit, such as `2026.10.09-a73243f`, and
+  `oku update neru` takes the newest commit. It installs the same `neru`, so
+  remove the release package first. Add `--service` to keep Neru starting at
+  login.
+- **Updating:** `oku update neru`.
+
 ## Prebuilt binaries
 
 Download `neru-<os>-<arch>.zip` from
@@ -125,10 +180,11 @@ Service options per module:
 | home-manager | `launchd.enable`, `launchd.keepAlive` on macOS. `systemd.enable` (`true`), `systemd.restart`, `systemd.restartSec` on Linux | Same as above, and writes `~/.config/neru/config.toml` |
 
 > [!WARNING]
-> With no config set, the modules use `configs/default-config.toml`, which
-> binds `Primary+Shift+...` hotkeys. On Linux `Primary` is `Ctrl`, so
-> `Ctrl+Shift+C` shadows your terminal's copy. On Linux, set your own
-> `[hotkeys]`, or an empty table to leave binding to your compositor.
+> With no config set, the modules use `configs/default-config.toml` as is,
+> which binds `Primary+Shift+...` hotkeys even on Linux, where `Primary` is
+> `Ctrl` and `Ctrl+Shift+C` shadows your terminal's copy. On Linux, set your
+> own `[hotkeys]`, or an empty table to leave binding to your compositor. See
+> [Bind your first hotkey](getting-started.md#bind-your-first-hotkey).
 
 ### Nix notes
 
@@ -192,8 +248,9 @@ just install -y   # accept every prompt
 
 On Windows `just install` runs `scripts/install.ps1`, so use the PowerShell
 flag spelling (`-Yes`, `-NoService`). A source build reports a git describe
-version, so the script treats it as a `source` install and asks before a
-release replaces it, or it replaces a release. Other build options are in the
+version, so the script treats it as a `source` install. It asks before a
+release replaces a source install, and before a source install replaces a
+release. Other build options are in the
 [Development guide](../contributing/development.md).
 
 ## Shell completions
@@ -219,20 +276,20 @@ The install script offers this. To add it later:
 neru services install
 ```
 
-This registers a launchd agent on macOS, a systemd user unit on Linux, or a
-Task Scheduler task on Windows. It refuses when Homebrew, Nix or another
-package manager manages the service. See
+What it registers on each platform, and when it refuses, is under
 [`neru services`](../reference/cli.md#neru-services).
 
 ## Set up with an agent
 
-Two skills for coding agents such as Claude Code, Codex and Cursor.
+Three skills for coding agents such as Claude Code, Codex and Cursor.
 `neru-ask` answers what Neru can do and which command or option does it.
-`neru-setup-config` writes, validates and applies your config. Both read the
-installed version's help, man pages and docs, so no checkout is needed.
+`neru-setup-config` writes, validates and applies your config.
+`neru-build-integration` helps you build a script or program on Neru's CLI,
+IPC socket or Go client. All three read the installed version's help, man
+pages and docs, so no checkout is needed.
 
 ```bash
-npx skills add y3owk1n/neru --skill neru-ask --skill neru-setup-config
+npx skills add y3owk1n/neru --skill neru-ask --skill neru-setup-config --skill neru-build-integration
 ```
 
 Add `-g` to install them for every project.
@@ -301,10 +358,12 @@ Settings, under Privacy & Security. Remove them by hand if you are not
 reinstalling. On Linux, the script leaves your `input` group membership,
 since other evdev tools may need it.
 
-### Homebrew and Nix
+### Homebrew, Nix and oku
 
 Homebrew: `brew uninstall --cask y3owk1n/tap/neru`, or `neru-nightly`. Nix:
-remove the module or package from your configuration and rebuild.
+remove the module or package from your configuration and rebuild. oku:
+`oku remove -g neru`, which also stops the service and deletes `Neru.app`
+from `~/Applications`.
 
 ### Manual
 
@@ -323,9 +382,7 @@ rm -rf ~/.config/neru ~/Library/Application\ Support/neru ~/Library/Logs/neru
 Linux:
 
 ```bash
-systemctl --user disable --now neru.service
-rm -f ~/.config/systemd/user/neru.service
-systemctl --user daemon-reload
+neru services uninstall
 rm -f ~/.local/bin/neru
 rm -f ~/.local/share/bash-completion/completions/neru ~/.zsh/completions/_neru \
       ~/.config/fish/completions/neru.fish
@@ -335,6 +392,9 @@ rm -rf ~/.config/neru ~/.local/share/neru ~/.local/state/neru
 # only if nothing else needs it
 sudo gpasswd -d "$USER" input
 ```
+
+To remove the systemd unit by hand, find where it lives in
+[Systemd user service](linux.md#systemd-user-service).
 
 Windows:
 

@@ -4,6 +4,7 @@ import (
 	"image"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"go.uber.org/zap"
@@ -13,6 +14,7 @@ import (
 	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/domain/action"
 	"github.com/y3owk1n/neru/internal/domain/element"
+	"github.com/y3owk1n/neru/internal/domain/event"
 	"github.com/y3owk1n/neru/internal/domain/geometry"
 	domainHint "github.com/y3owk1n/neru/internal/domain/hint"
 	"github.com/y3owk1n/neru/internal/domain/modecmd"
@@ -67,6 +69,7 @@ func (h *handlerState) executeActionAtPoint(
 	// This enables multi-click sequences like --action left_click,left_click
 	// which produce a double-click via the native click-counting layer.
 	actions := strings.Split(*actionStr, ",")
+	performed := make([]string, 0, len(actions))
 	actionPerformed := false
 	chainFailed := false
 
@@ -97,6 +100,8 @@ func (h *handlerState) executeActionAtPoint(
 			break
 		}
 
+		performed = append(performed, trimmed)
+
 		// Track whether any action was a click (not a move-mouse action)
 		// so handleCursorRestoration can insert a settling delay.
 		if trimmed != "move_mouse" &&
@@ -109,6 +114,13 @@ func (h *handlerState) executeActionAtPoint(
 	// can insert a settling delay before moving the cursor.
 	if actionPerformed {
 		h.cursorState.MarkActionPerformed()
+	}
+
+	// Published before the mode re-arms or exits, so a selection always
+	// reaches subscribers ahead of the mode_exit it ends with.
+	var selection event.Event
+	if !chainFailed {
+		selection = h.publishSelect(point, strings.Join(performed, ","))
 	}
 
 	if repeat && reActivateFunc != nil && !chainFailed {
@@ -130,24 +142,25 @@ func (h *handlerState) executeActionAtPoint(
 		h.appState.SetModeExitReason(state.ModeExitReasonCancelled)
 	} else {
 		h.appState.SetModeExitReason(state.ModeExitReasonCompleted)
+		h.exitAction = strings.Join(performed, ",")
 	}
 
 	// Capture the mode's --on-exit action before exitMode clears the
 	// context. It only runs when the action chain was fulfilled and the mode
-	// idled through this action path — never on manual escape or a switch.
+	// idled through this action path, never on manual escape or a switch.
 	onExit := h.currentModeOnExit()
 
 	h.exitMode()
 
 	if !chainFailed {
-		h.runOnExit(onExit)
+		h.runOnExit(onExit, selection.Env())
 	}
 }
 
 // currentModeOnExit returns the --on-exit steps configured for the currently
 // active action mode, or nil when none are set or the mode has no context.
 //
-// A mode that reports no exit steps at all — scroll, the monitor picker, idle —
+// A mode that reports no exit steps at all (scroll, the monitor picker, idle)
 // takes no pending --action either, so there is nothing here it could have been
 // asked to run and its silence is the same nothing as an empty list.
 func (h *handlerState) currentModeOnExit() []string {
@@ -161,10 +174,10 @@ func (h *handlerState) currentModeOnExit() []string {
 
 // runOnExit dispatches the mode's --on-exit steps after the pending action was
 // fulfilled. They reuse the hotkey action grammar ("action ...", "exec ...",
-// mode names) and run asynchronously: a step may route back through IPC into
-// ActivateMode, which acquires h.mu — held by the
-// executeActionAtPoint caller.
-func (h *handlerState) runOnExit(onExit []string) {
+// mode names) and run asynchronously, because a step may route back through
+// IPC into ActivateMode, which acquires h.mu, and the executeActionAtPoint
+// caller holds it. Their exec steps get env, the selection's variables.
+func (h *handlerState) runOnExit(onExit []string, env []string) {
 	if len(onExit) == 0 || h.executeActionSequence == nil {
 		return
 	}
@@ -180,7 +193,7 @@ func (h *handlerState) runOnExit(onExit []string) {
 			}
 		}()
 
-		h.executeActionSequence("on-exit", steps)
+		h.executeActionSequence("on-exit", steps, env)
 	}()
 }
 
@@ -207,10 +220,60 @@ func (h *handlerState) moveCursorAndHandleAction(
 		return
 	}
 
-	// No pending action - re-activate mode if requested
+	h.publishSelect(point, "")
+
+	// No pending action, so re-activate the mode if requested.
 	if shouldReActivate && reActivateFunc != nil {
 		h.logger.Debug("Re-activating mode after cursor movement")
 		reActivateFunc()
+	}
+}
+
+// publishSelect reports that the mode's target moved to point, and the action
+// it ran there, empty when it ran none, and returns the event it published.
+// Caller must hold h.mu.
+func (h *handlerState) publishSelect(point image.Point, action string) event.Event {
+	h.selectPublished = true
+
+	selection := event.Event{
+		Name:   event.Select,
+		Mode:   h.CurrModeString(),
+		Action: action,
+		Point:  point,
+	}
+	h.events.Publish(selection)
+
+	return selection
+}
+
+// trackSelection runs input, a step the user took, and reports the mode's
+// selection when the step set it and nothing during the step reported it
+// already. A step that lands on the point already held still counts, such as
+// zooming into the center cell. Only the entry points that carry user input
+// call it, so opening, refreshing or moving a mode to another display never
+// reports a selection. Caller must hold h.mu.
+func (h *handlerState) trackSelection(input func()) {
+	tracker, tracks := activeModeExtension[selectionTracker](h)
+	if !tracks {
+		input()
+
+		return
+	}
+
+	mode := h.CurrModeString()
+	before := tracker.SelectionWrites()
+
+	h.selectPublished = false
+
+	input()
+
+	if h.selectPublished || h.CurrModeString() != mode || tracker.SelectionWrites() == before {
+		return
+	}
+
+	point, selected := tracker.SelectionPoint()
+	if selected {
+		h.publishSelect(point, "")
 	}
 }
 
@@ -237,7 +300,7 @@ func (h *handlerState) handleHintsModeKey(key string) {
 		return
 	}
 
-	// Hint input processed by router; if exact match, perform action
+	// The router processed the input. On an exact match, perform the action.
 	if hintKeyResult.ExactHint() != nil {
 		hint := hintKeyResult.ExactHint()
 		center := hint.Element().Center()
@@ -247,15 +310,7 @@ func (h *handlerState) handleHintsModeKey(key string) {
 		pendingAction := h.hints.Context.PendingAction()
 		pendingModifier := h.hints.Context.PendingModifier()
 		repeat := h.hints.Context.Repeat()
-		cursorFollowSelection := h.hints.Context.CursorFollowSelection()
-		filterRoles := h.hints.Context.FilterRoles()
-		filterTextContains := h.hints.Context.FilterTextContains()
-		startWithSearch := h.hints.Context.StartWithSearch()
-		exitOnUnmatched := h.hints.Context.ExitOnUnmatched()
-		strategyOverride := h.hints.Context.StrategyOverride()
-		captureScopeOverride := h.hints.Context.CaptureScopeOverride()
-		labelDirectionOverride := h.hints.Context.LabelDirectionOverride()
-		splitWord := h.hints.Context.SplitWord()
+		session := h.hintSessionActivation()
 
 		h.moveCursorAndHandleAction(
 			center,
@@ -264,37 +319,25 @@ func (h *handlerState) handleHintsModeKey(key string) {
 			repeat ||
 				pendingAction == nil, // re-activate on repeat, or when no action (existing behavior)
 			func() {
-				h.activateHintModeInternal(modecmd.Activation{
-					Mode:                  domain.ModeHints,
-					CursorFollowSelection: &cursorFollowSelection,
-					FilterRoles:           filterRoles,
-					FilterTextContains:    filterTextContains,
-					Search:                &startWithSearch,
-					ExitOnUnmatched:       &exitOnUnmatched,
-					Strategy:              &strategyOverride,
-					CaptureScope:          &captureScopeOverride,
-					LabelDirection:        &labelDirectionOverride,
-					SplitWord:             &splitWord,
-					// OnExit is left nil to preserve the stored steps across
-					// re-activation.
-				})
-				// Restore repeat, action and modifier on the fresh context so subsequent
-				// selections continue the repeat cycle.
-				// Guard: only restore if re-activation succeeded (mode is still hints).
+				h.activateHintModeInternal(session)
+				// Restore the session's settings on the fresh context so later
+				// selections continue the repeat cycle, but only when the
+				// re-activation succeeded and the mode is still hints.
 				if repeat && h.appState.CurrentMode() == domain.ModeHints &&
 					h.hints != nil && h.hints.Context != nil {
 					h.hints.Context.SetPendingAction(pendingAction)
 					h.hints.Context.SetPendingModifier(pendingModifier)
 					h.hints.Context.SetRepeat(true)
-					h.hints.Context.SetCursorFollowSelection(cursorFollowSelection)
-					h.hints.Context.SetFilterRoles(filterRoles)
-					h.hints.Context.SetFilterTextContains(filterTextContains)
-					h.hints.Context.SetStartWithSearch(startWithSearch)
-					h.hints.Context.SetExitOnUnmatched(exitOnUnmatched)
-					h.hints.Context.SetStrategyOverride(strategyOverride)
-					h.hints.Context.SetCaptureScopeOverride(captureScopeOverride)
-					h.hints.Context.SetLabelDirectionOverride(labelDirectionOverride)
-					h.hints.Context.SetSplitWord(splitWord)
+					h.hints.Context.SetCursorFollowSelection(*session.CursorFollowSelection)
+					h.hints.Context.SetFilterRoles(session.FilterRoles)
+					h.hints.Context.SetFilterTextContains(session.FilterTextContains)
+					h.hints.Context.SetStartWithSearch(*session.Search)
+					h.hints.Context.SetConfirmOnLabel(*session.ConfirmOnLabel)
+					h.hints.Context.SetExitOnUnmatched(*session.ExitOnUnmatched)
+					h.hints.Context.SetStrategyOverride(*session.Strategy)
+					h.hints.Context.SetCaptureScopeOverride(*session.CaptureScope)
+					h.hints.Context.SetLabelDirectionOverride(*session.LabelDirection)
+					h.hints.Context.SetSplitWord(*session.SplitWord)
 				}
 			},
 		)
@@ -328,21 +371,21 @@ func (h *handlerState) handleSearchInputKey(key string) {
 		}
 
 		return
-	case configpkg.KeyNameSpace:
+	case configpkg.KeyNameSpace, shiftPrefix + configpkg.KeyNameSpace:
 		ctx.SetSearchQuery(ctx.SearchQuery() + " ")
 		h.applyHintSearchFilter()
 
 		return
-	case configpkg.KeyNameTab, "shift+" + configpkg.KeyNameTab:
-		backward := normalizedKey != configpkg.KeyNameTab
-
-		// CycleHint takes h.mu, which this key handler already holds.
-		go func() {
-			_ = h.outer.CycleHint(h.ctx, backward, false)
-		}()
+	case configpkg.KeyNameTab, shiftPrefix + configpkg.KeyNameTab:
+		err := h.cycleHint(h.ctx, normalizedKey != configpkg.KeyNameTab, false)
+		if err != nil {
+			h.logger.Warn("Failed to cycle hint search matches", zap.Error(err))
+		}
 
 		return
 	}
+
+	key = shiftedLetter(key)
 
 	if utf8.RuneCountInString(key) != 1 {
 		return
@@ -374,16 +417,26 @@ func (h *handlerState) applyHintSearchFilter() {
 		return
 	}
 
-	filteredHints := sourceHints.FilterByText(ctx.SearchQuery())
-	if ctx.SearchQuery() != "" {
-		// Letters go to the query while typing, so matches wear a marker no
-		// key can type; Return swaps it for real labels.
+	filteredHints := sourceHints.FilterBySearch(ctx.SearchQuery())
+	// Keep upstream's label suffix and confirm-on-label visible. Text-only
+	// queries use the fork's underline marker until Return assigns labels.
+	if ctx.SearchQuery() != "" && !strings.Contains(ctx.SearchQuery(), " ") {
 		filteredHints = markSearchMatches(filteredHints)
 	}
 
 	setHintsErr := ctx.SetVisibleHints(filteredHints)
 	if setHintsErr != nil {
 		h.logger.Error("Failed to apply hint search filter", zap.Error(setHintsErr))
+	}
+
+	// A hint carries a matched prefix only when the label typed after the
+	// search text kept it, so a single match by text alone still waits for
+	// Return.
+	if ctx.SearchConfirmsOnLabel() && filteredHints.Count() == 1 &&
+		filteredHints.All()[0].MatchedPrefix() != "" {
+		h.confirmHintSearch()
+
+		return
 	}
 
 	h.drawHintSearchInput()
@@ -395,34 +448,39 @@ func (h *handlerState) confirmHintSearch() {
 		return
 	}
 
-	visibleHints := h.hints.Context.Hints()
+	ctx := h.hints.Context
+
+	visibleHints := ctx.Hints()
 	if visibleHints == nil || visibleHints.Count() == 0 {
 		h.cancelHintSearch()
-
 		return
 	}
 
-	// Return acts on the match Tab moved to, or the only match. With several
-	// matches it closes the input so their labels can be typed.
+	// Select the match Tab chose, or a sole result, in this keystroke.
+	// Deferring this could act on the next search session's hints.
 	if h.cycleHintIndex >= 0 || visibleHints.Count() == 1 {
 		h.selectSearchMatch(max(h.cycleHintIndex, 0))
-
 		return
 	}
 
 	h.stopHintSearchTextInput(false)
-	h.hints.Context.SetSearchActive(false)
+	ctx.SetSearchActive(false)
 	h.hideHintSearchInput()
+	h.cycleHintIndex = -1
 
-	if first := visibleHints.All()[0]; first.Label() == searchMatchMarker {
-		labeled, err := h.labelMatchesWith(visibleHints, h.config.Hints.HintCharacters)
-		if err == nil {
-			err = h.hints.Context.SetVisibleHints(labeled)
-		}
+	labeled := visibleHints.WithoutMatchedPrefixes()
 
-		if err != nil {
-			h.logger.Error("Failed to label search matches", zap.Error(err))
-		}
+	var err error
+	if visibleHints.All()[0].Label() == searchMatchMarker {
+		labeled, err = h.labelMatchesWith(visibleHints, h.config.Hints.HintCharacters)
+	}
+
+	if err == nil {
+		err = ctx.SetVisibleHints(labeled)
+	}
+
+	if err != nil {
+		h.logger.Warn("Failed to label search matches", zap.Error(err))
 	}
 }
 
@@ -485,9 +543,10 @@ func (h *handlerState) selectSearchMatch(index int) {
 	// CycleHint steps forward from cycleHintIndex, landing on index.
 	h.cycleHintIndex = index - 1
 
-	go func() {
-		_ = h.outer.CycleHint(h.ctx, false, true)
-	}()
+	err := h.cycleHint(h.ctx, false, true)
+	if err != nil {
+		h.logger.Warn("Failed to select the hint search match", zap.Error(err))
+	}
 }
 
 func (h *handlerState) cancelHintSearch() {
@@ -495,8 +554,7 @@ func (h *handlerState) cancelHintSearch() {
 		return
 	}
 
-	// Hints opened straight into search have nothing to fall back to:
-	// Escape leaves hints mode rather than revealing every hint.
+	// A search-only activation has no visible labels to return to.
 	if h.hints.Context.StartWithSearch() {
 		h.stopHintSearchTextInput(false)
 		h.exitMode()
@@ -533,7 +591,7 @@ func (h *handlerState) drawHintSearchInput() {
 		resultCount = ctx.Hints().Count()
 	}
 
-	// Where the input sits is resolved from configuration by the overlay; the
+	// Where the input sits is resolved from configuration by the overlay. The
 	// handler says what is in it and which screen it is on, and nothing else.
 	err := h.overlayPort.DrawHintSearch(ports.HintSearch{
 		Screen:      h.screenBounds,
@@ -543,7 +601,7 @@ func (h *handlerState) drawHintSearchInput() {
 	if err != nil {
 		if derrors.IsNotSupported(err) {
 			// Either the backend draws no search input or it could not place
-			// the configured anchor; both mean nothing is on screen, and the
+			// the configured anchor. Both mean nothing is on screen, and the
 			// overlay says which it was.
 			h.logger.Debug("Hint search input not drawn")
 
@@ -587,7 +645,7 @@ func (h *handlerState) handleGridModeKey(key string) {
 	if gridKeyResult.Complete() {
 		targetPoint := gridKeyResult.TargetPoint()
 
-		// Convert from window-local coordinates to absolute screen coordinates using helper
+		// Convert from window-local coordinates to absolute screen coordinates.
 		absolutePoint := geometry.ConvertToAbsoluteCoordinates(targetPoint, h.screenBounds)
 		h.grid.Context.SetSelectionPoint(absolutePoint)
 
@@ -641,4 +699,26 @@ func (h *handlerState) handleGridModeKey(key string) {
 			h.logger.Error("Failed to move cursor", zap.Error(moveCursorErr))
 		}
 	}
+}
+
+// shiftPrefix is how the Linux and Windows taps name a key typed with Shift
+// held, after NormalizeKeyForComparison.
+const shiftPrefix = "shift+"
+
+// shiftedLetter turns "Shift+c", how the Linux and Windows taps name a capital,
+// into "C", the character the macOS tap sends. Any other key comes back as
+// given. A shifted symbol depends on the keyboard layout, which the key name
+// does not carry, so it stays dropped.
+func shiftedLetter(key string) string {
+	base, ok := strings.CutPrefix(strings.ToLower(key), shiftPrefix)
+	if !ok {
+		return key
+	}
+
+	letter, size := utf8.DecodeRuneInString(base)
+	if size == 0 || size != len(base) || !unicode.IsLetter(letter) {
+		return key
+	}
+
+	return string(unicode.ToUpper(letter))
 }

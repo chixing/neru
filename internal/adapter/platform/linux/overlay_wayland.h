@@ -16,7 +16,7 @@ typedef struct {
 	int x, y, width, height;
 	int scale;  // legacy integer wl_output.scale (fallback when no fractional-scale)
 	// fractional_scale_120 is the compositor's preferred scale as a numerator over
-	// 120 (e.g. 180 == 1.5x), from wp_fractional_scale_v1. 0 means not received; the
+	// 120 (e.g. 180 == 1.5x), from wp_fractional_scale_v1. 0 means not received, and the
 	// integer `scale` path is used until it arrives.
 	int fractional_scale_120;
 	struct wl_output *wl_output;
@@ -27,7 +27,9 @@ typedef struct {
 	struct wl_surface *wl_surface;
 	struct zwlr_layer_surface_v1 *layer_surface;
 
-	// Current buffer (pointers updated by select_buffer, avoids changing all C functions)
+	// The active buffer. These alias one slot of the pool below, and
+	// neru_wayland_overlay_select_buffer repoints them, so draw and commit
+	// code read one set of fields whichever buffer is current.
 	struct wl_buffer *buffer;
 	cairo_surface_t *cairo_surface;
 	cairo_t *cr;
@@ -71,7 +73,7 @@ typedef struct {
 	int nr_screens;
 
 	// Set once neru_wayland_overlay_new has wired xdg_output for the initial
-	// outputs; afterwards a hotplug-added wl_output wires its own xdg_output
+	// outputs. Afterwards a hotplug-added wl_output wires its own xdg_output
 	// inline in the registry handler rather than the bulk setup loop.
 	int outputs_configured;
 
@@ -97,6 +99,19 @@ void neru_wayland_overlay_sync(NeruWaylandOverlay *overlay);
 void neru_wayland_overlay_select_buffer(NeruWaylandOverlay *overlay, int index);
 int neru_wayland_overlay_available_buffer(NeruWaylandOverlay *overlay);
 void neru_wayland_overlay_dispatch_pending(NeruWaylandOverlay *overlay);
+
+// NERU_BLANK_NOTHING_SHOWN means the overlay had nothing on screen to clear,
+// and NERU_BLANK_NO_BUFFER that the compositor held every spare buffer.
+#define NERU_BLANK_NOTHING_SHOWN (-1)
+#define NERU_BLANK_NO_BUFFER (-2)
+
+// neru_wayland_overlay_blank commits a cleared spare buffer in place of the one
+// on screen and waits up to timeout_ms for the compositor to draw a frame
+// without it. The surface stays mapped, so the overlay keeps the keyboard. It
+// returns the index of the buffer that was on screen, whose pixels nothing
+// touched, for neru_wayland_overlay_unblank to put back, or a NERU_BLANK_ code.
+int neru_wayland_overlay_blank(NeruWaylandOverlay *overlay, int timeout_ms);
+void neru_wayland_overlay_unblank(NeruWaylandOverlay *overlay, int saved);
 void neru_wayland_overlay_rect(
     NeruWaylandOverlay *overlay, double x, double y, double width, double height, unsigned int fill,
     unsigned int stroke, double stroke_width);

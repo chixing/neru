@@ -9,6 +9,7 @@
 #include <X11/extensions/shape.h>
 #include <cairo/cairo-xlib.h>
 #include <cairo/cairo.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,13 +49,15 @@ NeruX11Overlay *neru_x11_overlay_new(void) {
 	attrs.colormap = overlay->colormap;
 	attrs.background_pixel = 0;
 	attrs.border_pixel = 0;
-	attrs.event_mask = ExposureMask;
+	// Select no events. Nothing reads this connection's queue, so an Expose
+	// would pile up there on every map and resize.
+	attrs.event_mask = NoEventMask;
 
 	// One row taller than the screen, on purpose. Mutter treats an
 	// override-redirect window whose rectangle equals a monitor as a
 	// fullscreen window, and GNOME Shell then hides its top bar for as long
 	// as the overlay is mapped. The extra row hangs off the bottom edge and
-	// draws nothing; every other server ignores it.
+	// draws nothing, and every other server ignores it.
 	overlay->window = XCreateWindow(
 	    display, overlay->root, 0, 0, overlay->width, neru_x11_overlay_window_height(overlay->height), 0, 32,
 	    InputOutput, overlay->visual, CWOverrideRedirect | CWColormap | CWBackPixel | CWBorderPixel | CWEventMask,
@@ -114,9 +117,82 @@ void neru_x11_overlay_show(NeruX11Overlay *overlay) {
 	XFlush(overlay->display);
 }
 
+// The hide is synced rather than flushed. A screen capture reads the root
+// window on a connection of its own, and only a round trip makes the server
+// unmap the overlay before it answers that capture.
 void neru_x11_overlay_hide(NeruX11Overlay *overlay) {
 	XUnmapWindow(overlay->display, overlay->window);
+	XSync(overlay->display, False);
+}
+
+// neru_x11_overlay_composited reports whether a compositing manager owns the
+// screen's _NET_WM_CM_S<n> selection. A capture then reads what it painted,
+// which lags the server by a repaint.
+static int neru_x11_overlay_composited(NeruX11Overlay *overlay) {
+	char name[32];
+	snprintf(name, sizeof(name), "_NET_WM_CM_S%d", overlay->screen);
+	Atom selection = XInternAtom(overlay->display, name, False);
+
+	return XGetSelectionOwner(overlay->display, selection) != None;
+}
+
+cairo_surface_t *neru_x11_overlay_blank(NeruX11Overlay *overlay, int *composited, int *failed) {
+	*composited = 0;
+	*failed = 0;
+	if (overlay == NULL) {
+		return NULL;
+	}
+
+	XWindowAttributes attrs;
+	if (!XGetWindowAttributes(overlay->display, overlay->window, &attrs) || attrs.map_state != IsViewable) {
+		return NULL;
+	}
+
+	// The copy stays on the server, a pixmap like the window, so no screen
+	// image crosses the connection.
+	cairo_surface_flush(overlay->surface);
+	cairo_surface_t *saved = cairo_surface_create_similar(
+	    overlay->surface, CAIRO_CONTENT_COLOR_ALPHA, overlay->width,
+	    (int)neru_x11_overlay_window_height(overlay->height));
+	cairo_t *cr = cairo_create(saved);
+	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+	cairo_set_source_surface(cr, overlay->surface, 0, 0);
+	cairo_paint(cr);
+	cairo_status_t copied = cairo_status(cr);
+	cairo_destroy(cr);
+	cairo_surface_flush(saved);
+
+	// Without a good copy there would be nothing to put back, so the window
+	// stays as it is and the capture fails.
+	if (copied != CAIRO_STATUS_SUCCESS || cairo_surface_status(saved) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(saved);
+		*failed = 1;
+
+		return NULL;
+	}
+
+	neru_x11_overlay_clear(overlay);
+	XSync(overlay->display, False);
+	*composited = neru_x11_overlay_composited(overlay);
+
+	return saved;
+}
+
+void neru_x11_overlay_unblank(NeruX11Overlay *overlay, cairo_surface_t *saved) {
+	if (overlay == NULL || saved == NULL) {
+		return;
+	}
+
+	// A context of its own, because overlay->cr carries the HiDPI scale and
+	// the copy is already in device pixels.
+	cairo_t *cr = cairo_create(overlay->surface);
+	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+	cairo_set_source_surface(cr, saved, 0, 0);
+	cairo_paint(cr);
+	cairo_destroy(cr);
+	cairo_surface_flush(overlay->surface);
 	XFlush(overlay->display);
+	cairo_surface_destroy(saved);
 }
 
 void neru_x11_overlay_clear(NeruX11Overlay *overlay) {
@@ -222,7 +298,7 @@ void neru_x11_overlay_rounded_rect(
 // triangular tail merged into one edge, as a single closed outline. edge: 0 =
 // no tail, 1 = tail on the top edge (apex above), 2 = tail on the bottom edge
 // (apex below). The tail base (a_left..a_right) is clamped to the edge's flat
-// span so it never runs onto a rounded corner; if no room remains the tail is
+// span so it never runs onto a rounded corner. If no room remains the tail is
 // dropped. Building badge and tail as one path lets the caller fill and stroke
 // once, avoiding the double-composited seam a separate overlaid triangle causes
 // with translucent colors.

@@ -112,7 +112,7 @@ func TestActivateMode_PermissionDialogDoesNotBlockOrHoldLock(t *testing.T) {
 
 	handler := newVisionHintsHandler(modal.system, zap.NewNop(), func() { close(shutdownCalled) })
 
-	// Must return with the dialog still open: the blocking permission request
+	// Must return with the dialog still open. The blocking permission request
 	// runs on its own goroutine, never on the activation path under h.mu.
 	handler.ActivateMode(modecmd.Activation{Mode: domain.ModeHints})
 
@@ -146,13 +146,25 @@ func TestActivateMode_ContourStrategyRequestsScreenCapturePermission(t *testing.
 	modal.consent <- ports.ScreenCaptureCanceled
 }
 
+func TestActivateMode_SegmentStrategyRequestsScreenCapturePermission(t *testing.T) {
+	modal := newPermissionModal()
+	handler := newCaptureHintsHandler(domain.StrategySegment, modal.system, zap.NewNop(), func() {})
+
+	// Segment reads the window's pixels too, so it pays the same gate.
+	handler.ActivateMode(modecmd.Activation{Mode: domain.ModeHints})
+
+	modal.awaitOpen(t)
+
+	modal.consent <- ports.ScreenCaptureCanceled
+}
+
 func TestResumeHintActivationAfterPermission_DoesNotRepromptWhenCheckStillFails(t *testing.T) {
 	requests := make(chan struct{}, 2)
 	consent := make(chan ports.ScreenCaptureConsent)
 
 	systemMock := &portmocks.MockSystemPort{
 		// The check keeps failing even after a Granted consent, violating the
-		// SystemPort contract; the resume must drop the consent rather than
+		// SystemPort contract. The resume must drop the consent rather than
 		// re-run the activation and show the dialog again forever.
 		CheckScreenCapturePermissionFunc: func(context.Context) bool { return false },
 		RequestScreenCapturePermissionFunc: func(context.Context) ports.ScreenCaptureConsent {

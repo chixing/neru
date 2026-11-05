@@ -22,10 +22,13 @@ import (
 // wlrootsCaptureRegion reads region back through wlr-screencopy-unstable-v1.
 //
 // Only the wlroots family reaches here. KWin shares this client stack for
-// everything else — wl_output, xdg-output, layer shell — but advertises no
-// screencopy manager, so CaptureScreenRegion sends KDE to the portal backend
-// before this branch is considered.
-func wlrootsCaptureRegion(region image.Rectangle) (*image.RGBA, error) {
+// everything else, such as wl_output, xdg-output and layer shell, but
+// advertises no screencopy manager, so CaptureScreenRegion sends KDE to the
+// portal backend before this branch is considered.
+//
+// budgetMS bounds the whole exchange, so the capture gives up when the caller's
+// deadline does.
+func wlrootsCaptureRegion(region image.Rectangle, budgetMS int) (*image.RGBA, error) {
 	if os.Getenv("WAYLAND_DISPLAY") == "" {
 		return nil, derrors.New(
 			derrors.CodeNotSupported,
@@ -33,20 +36,29 @@ func wlrootsCaptureRegion(region image.Rectangle) (*image.RGBA, error) {
 		)
 	}
 
-	var capture C.NeruCapture
+	var (
+		capture   C.NeruCapture
+		transform C.int
+	)
 
 	status := C.neru_screencopy_capture_region(
 		C.int(region.Min.X),
 		C.int(region.Min.Y),
 		C.int(region.Dx()),
 		C.int(region.Dy()),
-		C.int(screenCaptureTimeoutMS),
+		C.int(budgetMS),
 		&capture,
+		&transform,
 	)
 
 	if status != C.NERU_CAPTURE_OK {
 		return nil, captureError(captureStatus(status), captureLabelCompositor)
 	}
 
-	return captureResult(&capture)
+	img, err := captureResult(&capture)
+	if err != nil {
+		return nil, err
+	}
+
+	return orientToOutput(img, int(transform)), nil
 }

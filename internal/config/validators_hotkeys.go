@@ -35,7 +35,34 @@ var validModifiers = map[string]bool{
 	"LeftShift":   true,
 }
 
+// primaryModifierNames are what Primary may stand for. Shift is left out
+// because a mode reads a Shift chord as typed input, not as a hotkey. The
+// sided names are left out because the hotkey backends match a modifier and
+// not the side it was pressed on.
+var primaryModifierNames = []string{
+	modifierDisplayCmd, "Command", modifierDisplaySuper, "Meta",
+	modifierDisplayCtrl, "Control", modifierDisplayAlt, "Option",
+}
+
 const minModifierComboParts = 2
+
+func (p PrimaryModifierConfig) validate() error {
+	for _, entry := range PerPlatform[string](p).entries() {
+		if !slices.ContainsFunc(primaryModifierNames, func(name string) bool {
+			return strings.EqualFold(name, strings.TrimSpace(entry.value))
+		}) {
+			return derrors.Newf(
+				derrors.CodeInvalidConfig,
+				"general.primary_modifier.%s must be one of %s, got %q",
+				entry.platform,
+				strings.Join(primaryModifierNames, ", "),
+				entry.value,
+			)
+		}
+	}
+
+	return nil
+}
 
 func isValidModifier(mod string) bool {
 	return validModifiers[mod]
@@ -129,6 +156,7 @@ func (c *Config) checkHotkeysConflicts() error {
 		{ModeNameRecursiveGrid, c.RecursiveGrid.Hotkeys},
 		{ModeNameBisect, c.Bisect.Hotkeys},
 		{ModeNameScroll, c.Scroll.Hotkeys},
+		{ModeNameMonitorSelect, c.MonitorSelect.Hotkeys},
 	}, len(c.Modes))
 
 	for name, mode := range c.Modes {
@@ -136,7 +164,7 @@ func (c *Config) checkHotkeysConflicts() error {
 	}
 
 	for _, mode := range modes {
-		err := checkHotkeyConflicts(mode.modeName+".hotkeys", mode.table)
+		err := checkHotkeyConflicts(mode.modeName+".hotkeys", mode.table, c.General.PrimaryModifier)
 		if err != nil {
 			return err
 		}
@@ -153,6 +181,7 @@ func (c *Config) checkHotkeysConflicts() error {
 					appConfig.BundleID,
 				),
 				c.HotkeysForModeAndApp(name, appConfig.BundleID),
+				c.General.PrimaryModifier,
 			)
 			if err != nil {
 				return err
@@ -160,45 +189,33 @@ func (c *Config) checkHotkeysConflicts() error {
 		}
 	}
 
-	for idx, appConfig := range c.Hints.AppConfigs {
-		err := checkHotkeyConflicts(
-			fmt.Sprintf(
-				"hints.hotkeys merged with hints.app_configs[%d] (%s)",
-				idx,
-				appConfig.BundleID,
-			),
-			c.HotkeysForModeAndApp(ModeNameHints, appConfig.BundleID),
-		)
-		if err != nil {
-			return err
-		}
+	appTables := []struct {
+		modeName   string
+		appConfigs []AppConfig
+	}{
+		{ModeNameHints, c.Hints.AppConfigs},
+		{ModeNameGrid, c.Grid.AppConfigs},
+		{ModeNameRecursiveGrid, c.RecursiveGrid.AppConfigs},
+		{ModeNameBisect, c.Bisect.AppConfigs},
+		{ModeNameScroll, c.Scroll.AppConfigs},
 	}
 
-	for idx, appConfig := range c.Scroll.AppConfigs {
-		err := checkHotkeyConflicts(
-			fmt.Sprintf(
-				"scroll.hotkeys merged with scroll.app_configs[%d] (%s)",
-				idx,
-				appConfig.BundleID,
-			),
-			c.HotkeysForModeAndApp(ModeNameScroll, appConfig.BundleID),
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	for idx, appConfig := range c.Bisect.AppConfigs {
-		err := checkHotkeyConflicts(
-			fmt.Sprintf(
-				"bisect.hotkeys merged with bisect.app_configs[%d] (%s)",
-				idx,
-				appConfig.BundleID,
-			),
-			c.HotkeysForModeAndApp(ModeNameBisect, appConfig.BundleID),
-		)
-		if err != nil {
-			return err
+	for _, mode := range appTables {
+		for idx, appConfig := range mode.appConfigs {
+			err := checkHotkeyConflicts(
+				fmt.Sprintf(
+					"%s.hotkeys merged with %s.app_configs[%d] (%s)",
+					mode.modeName,
+					mode.modeName,
+					idx,
+					appConfig.BundleID,
+				),
+				c.HotkeysForModeAndApp(mode.modeName, appConfig.BundleID),
+				c.General.PrimaryModifier,
+			)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -208,7 +225,7 @@ func (c *Config) checkHotkeysConflicts() error {
 		if merged == nil {
 			continue
 		}
-		// Convert to StringOrStringArray for conflict checking
+
 		table := make(map[string]StringOrStringArray, len(merged))
 		for k, v := range merged {
 			table[k] = StringOrStringArray(v)
@@ -221,6 +238,7 @@ func (c *Config) checkHotkeysConflicts() error {
 				appConfig.BundleID,
 			),
 			table,
+			c.General.PrimaryModifier,
 		)
 		if err != nil {
 			return err
@@ -230,10 +248,14 @@ func (c *Config) checkHotkeysConflicts() error {
 	return nil
 }
 
-func checkHotkeyConflicts(fieldPrefix string, table map[string]StringOrStringArray) error {
+func checkHotkeyConflicts(
+	fieldPrefix string,
+	table map[string]StringOrStringArray,
+	primary PrimaryModifierConfig,
+) error {
 	seen := map[string]string{}
 	for key := range table {
-		normalized := NormalizeKeyForComparison(key)
+		normalized := primary.NormalizeKey(key)
 		if prev, ok := seen[normalized]; ok {
 			return derrors.Newf(
 				derrors.CodeInvalidConfig,
@@ -253,11 +275,11 @@ func checkHotkeyConflicts(fieldPrefix string, table map[string]StringOrStringArr
 	// start), making the sequence silently unreachable.
 	//
 	// We use the original key (not normalized) to identify sequences,
-	// matching the ValidateHotkey logic: a sequence is exactly 2 ASCII
+	// matching the ValidateHotkey logic, where a sequence is exactly 2 ASCII
 	// letters in the original form. Named keys like "Up" normalize to
 	// "up" which passes IsAllLetters, but they are not sequences.
 	for key := range table {
-		normalized := NormalizeKeyForComparison(key)
+		normalized := primary.NormalizeKey(key)
 		if len(normalized) != 1 {
 			continue
 		}
@@ -267,7 +289,7 @@ func checkHotkeyConflicts(fieldPrefix string, table map[string]StringOrStringArr
 				continue
 			}
 
-			normalizedSeq := NormalizeKeyForComparison(seqKey)
+			normalizedSeq := primary.NormalizeKey(seqKey)
 			if strings.HasPrefix(normalizedSeq, normalized) {
 				return derrors.Newf(
 					derrors.CodeInvalidConfig,
@@ -422,7 +444,7 @@ func validateHotkeyActionString(actionStr string) error {
 	}
 
 	// Mode commands may include flags (e.g. "hints --action left_click"). Only
-	// the command word is judged here: the flags after it are read by
+	// the command word is judged here. The flags after it are read by
 	// ValidateModeCommands, which weighs what it finds rather than refusing all
 	// of it.
 	cmd := strings.Fields(trimmed)[0]
@@ -436,7 +458,7 @@ func validateHotkeyActionString(actionStr string) error {
 		"toggle-scroll-invert",
 		"config",
 		// "run" takes its own steps as arguments. Each one is validated when
-		// the sequence executes, not here: the steps arrive as a single quoted
+		// the sequence executes, not here. The steps arrive as a single quoted
 		// string per step, so splitting them apart correctly is the runtime's
 		// job, not the validator's.
 		CmdRun,

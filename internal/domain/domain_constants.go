@@ -20,13 +20,13 @@ const (
 	ModeScroll
 	// ModeRecursiveGrid is the recursive-grid navigation mode.
 	ModeRecursiveGrid
-	// ModeBisect is the bisect navigation mode: every press keeps half of the
+	// ModeBisect is the bisect navigation mode. Every press keeps half of the
 	// region, or a quadrant of it.
 	ModeBisect
 	// ModeMonitorSelect is the interactive monitor selection mode.
 	ModeMonitorSelect
 	// ModeCustom is a mode the user declared in [modes.<name>]. It has no
-	// logic of its own: a keymap and an indicator label, and the declared
+	// logic of its own, only a keymap and an indicator label, and the declared
 	// name says which. One value serves every declared mode, so the switches
 	// that name a mode gain one arm rather than one per declaration.
 	ModeCustom
@@ -36,7 +36,7 @@ const (
 //
 // CommandMacro deliberately spells the same word as config.MacroCommand, which
 // names the step keyword inside a binding. A macro is invoked the same way
-// wherever it is written, so the two must not drift apart; they are separate
+// wherever it is written, so the two must not drift apart. They are separate
 // constants only because the domain package cannot import config.
 const (
 	CommandPing                        = "ping"
@@ -54,11 +54,25 @@ const (
 	CommandToggleScrollInvert          = "toggle-scroll-invert"
 	CommandConfigSet                   = "config-set"
 
-	// CommandHintsProbe reports what hints mode would target for the focused
-	// window. It is a read-only query rather than a mode command: it draws
-	// nothing, activates nothing, and answers with a summary. `neru hints
-	// --debug` is its CLI spelling.
-	CommandHintsProbe = "hints-probe"
+	// CommandWatch streams the status, then each event, while the client stays.
+	CommandWatch = "watch"
+
+	// CommandQueryDisplays reports every connected display. `neru query
+	// displays` is its CLI spelling.
+	CommandQueryDisplays = "query-displays"
+	// CommandQueryCursor reports where the cursor is and which display holds
+	// it. `neru query cursor` is its CLI spelling.
+	CommandQueryCursor = "query-cursor"
+	// CommandQueryWindow reports the focused window's bounds. `neru query
+	// window` is its CLI spelling.
+	CommandQueryWindow = "query-window"
+	// CommandQueryApp reports the focused application as per-app config
+	// matches it. `neru query app` is its CLI spelling.
+	CommandQueryApp = "query-app"
+	// CommandQueryHints reports what hints mode would label in the focused
+	// window. It draws nothing and enters no mode. `neru query hints` is its
+	// CLI spelling.
+	CommandQueryHints = "query-hints"
 )
 
 // Mode-related constants.
@@ -70,11 +84,11 @@ const (
 // The values a mode command's options accept.
 //
 // They live here rather than beside the configuration fields or the mode that
-// reads them because a mode command reaches the daemon from three places — the
-// CLI, a hotkey binding, and a direct IPC caller — and all three have to agree
-// on the vocabulary. Config validates bindings, so the module that parses a
-// mode command cannot import config; putting the values beneath both is what
-// lets every reader name the same constant.
+// reads them because a mode command reaches the daemon from the CLI, a hotkey
+// binding, and a direct IPC caller, and all three have to agree on the
+// vocabulary. Config validates bindings, so the module that parses a mode
+// command cannot import config. Putting the values beneath both lets every
+// reader name the same constant.
 
 // Element detection strategies, the values hints.strategy accepts.
 const (
@@ -84,7 +98,7 @@ const (
 	// StrategyVision detects elements from the screen image instead.
 	StrategyVision = "vision"
 
-	// CaptureScopeWindow scans the focused window; the whole screen when
+	// CaptureScopeWindow scans the focused window, or the whole screen when
 	// nothing is focused.
 	CaptureScopeWindow = "window"
 
@@ -95,6 +109,24 @@ const (
 	// StrategyContour detects interactive targets from the screen image by
 	// edge and contour analysis, an algorithm ported from wl-kbptr.
 	StrategyContour = "contour"
+
+	// StrategySegment detects targets from the screen image by segmenting it
+	// into controls, pictures and text labels, with no recognition step.
+	StrategySegment = "segment"
+)
+
+// What the segment strategy hints, the values hints.segment.targets accepts.
+const (
+	// SegmentTargetsWords hints every word, so every link is reachable. This
+	// is the default.
+	SegmentTargetsWords = "words"
+
+	// SegmentTargetsPhrases joins words of one color into phrases. Dense
+	// text gets fewer hints, but adjacent links of one color share a hint.
+	SegmentTargetsPhrases = "phrases"
+
+	// SegmentTargetsControls hints controls, icons and pictures, and no text.
+	SegmentTargetsControls = "controls"
 )
 
 // Hint label enumeration orders, the values hints.label_direction accepts.
@@ -125,13 +157,7 @@ const (
 	ShellCommandTimeout = 30 * time.Second
 )
 
-// Default values.
-const (
-	DefaultExitKey = "Escape"
-)
-
-// BaseManager provides common functionality for domain managers.
-// It contains shared fields and methods used across different domain managers.
+// BaseManager holds the typed input and logger that the domain managers share.
 type BaseManager struct {
 	currentInput string
 	Logger       *zap.Logger

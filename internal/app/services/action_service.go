@@ -80,7 +80,6 @@ func (s *ActionService) PerformActionAtPoint(
 	point image.Point,
 	modifiers action.Modifiers,
 ) error {
-	// Parse action string to domain type
 	actionType, actionTypeErr := action.ParseType(actionString)
 	if actionTypeErr != nil {
 		return derrors.WrapConfigFailed(actionTypeErr, "validate action type")
@@ -113,29 +112,9 @@ func mouseActionIndicatorIncludes(actions []string, actionType action.Type) bool
 	})
 }
 
-// IsFocusedAppExcluded checks if the currently focused application is in the exclusion list.
-func (s *ActionService) IsFocusedAppExcluded(ctx context.Context) (bool, error) {
-	bundleID, bundleIDErr := s.accessibility.FocusedAppBundleID(ctx)
-	if bundleIDErr != nil {
-		return false, derrors.WrapAccessibilityFailed(bundleIDErr, "get focused app bundle ID")
-	}
-
-	isExcluded := s.accessibility.IsAppExcluded(ctx, bundleID)
-	if isExcluded {
-		s.logger.Debug("Focused app is excluded", zap.String("bundle_id", bundleID))
-	}
-
-	return isExcluded, nil
-}
-
 // FocusedAppBundleID returns the bundle ID of the currently focused application.
 func (s *ActionService) FocusedAppBundleID(ctx context.Context) (string, error) {
 	return s.accessibility.FocusedAppBundleID(ctx)
-}
-
-// IsAppExcluded checks if the given bundle ID is in the exclusion list.
-func (s *ActionService) IsAppExcluded(ctx context.Context, bundleID string) bool {
-	return s.accessibility.IsAppExcluded(ctx, bundleID)
 }
 
 // MoveCursorToElement moves the cursor to the center of the specified element.
@@ -208,7 +187,7 @@ func (s *ActionService) MoveMouseTo(
 //
 // Mode-exit paths call this so an interrupted drag does not leave the desktop
 // behaving as if a button were still pressed. The release lands wherever the
-// cursor is, so any in-flight cursor animation is settled first: a grid whose
+// cursor is, so any in-flight cursor animation is settled first. A grid whose
 // final warp is still animating when the mode exits would otherwise release
 // the drag part-way to the cell the user chose.
 func (s *ActionService) ReleaseHeldButtons(ctx context.Context) error {
@@ -230,7 +209,7 @@ func (s *ActionService) ReleaseHeldButtons(ctx context.Context) error {
 // A ports.RelativeCursorMover implementation is consulted first and may apply
 // the delta itself (natively on Wayland, animated on macOS when
 // smooth_cursor.move_mouse_enabled is set). bypassSmooth applies only to the
-// read-then-warp fallback below it: when true, the fallback skips the jump
+// read-then-warp fallback below it. When true, the fallback skips the jump
 // animator (used for keyboard-driven movements).
 func (s *ActionService) MoveMouseRelative(
 	ctx context.Context,
@@ -240,7 +219,7 @@ func (s *ActionService) MoveMouseRelative(
 	shouldBypass := len(bypassSmooth) > 0 && bypassSmooth[0]
 
 	// Platforms that can apply the delta natively (ports.RelativeCursorMover)
-	// avoid the read-then-warp round trip below; everything else falls through.
+	// avoid the read-then-warp round trip below. Everything else falls through.
 	if mover, ok := s.system.(ports.RelativeCursorMover); ok {
 		handled, err := mover.MoveCursorBy(ctx, image.Point{X: deltaX, Y: deltaY})
 		if handled {
@@ -266,8 +245,8 @@ const cursorSyncTimeout = 150 * time.Millisecond
 // action's target point. Unlike CursorPosition it first settles any in-flight
 // cursor animation (ports.CursorSettler), so an action fired mid-animation
 // acts at the point the user aimed for instead of a mid-animation position,
-// and then refreshes the platform's cursor cache (ports.CursorSynchronizer):
-// on Wayland a hand-moved mouse invalidates that cache, and an action fired
+// and then refreshes the platform's cursor cache (ports.CursorSynchronizer).
+// On Wayland a hand-moved mouse invalidates that cache, and an action fired
 // from idle, where no mode activation has resynced it, would otherwise land on
 // the stale point. Plain observers that must not cut animations short use
 // CursorPosition.
@@ -279,17 +258,26 @@ func (s *ActionService) CursorPositionForAction(ctx context.Context) (image.Poin
 		}
 	}
 
-	if syncer, ok := s.system.(ports.CursorSynchronizer); ok {
-		syncCtx, cancel := context.WithTimeout(ctx, cursorSyncTimeout)
-		defer cancel()
+	err := s.syncCursorCache(ctx)
+	if err != nil {
+		s.logger.Warn(
+			"Failed to sync cursor position; action target may be stale",
+			zap.Error(err),
+		)
+	}
 
-		err := syncer.SyncCursorPosition(syncCtx)
-		if err != nil {
-			s.logger.Warn(
-				"Failed to sync cursor position; action target may be stale",
-				zap.Error(err),
-			)
-		}
+	return s.system.CursorPosition(ctx)
+}
+
+// ObservedCursorPosition returns the cursor position for a caller that reports
+// it rather than acts on it. It refreshes the platform's cursor cache as
+// CursorPositionForAction does, so a mouse moved by hand on Wayland is reported
+// where it is now. It returns a failed refresh rather than the cached position.
+// It never settles an animation, so asking does not cut a glide short.
+func (s *ActionService) ObservedCursorPosition(ctx context.Context) (image.Point, error) {
+	err := s.syncCursorCache(ctx)
+	if err != nil {
+		return image.Point{}, err
 	}
 
 	return s.system.CursorPosition(ctx)
@@ -298,6 +286,47 @@ func (s *ActionService) CursorPositionForAction(ctx context.Context) (image.Poin
 // CursorPosition returns the current cursor position.
 func (s *ActionService) CursorPosition(ctx context.Context) (image.Point, error) {
 	return s.system.CursorPosition(ctx)
+}
+
+// Display is one connected display as the query commands report it.
+type Display struct {
+	Name   string
+	Bounds image.Rectangle
+	// Scale is how many physical pixels of Bounds make one apparent unit, as
+	// ports.SystemPort.ScreenScale defines it.
+	Scale float64
+}
+
+// Displays lists every connected display with its scale, in the platform's
+// enumeration order. A platform that cannot read a scale reports 1 for it, as
+// the port specifies.
+func (s *ActionService) Displays(ctx context.Context) ([]Display, error) {
+	screens, err := s.system.Screens(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	displays := make([]Display, len(screens))
+	for idx, screen := range screens {
+		scale, scaleErr := s.system.ScreenScale(ctx, screen.Bounds)
+		if scaleErr != nil {
+			if !derrors.IsNotSupported(scaleErr) {
+				return nil, scaleErr
+			}
+
+			scale = 1
+		}
+
+		displays[idx] = Display{Name: screen.Name, Bounds: screen.Bounds, Scale: scale}
+	}
+
+	return displays, nil
+}
+
+// FocusedWindowBounds returns the focused window's bounds, and false when no
+// window has focus. See ports.SystemPort.FocusedWindowBounds for its errors.
+func (s *ActionService) FocusedWindowBounds(ctx context.Context) (image.Rectangle, bool, error) {
+	return s.system.FocusedWindowBounds(ctx)
 }
 
 // ScreenBounds returns the bounds of the active screen.
@@ -323,7 +352,6 @@ func (s *ActionService) MoveMouseToCenter(ctx context.Context, offsetX, offsetY 
 		target,
 		screenBounds,
 		false,
-
 		zap.Int("offset_x", offsetX),
 		zap.Int("offset_y", offsetY),
 	)
@@ -416,6 +444,20 @@ func (s *ActionService) MoveMouseToCenterOfWindow(
 	)
 }
 
+// syncCursorCache refreshes the platform's cursor cache where it keeps one
+// (ports.CursorSynchronizer), bounded by cursorSyncTimeout.
+func (s *ActionService) syncCursorCache(ctx context.Context) error {
+	syncer, ok := s.system.(ports.CursorSynchronizer)
+	if !ok {
+		return nil
+	}
+
+	syncCtx, cancel := context.WithTimeout(ctx, cursorSyncTimeout)
+	defer cancel()
+
+	return syncer.SyncCursorPosition(syncCtx)
+}
+
 func (s *ActionService) drawMouseActionIndicator(point image.Point, actionType action.Type) {
 	cfg := s.mouseActionConfig()
 	if !cfg.Enabled || !mouseActionIndicatorIncludes(cfg.Actions, actionType) {
@@ -455,8 +497,6 @@ func (s *ActionService) mouseActionConfig() config.MouseActionConfig {
 }
 
 // moveMouseWithBounds clamps target to the given screen bounds and moves the cursor.
-// This is the shared implementation used by MoveMouseTo and MoveMouseToCenter to
-// avoid duplicating clamp-and-move logic.
 func (s *ActionService) moveMouseWithBounds(
 	ctx context.Context,
 	target image.Point,

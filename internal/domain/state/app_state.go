@@ -4,18 +4,21 @@ import (
 	"sync"
 
 	"github.com/y3owk1n/neru/internal/domain"
+	"github.com/y3owk1n/neru/internal/domain/event"
 )
 
 // ModeExitReason indicates how the most recent mode was exited.
 type ModeExitReason int
 
 const (
-	// ModeExitReasonNone is the initial state — no exit has been observed.
+	// ModeExitReasonNone is the initial state, before any exit has been observed.
 	ModeExitReasonNone ModeExitReason = iota
 	// ModeExitReasonCompleted means the user made a deliberate selection.
 	ModeExitReasonCompleted
 	// ModeExitReasonCancelled means the user dismissed the mode without selecting.
 	ModeExitReasonCancelled
+	// ModeExitReasonSwitched means the mode closed because another one opened.
+	ModeExitReasonSwitched
 )
 
 // AppState manages the core application state including enabled status,
@@ -32,7 +35,7 @@ type AppState struct {
 	modeExitReason       ModeExitReason
 	modeExitReasonValid  bool
 
-	// Callbacks - stored as map for O(1) unsubscribe
+	// Callbacks, stored as maps for O(1) unsubscribe.
 	// Note: All callback maps share a single nextCallbackID counter to ensure
 	// globally unique subscription IDs. Each Off* method only unsubscribes from
 	// its corresponding map, so misdirected unsubscribes are safely ignored.
@@ -40,6 +43,11 @@ type AppState struct {
 	screenShareStateCallbacks  map[uint64]func(bool)
 	scrollInvertStateCallbacks map[uint64]func(bool)
 	nextCallbackID             uint64
+
+	// events announces the screen-share and scroll-invert switches. Each is
+	// published under mu, so two racing switches reach subscribers in the
+	// order they applied.
+	events *event.Bus
 
 	// Operational flags
 	hotkeysRegistered        bool
@@ -72,7 +80,20 @@ func (s *AppState) IsEnabled() bool {
 
 // SetEnabled sets the enabled state of the application.
 func (s *AppState) SetEnabled(enabled bool) {
+	s.SetEnabledAnnounced(enabled, nil)
+}
+
+// SetEnabledAnnounced sets the enabled state as SetEnabled does, calling
+// announce under the same lock just before the change, so no reader sees what
+// announce published without the state it announced. announce must not call
+// back into s. A nil announce is skipped.
+func (s *AppState) SetEnabledAnnounced(enabled bool, announce func()) {
 	s.mu.Lock()
+
+	if announce != nil {
+		announce()
+	}
+
 	oldEnabled := s.enabled
 	s.enabled = enabled
 	// Copy callbacks to slice for iteration outside lock
@@ -86,10 +107,8 @@ func (s *AppState) SetEnabled(enabled bool) {
 	// Notify all callbacks if state actually changed
 	if oldEnabled != enabled {
 		for _, callback := range callbacks {
-			if callback != nil {
-				// Call callback outside of lock to avoid deadlocks
-				go callback(enabled)
-			}
+			// Call callback outside of lock to avoid deadlocks
+			go callback(enabled)
 		}
 	}
 }
@@ -146,9 +165,7 @@ func (s *AppState) ToggleEnabled() {
 
 	// State always changes in a toggle, notify all callbacks
 	for _, callback := range callbacks {
-		if callback != nil {
-			go callback(newEnabled)
-		}
+		go callback(newEnabled)
 	}
 }
 
@@ -170,11 +187,24 @@ func (s *AppState) IsHiddenForScreenShare() bool {
 	return s.hiddenForScreenShare
 }
 
+// PublishTo sets the bus the screen-share and scroll-invert switches are
+// published on. Call it before anything switches either.
+func (s *AppState) PublishTo(bus *event.Bus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.events = bus
+}
+
 // SetHiddenForScreenShare sets whether the overlay should be hidden from screen sharing.
 func (s *AppState) SetHiddenForScreenShare(hidden bool) {
 	s.mu.Lock()
 	oldHidden := s.hiddenForScreenShare
 	s.hiddenForScreenShare = hidden
+
+	if oldHidden != hidden {
+		s.events.Publish(event.Event{Name: event.ScreenShareHide, On: hidden})
+	}
 	// Copy callbacks to slice for iteration outside lock
 	callbacks := make([]func(bool), 0, len(s.screenShareStateCallbacks))
 	for _, cb := range s.screenShareStateCallbacks {
@@ -186,10 +216,8 @@ func (s *AppState) SetHiddenForScreenShare(hidden bool) {
 	// Notify all callbacks if state actually changed
 	if oldHidden != hidden {
 		for _, callback := range callbacks {
-			if callback != nil {
-				// Call callback outside of lock to avoid deadlocks
-				go callback(hidden)
-			}
+			// Call callback outside of lock to avoid deadlocks
+			go callback(hidden)
 		}
 	}
 }
@@ -201,6 +229,7 @@ func (s *AppState) ToggleHiddenForScreenShare() bool {
 	oldHidden := s.hiddenForScreenShare
 	s.hiddenForScreenShare = !oldHidden
 	newHidden := s.hiddenForScreenShare
+	s.events.Publish(event.Event{Name: event.ScreenShareHide, On: newHidden})
 
 	// Copy callbacks to slice for iteration outside lock
 	callbacks := make([]func(bool), 0, len(s.screenShareStateCallbacks))
@@ -212,9 +241,7 @@ func (s *AppState) ToggleHiddenForScreenShare() bool {
 
 	// State always changes in a toggle, notify all callbacks
 	for _, callback := range callbacks {
-		if callback != nil {
-			go callback(newHidden)
-		}
+		go callback(newHidden)
 	}
 
 	return newHidden
@@ -263,6 +290,10 @@ func (s *AppState) SetScrollInverted(inverted bool) {
 	oldInverted := s.scrollInverted
 	s.scrollInverted = inverted
 
+	if oldInverted != inverted {
+		s.events.Publish(event.Event{Name: event.ScrollInvert, On: inverted})
+	}
+
 	callbacks := make([]func(bool), 0, len(s.scrollInvertStateCallbacks))
 	for _, cb := range s.scrollInvertStateCallbacks {
 		callbacks = append(callbacks, cb)
@@ -272,9 +303,7 @@ func (s *AppState) SetScrollInverted(inverted bool) {
 
 	if oldInverted != inverted {
 		for _, callback := range callbacks {
-			if callback != nil {
-				go callback(inverted)
-			}
+			go callback(inverted)
 		}
 	}
 }
@@ -286,6 +315,7 @@ func (s *AppState) ToggleScrollInverted() bool {
 	oldInverted := s.scrollInverted
 	s.scrollInverted = !oldInverted
 	newInverted := s.scrollInverted
+	s.events.Publish(event.Event{Name: event.ScrollInvert, On: newInverted})
 
 	// Copy callbacks to slice for iteration outside lock
 	callbacks := make([]func(bool), 0, len(s.scrollInvertStateCallbacks))
@@ -297,9 +327,7 @@ func (s *AppState) ToggleScrollInverted() bool {
 
 	// State always changes in a toggle, notify all callbacks
 	for _, callback := range callbacks {
-		if callback != nil {
-			go callback(newInverted)
-		}
+		go callback(newInverted)
 	}
 
 	return newInverted
@@ -353,8 +381,8 @@ func (s *AppState) SetMode(mode domain.Mode) {
 		s.modeExitReasonValid = false
 	}
 
-	// The declared name belongs to a ModeCustom session and to nothing else:
-	// a declared mode names itself before entering, and any other mode
+	// The declared name belongs to a ModeCustom session and to nothing else.
+	// A declared mode names itself before entering, and any other mode
 	// clears it on the way in.
 	if mode != domain.ModeCustom {
 		s.customModeName = ""
@@ -404,6 +432,20 @@ func (s *AppState) SetModeExitReason(reason ModeExitReason) {
 
 	s.modeExitReason = reason
 	s.modeExitReasonValid = true
+}
+
+// PendingModeExitReason reads the exit reason without consuming it, for an
+// observer that must not take the value from wait_for_mode_exit. Returns
+// ModeExitReasonNone if no valid reason was recorded.
+func (s *AppState) PendingModeExitReason() ModeExitReason {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if !s.modeExitReasonValid {
+		return ModeExitReasonNone
+	}
+
+	return s.modeExitReason
 }
 
 // ConsumeModeExitReason atomically reads and resets the exit reason.
@@ -475,7 +517,7 @@ func (s *AppState) ResetScreenChangeProcessing() {
 // FinishScreenChangeProcessing checks whether a retry was requested while
 // processing was in progress. If a retry is pending, the processing flag
 // remains set (caller retains exclusive ownership) and the pending-retry
-// flag is cleared — the caller should re-process. If no retry is pending,
+// flag is cleared, and the caller should re-process. If no retry is pending,
 // the processing flag is cleared and the caller is done.
 func (s *AppState) FinishScreenChangeProcessing() bool {
 	s.mu.Lock()

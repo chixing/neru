@@ -15,11 +15,11 @@ import (
 )
 
 // TestIPCControllerInfoDeps_ZeroValuesAreUsable pins the contract the deps
-// struct documents: omitted fields are legitimate zero values, not a
+// struct documents. Omitted fields are legitimate zero values, not a
 // misconfiguration.
 //
 // The constructor previously took fourteen positional arguments, most of them
-// nil at any given call site; this asserts the struct form preserves that
+// nil at any given call site. This asserts the struct form preserves that
 // tolerance instead of panicking on a partially-filled dependency set.
 func TestIPCControllerInfoDeps_ZeroValuesAreUsable(t *testing.T) {
 	t.Parallel()
@@ -49,6 +49,10 @@ func TestIPCControllerInfoDeps_ZeroValuesAreUsable(t *testing.T) {
 		domain.CommandHealth,
 		domain.CommandReloadConfig,
 		domain.CommandConfigSet,
+		domain.CommandQueryDisplays,
+		domain.CommandQueryCursor,
+		domain.CommandQueryWindow,
+		domain.CommandQueryApp,
 	} {
 		if handlers[action] == nil {
 			t.Errorf("RegisterHandlers() registered no handler for %q", action)
@@ -61,6 +65,14 @@ func TestIPCControllerInfoDeps_ZeroValuesAreUsable(t *testing.T) {
 	})
 	if resp.Success {
 		t.Error("reload_config succeeded with no ReloadConfig callback wired")
+	}
+
+	// A query asked with no action service wired says so.
+	resp = handlers[domain.CommandQueryCursor](context.Background(), ipc.Command{
+		Action: domain.CommandQueryCursor,
+	})
+	if resp.Success {
+		t.Error("query cursor succeeded with no action service wired")
 	}
 
 	// One that only needs what was supplied must still work.

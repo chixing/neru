@@ -19,14 +19,13 @@ import (
 // Windows only lets a process bring its own window to the foreground while
 // that process is allowed to take it (it owns the foreground already, or was
 // launched from it), so the test skips rather than fails when the OS declines
-// the request: on a headless runner the hook installs, but nothing can be
+// the request. On a headless runner the hook installs, but nothing can be
 // switched to.
 
 var procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
 
 const (
 	wsOverlappedWindow = 0x00CF0000
-	wsVisible          = 0x10000000
 	cwUseDefault       = 0x80000000
 	testWindowSize     = 200
 )

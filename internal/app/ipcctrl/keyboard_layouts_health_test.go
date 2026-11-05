@@ -75,6 +75,12 @@ func TestIPCController_HealthListsKeyboardLayouts(t *testing.T) {
 			healthy:   true,
 		},
 		{
+			name:      "a forced layout known missing with no keymap read",
+			requested: "Klingon",
+			unmatched: true,
+			want:      "not found: Klingon (layouts not read)",
+		},
+		{
 			name:      "a forced layout matched regardless of case",
 			layouts:   []string{layoutUS, layoutDvorak},
 			reference: layoutDvorak,
@@ -103,7 +109,9 @@ func TestIPCController_HealthListsKeyboardLayouts(t *testing.T) {
 			t.Parallel()
 
 			cfg := config.DefaultConfig()
-			cfg.General.KBLayoutToUse = test.requested
+			cfg.General.KBLayoutToUse = config.PerPlatform[string]{
+				Darwin: test.requested, Linux: test.requested, Windows: test.requested,
+			}
 
 			logger := zap.NewNop()
 			controller := ipcctrl.New(ipcctrl.Deps{

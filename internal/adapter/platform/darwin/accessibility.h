@@ -11,18 +11,18 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <Foundation/Foundation.h>
 
-// OWNERSHIP RULE — read before adding or calling element functions.
+// OWNERSHIP RULE. Read this before adding or calling element functions.
 //
 // Every AXUIElementRef handed to Go through this header (returned as void *,
 // written into an out-array, or produced by a traversal) is +1 retained and
-// the Go caller owns it: the caller must eventually balance it with
+// the Go caller owns it. The caller must eventually balance it with
 // NeruReleaseElement (Element.Release()/ReleaseAll on the Go side), exactly
 // once. Functions that only *borrow* a ref the caller passed in must not
 // change its refcount. Per-function @note comments below call out the cases
 // that also return malloc'd memory the caller must free().
 //
 // ARC does not manage AX*/CF* refs, so a traversal that enqueues elements and
-// abandons them leaks kernel-backed objects — account for every ref you were
+// abandons them leaks kernel-backed objects. Account for every ref you were
 // handed (see docs/contributing/objective-c.md, "Memory Management").
 
 #pragma mark - Element Information
@@ -44,9 +44,6 @@ typedef struct {
 	int pid;                   ///< Process identifier
 	bool isHidden;             ///< Whether element is AX-hidden (CSS visibility:hidden etc.)
 	bool isVisible;            ///< Whether element is AX-visible (default true when unsupported)
-	bool hasPressAction;       ///< Whether element has AXPress action (pre-fetched)
-	bool hasShowMenuAction;    ///< Whether element has AXShowMenu action (pre-fetched)
-	bool preActionsFetched;    ///< Whether actions were successfully pre-fetched
 } ElementInfo;
 
 #pragma mark - Permission Functions
@@ -133,7 +130,7 @@ void NeruMoveMouseWithType(CGPoint position, CGEventType eventType);
 /// Move mouse cursor to position, attributing drags to a specific button
 /// @param position Target position
 /// @param eventType CGEvent type (kCGEventMouseMoved or a *MouseDragged type)
-/// @param button Button the drag belongs to; ignored for kCGEventMouseMoved
+/// @param button Button the drag belongs to, ignored for kCGEventMouseMoved
 void NeruMoveMouseWithTypeAndButton(CGPoint position, CGEventType eventType, CGMouseButton button);
 
 /// Post a single mouse move event (for async animation)
@@ -144,7 +141,7 @@ void NeruPostMouseMoveEvent(CGPoint position, CGEventType eventType);
 /// Post a single mouse move event, attributing drags to a specific button
 /// @param position Target position
 /// @param eventType CGEvent type (kCGEventMouseMoved or a *MouseDragged type)
-/// @param button Button the drag belongs to; ignored for kCGEventMouseMoved
+/// @param button Button the drag belongs to, ignored for kCGEventMouseMoved
 void NeruPostMouseMoveEventWithButton(CGPoint position, CGEventType eventType, CGMouseButton button);
 
 /// Check if element has click action
@@ -158,18 +155,14 @@ void NeruPostMouseMoveEventWithButton(CGPoint position, CGEventType eventType, C
 /// @param preIsWidget Pre-computed widget flag (from ElementInfo identifier)
 /// @param centerX Pre-computed center X (from ElementInfo position + size)
 /// @param centerY Pre-computed center Y (from ElementInfo position + size)
-/// @param preHasPressAction Pre-fetched AXPress action flag (from ElementInfo)
-/// @param preHasShowMenuAction Pre-fetched AXShowMenu action flag (from ElementInfo)
-/// @param preActionsFetched Whether action names were successfully pre-fetched
 /// @return 1 if element is clickable, 0 otherwise
 int NeruHasClickAction(
     void *element, bool skipVisCheck, bool preHidden, bool preVisible, bool preEnabled, bool hasEnabledAttr,
-    const char *preRole, bool preIsWidget, double centerX, double centerY, bool preHasPressAction,
-    bool preHasShowMenuAction, bool preActionsFetched);
+    const char *preRole, bool preIsWidget, double centerX, double centerY);
 
 /// Fast visibility check using a pre-computed center point (avoids redundant AX position fetch)
 /// @param element Element reference
-/// @param center Pre-computed center point (from ElementInfo — already fetched during tree building)
+/// @param center Pre-computed center point (from ElementInfo, already fetched during tree building)
 /// @return 1 if element or one of its descendants is hit-test visible at the given point, 0 otherwise
 int NeruIsElementVisibleAtPoint(void *element, CGPoint center);
 
@@ -317,6 +310,12 @@ bool NeruIsMissionControlActive(void);
 
 /// Update the cached Mission Control state and trigger transition callbacks
 void NeruUpdateMissionControlState(void);
+
+/// Check whether the window a Mission Control thumbnail stands for is on screen
+/// @param element Element reference, borrowed
+/// @param hasWindow Set to whether the element names a window at all
+/// @return true if the element names a window and that window is on screen
+bool NeruIsElementWindowOnScreen(void *element, bool *hasWindow);
 
 /// Enable or disable Mission Control detection.
 /// When disabled, no timer, window scans, or callbacks are active.

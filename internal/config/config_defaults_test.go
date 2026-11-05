@@ -1,8 +1,7 @@
 package config_test
 
 import (
-	"path/filepath"
-	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/y3owk1n/neru/internal/config"
@@ -22,9 +21,9 @@ func TestDefaultConfig(t *testing.T) {
 	})
 
 	t.Run("General Keyboard Layout Defaults", func(t *testing.T) {
-		if cfg.General.KBLayoutToUse != "" {
+		if cfg.General.KBLayoutToUse != (config.PerPlatform[string]{}) {
 			t.Errorf(
-				"Expected General.KBLayoutToUse to be empty by default, got %q",
+				"Expected General.KBLayoutToUse to be empty by default, got %+v",
 				cfg.General.KBLayoutToUse,
 			)
 		}
@@ -47,39 +46,14 @@ func TestDefaultConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("General Exec Shell Defaults", func(t *testing.T) {
-		if runtime.GOOS == goosWindows {
-			if !filepath.IsAbs(cfg.General.ExecShell) {
-				t.Errorf(
-					"Expected General.ExecShell to be an absolute path, got %q",
-					cfg.General.ExecShell,
-				)
-			}
-
-			if len(cfg.General.ExecShellArgs) != 1 ||
-				cfg.General.ExecShellArgs[0] != "/c" {
-				t.Errorf(
-					"Expected General.ExecShellArgs to be [%q], got %v",
-					"/c",
-					cfg.General.ExecShellArgs,
-				)
-			}
-		} else {
-			if cfg.General.ExecShell != config.DefaultExecShell {
-				t.Errorf(
-					"Expected General.ExecShell to be %q, got %q",
-					config.DefaultExecShell,
-					cfg.General.ExecShell,
-				)
-			}
-
-			if len(cfg.General.ExecShellArgs) != 1 ||
-				cfg.General.ExecShellArgs[0] != config.DefaultExecShellFlag {
-				t.Errorf(
-					"Expected General.ExecShellArgs to be [%q], got %v",
-					config.DefaultExecShellFlag,
-					cfg.General.ExecShellArgs,
-				)
+	t.Run("General Shell Defaults", func(t *testing.T) {
+		for goos, want := range map[string][]string{
+			"darwin":      {TestShellBash, TestShellFlag},
+			TestGOOSLinux: {TestShellBash, TestShellFlag},
+			goosWindows:   {TestWindowsCmd, "/c"},
+		} {
+			if got := cfg.General.ShellCommand(goos); !slices.Equal(got, want) {
+				t.Errorf("ShellCommand(%q) = %q, want %q", goos, got, want)
 			}
 		}
 	})
@@ -102,80 +76,6 @@ func TestDefaultConfig(t *testing.T) {
 
 		if cfg.RecursiveGrid.UI.LabelBackground {
 			t.Error("Expected RecursiveGrid.UI.LabelBackground to be false by default")
-		}
-
-		if cfg.RecursiveGrid.UI.LabelBackgroundColor.Light != config.RecursiveGridLabelBackgroundColorLight {
-			t.Errorf(
-				"Expected RecursiveGrid.UI.LabelBackgroundColor.Light %q, got %q",
-				config.RecursiveGridLabelBackgroundColorLight,
-				cfg.RecursiveGrid.UI.LabelBackgroundColor.Light,
-			)
-		}
-
-		if cfg.RecursiveGrid.UI.LabelBackgroundColor.Dark != config.RecursiveGridLabelBackgroundColorDark {
-			t.Errorf(
-				"Expected RecursiveGrid.UI.LabelBackgroundColor.Dark %q, got %q",
-				config.RecursiveGridLabelBackgroundColorDark,
-				cfg.RecursiveGrid.UI.LabelBackgroundColor.Dark,
-			)
-		}
-
-		if cfg.RecursiveGrid.UI.LabelBackgroundPaddingX != config.DefaultRecursiveGridLabelBackgroundPaddingX {
-			t.Errorf(
-				"Expected RecursiveGrid.UI.LabelBackgroundPaddingX %d, got %d",
-				config.DefaultRecursiveGridLabelBackgroundPaddingX,
-				cfg.RecursiveGrid.UI.LabelBackgroundPaddingX,
-			)
-		}
-
-		if cfg.RecursiveGrid.UI.LabelBackgroundPaddingY != config.DefaultRecursiveGridLabelBackgroundPaddingY {
-			t.Errorf(
-				"Expected RecursiveGrid.UI.LabelBackgroundPaddingY %d, got %d",
-				config.DefaultRecursiveGridLabelBackgroundPaddingY,
-				cfg.RecursiveGrid.UI.LabelBackgroundPaddingY,
-			)
-		}
-
-		if cfg.RecursiveGrid.UI.LabelBackgroundBorderRadius != config.DefaultRecursiveGridLabelBackgroundBorderRadius {
-			t.Errorf(
-				"Expected RecursiveGrid.UI.LabelBackgroundBorderRadius %d, got %d",
-				config.DefaultRecursiveGridLabelBackgroundBorderRadius,
-				cfg.RecursiveGrid.UI.LabelBackgroundBorderRadius,
-			)
-		}
-
-		if cfg.RecursiveGrid.UI.LabelBackgroundBorderWidth != config.DefaultRecursiveGridLabelBackgroundBorderWidth {
-			t.Errorf(
-				"Expected RecursiveGrid.UI.LabelBackgroundBorderWidth %d, got %d",
-				config.DefaultRecursiveGridLabelBackgroundBorderWidth,
-				cfg.RecursiveGrid.UI.LabelBackgroundBorderWidth,
-			)
-		}
-	})
-
-	t.Run("Virtual Pointer Defaults", func(t *testing.T) {
-		if cfg.VirtualPointer.UI.Char != config.DefaultVirtualPointerChar {
-			t.Errorf(
-				"Expected VirtualPointer.UI.Char %q, got %q",
-				config.DefaultVirtualPointerChar,
-				cfg.VirtualPointer.UI.Char,
-			)
-		}
-
-		if cfg.VirtualPointer.UI.TextColor.Light != config.VirtualPointerTextColorLight {
-			t.Errorf(
-				"Expected VirtualPointer.UI.TextColor.Light %q, got %q",
-				config.VirtualPointerTextColorLight,
-				cfg.VirtualPointer.UI.TextColor.Light,
-			)
-		}
-
-		if cfg.VirtualPointer.UI.TextColor.Dark != config.VirtualPointerTextColorDark {
-			t.Errorf(
-				"Expected VirtualPointer.UI.TextColor.Dark %q, got %q",
-				config.VirtualPointerTextColorDark,
-				cfg.VirtualPointer.UI.TextColor.Dark,
-			)
 		}
 	})
 }

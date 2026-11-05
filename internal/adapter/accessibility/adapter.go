@@ -5,6 +5,7 @@ import (
 	"image"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -54,43 +55,27 @@ var elementSlicePool = sync.Pool{
 
 // Adapter implements ports.AccessibilityPort by wrapping the ax.Client.
 type Adapter struct {
-	logger               *zap.Logger
-	client               ax.Client
-	excludedBundles      map[string]bool
-	clickableRoles       []string
-	detectMissionControl bool
+	logger *zap.Logger
+	client ax.Client
+	// detectMissionControl is hints.detect_mission_control. A reload changes
+	// it while scans read it, so it is atomic.
+	detectMissionControl atomic.Bool
 }
 
 // NewAdapter creates a new accessibility adapter.
 func NewAdapter(
 	logger *zap.Logger,
-	excludedBundles []string,
-	clickableRoles []string,
 	client ax.Client,
 	detectMissionControl bool,
 ) *Adapter {
-	excludedMap := make(map[string]bool, len(excludedBundles))
-	for _, bundle := range excludedBundles {
-		excludedMap[bundle] = true
+	adapter := &Adapter{
+		logger: logger,
+		client: client,
 	}
 
-	return &Adapter{
-		logger:               logger,
-		client:               client,
-		excludedBundles:      excludedMap,
-		clickableRoles:       clickableRoles,
-		detectMissionControl: detectMissionControl,
-	}
-}
+	adapter.detectMissionControl.Store(detectMissionControl)
 
-// Logger returns the logger for the adapter.
-func (a *Adapter) Logger() *zap.Logger {
-	return a.logger
-}
-
-// ClickableRoles returns the list of clickable roles.
-func (a *Adapter) ClickableRoles() []string {
-	return a.clickableRoles
+	return adapter
 }
 
 // ClickableElements retrieves all clickable UI elements matching the filter.
@@ -120,7 +105,7 @@ func (a *Adapter) ClickableElements(
 	// answer, rather than each deciding separately as the state changes under
 	// them.
 	var missionControlActive bool
-	if a.detectMissionControl {
+	if a.detectMissionControl.Load() {
 		missionControlActive = a.client.IsMissionControlActive()
 	}
 
@@ -133,7 +118,7 @@ func (a *Adapter) ClickableElements(
 	}
 
 	if a.client.SupportsSupplementaryElements() {
-		for _, source := range a.supplementarySources(ctx, filter) {
+		for _, source := range a.supplementarySources(ctx, filter, missionControlActive) {
 			if !source.enabled {
 				continue
 			}
@@ -238,7 +223,7 @@ func (a *Adapter) Scroll(
 
 	scrollErr := a.client.Scroll(deltaX, deltaY, modifiers)
 	if scrollErr != nil {
-		// Preserve a refusal the backend made explicitly; see Client.Scroll.
+		// Preserve a refusal the backend made explicitly. See Client.Scroll.
 		if derrors.IsNotSupported(scrollErr) {
 			return scrollErr
 		}
@@ -270,11 +255,6 @@ func (a *Adapter) FocusedAppBundleID(ctx context.Context) (string, error) {
 	return bundleID, nil
 }
 
-// IsAppExcluded checks if the given bundle ID is in the exclusion list.
-func (a *Adapter) IsAppExcluded(_ context.Context, bundleID string) bool {
-	return a.excludedBundles[bundleID]
-}
-
 // ReleaseHeldButtons releases any mouse button this process still holds down.
 func (a *Adapter) ReleaseHeldButtons(ctx context.Context) error {
 	err := a.checkContext(ctx)
@@ -289,14 +269,15 @@ func (a *Adapter) ReleaseHeldButtons(ctx context.Context) error {
 
 // PrimeApplication waits briefly for the application's accessibility tree to
 // become queryable. The per-platform behavior lives in native/darwin/priming.go /
-// priming_other.go; see ports.TreePriming for why only macOS has work to do.
+// priming_other.go. See ports.AccessibilityPort.PrimeApplication for why only
+// macOS has work to do.
 func (a *Adapter) PrimeApplication(ctx context.Context, bundleID string) (bool, error) {
 	err := a.checkContext(ctx)
 	if err != nil {
 		return false, err
 	}
 
-	return native.PrimeApplication(bundleID, a.logger), nil
+	return native.PrimeApplication(ctx, bundleID, a.logger), nil
 }
 
 // Health checks if the accessibility permissions are granted.
@@ -314,21 +295,15 @@ func (a *Adapter) Health(ctx context.Context) error {
 	return nil
 }
 
+// UpdateMissionControlDetection turns the Mission Control check on or off.
+func (a *Adapter) UpdateMissionControlDetection(enabled bool) {
+	a.detectMissionControl.Store(enabled)
+}
+
 // UpdateClickableRoles updates the list of clickable roles.
 func (a *Adapter) UpdateClickableRoles(roles []string) {
 	a.logger.Debug("Updating clickable roles", zap.Int("count", len(roles)))
-	a.clickableRoles = roles
 	a.client.SetClickableRoles(roles)
-}
-
-// UpdateExcludedBundles updates the list of excluded bundle IDs.
-func (a *Adapter) UpdateExcludedBundles(bundles []string) {
-	a.logger.Debug("Updating excluded bundles", zap.Int("count", len(bundles)))
-
-	a.excludedBundles = make(map[string]bool, len(bundles))
-	for _, bundle := range bundles {
-		a.excludedBundles[bundle] = true
-	}
 }
 
 // checkContext checks if the context is canceled and returns an error if so.
@@ -551,7 +526,7 @@ func (a *Adapter) finishCollection(
 	}
 
 	if len(collector.elements) == 0 && missionControlActive {
-		// Not a failure: the frontmost window is deliberately skipped while
+		// Not a failure. The frontmost window is deliberately skipped while
 		// Mission Control is up, so with no supplementary source enabled there
 		// is nothing left to collect.
 		a.logger.Debug("No elements collected while Mission Control is active")

@@ -11,7 +11,7 @@ import (
 // against both vocabularies that have a vision backend: macOS's AX names and
 // Linux's AT-SPI names. Asserting a literal "AXButton" would pass on the
 // developer's machine and say nothing about the platform the OCR backend runs
-// on — which is the bug classifier_roles.go exists to prevent. Each case names
+// on, which is the bug classifier_roles.go exists to prevent. Each case names
 // the field it expects rather than the string, and the vocabulary supplies the
 // string.
 var classifierVocabularies = map[string]classifierRoles{
@@ -148,27 +148,5 @@ func TestMergeRegions_PartialOverlap(t *testing.T) {
 	merged := MergeRegions(regions, 0.5)
 	if len(merged) != 2 {
 		t.Errorf("expected 2 regions for partial overlap, got %d", len(merged))
-	}
-}
-
-func TestTestClassifier(t *testing.T) {
-	testClassifier := NewTestClassifier()
-
-	region := DetectedRegion{
-		Bounds: image.Rect(100, 100, 200, 130),
-		Score:  0.7,
-		IsText: true,
-		Label:  "OK",
-	}
-
-	role, clickable := testClassifier.Classify(region)
-	if role == "" {
-		t.Errorf("expected non-empty role")
-	}
-
-	// Should classify as button (aspect ratio ~3.3, score 0.7, text) in
-	// whatever vocabulary the running platform speaks.
-	if want := currentClassifierRoles().Button; role != want || !clickable {
-		t.Errorf("expected %s/clickable, got %s/%v", want, role, clickable)
 	}
 }

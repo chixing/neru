@@ -12,6 +12,7 @@ import (
 
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/config/loader"
+	"github.com/y3owk1n/neru/internal/domain/action"
 	"github.com/y3owk1n/neru/internal/domain/element"
 )
 
@@ -506,8 +507,8 @@ func TestConfig_AppConfigVisibleCheckEnabled(t *testing.T) {
 }
 
 func TestFindConfigFile(t *testing.T) {
-	// Test that FindConfigFile doesn't panic and returns a string
-	// (We can't easily test the actual file discovery without complex mocking)
+	// Only checks that FindConfigFile does not panic. The actual file discovery
+	// would need complex mocking.
 	defer func() {
 		if r := recover(); r != nil {
 			t.Errorf("FindConfigFile() panicked: %v", r)
@@ -551,7 +552,7 @@ func TestFindConfigFile_DotConfigFallback(t *testing.T) {
 	preferredDir := t.TempDir()
 
 	// Point the preferred directory at an empty location, and os.UserHomeDir
-	// at ours: it reads USERPROFILE on Windows and HOME on Unix.
+	// at ours. It reads USERPROFILE on Windows and HOME on Unix.
 	if runtime.GOOS == goosWindows {
 		t.Setenv("XDG_CONFIG_HOME", "")
 		t.Setenv("APPDATA", preferredDir)
@@ -604,7 +605,7 @@ func TestNormalizeKeyForComparison_FullwidthChars(t *testing.T) {
 		input    string
 		expected string
 	}{
-		// Fullwidth comma (most common case - reset key)
+		// Fullwidth comma, the most common case (the reset key)
 		{
 			name:     "fullwidth comma",
 			input:    "\uFF0C",
@@ -1000,7 +1001,7 @@ func TestConfig_ClickableRolesForApp_MixedVocabulary(t *testing.T) {
 					BundleID: testBundleIDA,
 					AdditionalClickable: []string{
 						// Resolves onto the same native role as text_field on
-						// Linux and Windows; distinct only on macOS.
+						// Linux and Windows, and distinct only on macOS.
 						"text_area",
 						// Already in the base list: must not duplicate.
 						TestRoleButton,
@@ -1036,7 +1037,7 @@ func TestConfig_ClickableRolesForApp_MixedVocabulary(t *testing.T) {
 		}
 	}
 
-	// Exactly one of the three prefixed entries applies here; the other two
+	// Exactly one of the three prefixed entries applies here. The other two
 	// must resolve to nothing rather than leaking across platforms.
 	exclusive := map[string]string{
 		goosDarwin: "AXGenericElement",
@@ -1051,5 +1052,35 @@ func TestConfig_ClickableRolesForApp_MixedVocabulary(t *testing.T) {
 		case goos != runtime.GOOS && seen[name] > 0:
 			t.Errorf("ClickableRolesForApp() = %v, leaked %s-only role %q", got, goos, name)
 		}
+	}
+}
+
+// TestUsePrimaryModifier_ResolvesPrimaryHotkeys pins that the table the daemon
+// publishes is what a Primary hotkey means to every key comparison after it.
+func TestUsePrimaryModifier_ResolvesPrimaryHotkeys(t *testing.T) {
+	t.Cleanup(func() {
+		config.UsePrimaryModifier(config.DefaultConfig().General.PrimaryModifier)
+	})
+
+	const option = "Option"
+
+	config.UsePrimaryModifier(config.PrimaryModifierConfig{
+		Darwin:  option,
+		Linux:   option,
+		Windows: option,
+	})
+
+	if got := config.CanonicalHotkeyForPlatform("Primary+Space"); got != "Alt+Space" {
+		t.Errorf(`CanonicalHotkeyForPlatform("Primary+Space") = %q, want "Alt+Space"`, got)
+	}
+
+	if got := config.NormalizeKeyForComparison("Primary+Shift+X"); got != "alt+shift+x" {
+		t.Errorf(`NormalizeKeyForComparison("Primary+Shift+X") = %q, want "alt+shift+x"`, got)
+	}
+
+	// An action's --modifier primary means the same modifier a hotkey does.
+	got, err := action.ParseModifiers("primary")
+	if err != nil || got != action.ModAlt {
+		t.Errorf(`ParseModifiers("primary") = %v, %v, want Alt`, got, err)
 	}
 }

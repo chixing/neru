@@ -62,8 +62,8 @@ func (r *stepRecorder) recorded() []string {
 }
 
 // newSequenceTestApp builds a whitebox App whose IPC controller answers the
-// fake step command with the recorder. Everything the executor touches — the
-// logger, the app context, the controller — is real; only the command the
+// fake step command with the recorder. Everything the executor touches, the
+// logger, the app context and the controller, is real. Only the command the
 // steps name is fake.
 func newSequenceTestApp(t *testing.T, recorder *stepRecorder) *App {
 	t.Helper()
@@ -99,7 +99,7 @@ func TestExecuteActionSequence_RunsEveryStepInOrder(t *testing.T) {
 
 	steps := []string{stepOne, stepTwo, stepThree}
 
-	outcome := application.executeActionSequence(context.Background(), "test", steps)
+	outcome := application.sequences().Run(context.Background(), "test", steps)
 
 	if outcome.Err != nil {
 		t.Fatalf("outcome.Err = %v, want nil", outcome.Err)
@@ -118,7 +118,7 @@ func TestExecuteActionSequence_SkipsBlankSteps(t *testing.T) {
 	recorder := &stepRecorder{}
 	application := newSequenceTestApp(t, recorder)
 
-	outcome := application.executeActionSequence(
+	outcome := application.sequences().Run(
 		context.Background(),
 		"test",
 		[]string{"", stepOne, "   ", stepTwo},
@@ -150,7 +150,7 @@ func TestExecuteActionSequence_StopsOnBail(t *testing.T) {
 	}
 	application := newSequenceTestApp(t, recorder)
 
-	outcome := application.executeActionSequence(
+	outcome := application.sequences().Run(
 		context.Background(),
 		"test",
 		[]string{stepOne, stepTwo, stepThree},
@@ -189,7 +189,7 @@ func TestExecuteActionSequence_ContinuesAfterStepFailure(t *testing.T) {
 
 	steps := []string{stepOne, stepTwo, stepThree}
 
-	outcome := application.executeActionSequence(context.Background(), "test", steps)
+	outcome := application.sequences().Run(context.Background(), "test", steps)
 
 	if outcome.Bailed {
 		t.Fatal("outcome.Bailed = true, want false for a regular failure")
@@ -226,7 +226,7 @@ func TestExecuteActionSequence_StopsRunawayNesting(t *testing.T) {
 			depth++
 			depthMu.Unlock()
 
-			application.executeActionSequence(ctx, "nested", []string{"step deeper"})
+			application.sequences().Run(ctx, "nested", []string{"step deeper"})
 
 			return ipc.Response{Success: true, Code: ipc.CodeOK}
 		},
@@ -234,7 +234,7 @@ func TestExecuteActionSequence_StopsRunawayNesting(t *testing.T) {
 
 	application = newSequenceTestApp(t, recorder)
 
-	application.executeActionSequence(context.Background(), "test", []string{stepOne})
+	application.sequences().Run(context.Background(), "test", []string{stepOne})
 
 	depthMu.Lock()
 	defer depthMu.Unlock()
@@ -245,7 +245,7 @@ func TestExecuteActionSequence_StopsRunawayNesting(t *testing.T) {
 }
 
 // A step marked fatal ends the sequence, while an unmarked failure beside it
-// does not — that is the whole point of making the policy explicit per step.
+// does not. That is the whole point of making the policy explicit per step.
 func TestExecuteActionSequence_StopsAtAFatalStep(t *testing.T) {
 	recorder := &stepRecorder{
 		respond: func(_ context.Context, step string) ipc.Response {
@@ -262,7 +262,7 @@ func TestExecuteActionSequence_StopsAtAFatalStep(t *testing.T) {
 	}
 	application := newSequenceTestApp(t, recorder)
 
-	outcome := application.executeActionSequence(
+	outcome := application.sequences().Run(
 		context.Background(),
 		"test",
 		[]string{stepOne, stepTwo + " " + sequence.BailOnErrorFlag, stepThree},
@@ -277,7 +277,7 @@ func TestExecuteActionSequence_StopsAtAFatalStep(t *testing.T) {
 	}
 
 	// The directive is a sequencing instruction, so the step must be dispatched
-	// without it — the action's own flag parser would reject it.
+	// without it, or the action's own flag parser would reject it.
 	want := []string{stepOne, stepTwo}
 	if got := recorder.recorded(); !slices.Equal(got, want) {
 		t.Fatalf("dispatched %v, want %v", got, want)
@@ -342,8 +342,8 @@ func TestSplitBailOnError(t *testing.T) {
 			wantStep: `exec sh -c "echo ` + sequence.BailOnErrorFlag + `"`,
 		},
 		{
-			// Quoted as the final argument: the author wants the text, not the
-			// directive, so the step must reach the action unchanged.
+			// Quoted as the final argument, so the author wants the text, not the
+			// directive, and the step must reach the action unchanged.
 			name:     "quoted final token is an argument",
 			step:     `exec printf '` + sequence.BailOnErrorFlag + `'`,
 			wantStep: `exec printf '` + sequence.BailOnErrorFlag + `'`,
@@ -389,7 +389,7 @@ func TestExecuteActionSequence_RejectsMisplacedDirective(t *testing.T) {
 	recorder := &stepRecorder{}
 	application := newSequenceTestApp(t, recorder)
 
-	outcome := application.executeActionSequence(
+	outcome := application.sequences().Run(
 		context.Background(),
 		"test",
 		[]string{stepOne + " " + sequence.BailOnErrorFlag + " --bare", stepTwo},
@@ -426,7 +426,7 @@ func TestExecuteActionSequence_ExpandsAMacro(t *testing.T) {
 		"two": {stepOne, stepTwo},
 	})
 
-	outcome := application.executeActionSequence(
+	outcome := application.sequences().Run(
 		context.Background(),
 		"test",
 		[]string{"macro two", stepThree},
@@ -453,7 +453,7 @@ func TestExecuteActionSequence_SubstitutesMacroArguments(t *testing.T) {
 		"say": {"step $2 $1"},
 	})
 
-	application.executeActionSequence(
+	application.sequences().Run(
 		context.Background(),
 		"test",
 		[]string{"macro say alpha beta"},
@@ -483,7 +483,7 @@ func TestExecuteActionSequence_RejectsBadMacroCalls(t *testing.T) {
 				"needs_two": {"step $1 $2"},
 			})
 
-			outcome := application.executeActionSequence(
+			outcome := application.sequences().Run(
 				context.Background(),
 				"test",
 				[]string{testCase.step},
@@ -501,14 +501,14 @@ func TestExecuteActionSequence_RejectsBadMacroCalls(t *testing.T) {
 }
 
 // A macro that invokes itself is a runaway sequence, and the depth guard is
-// what stops it — the same guard that bounds a nested run.
+// what stops it, the same guard that bounds a nested run.
 func TestExecuteActionSequence_StopsASelfInvokingMacro(t *testing.T) {
 	recorder := &stepRecorder{}
 	application := macroTestApp(t, recorder, map[string][]string{
 		"loop": {stepOne, "macro loop"},
 	})
 
-	outcome := application.executeActionSequence(
+	outcome := application.sequences().Run(
 		context.Background(),
 		"test",
 		[]string{"macro loop"},
@@ -543,7 +543,7 @@ func TestExecuteActionSequence_PropagatesABailOutOfAMacro(t *testing.T) {
 		"bails": {stepOne},
 	})
 
-	outcome := application.executeActionSequence(
+	outcome := application.sequences().Run(
 		context.Background(),
 		"test",
 		[]string{"macro bails", stepTwo},
@@ -570,13 +570,13 @@ func TestExecuteActionSequence_BailDirectiveIsNotAMacroArgument(t *testing.T) {
 		"needs_two": {"step $1 $2"},
 	})
 
-	outcome := application.executeActionSequence(
+	outcome := application.sequences().Run(
 		context.Background(),
 		"test",
 		[]string{"macro needs_two alpha beta " + sequence.BailOnErrorFlag, stepThree},
 	)
 
-	// The call is well-formed: it is the macro's own step that fails, and the
+	// The call is well-formed. It is the macro's own step that fails, and the
 	// directive makes that failure end the calling sequence.
 	if !outcome.Stopped {
 		t.Fatalf("outcome = %+v, want the directive to stop the sequence", outcome)

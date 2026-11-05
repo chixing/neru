@@ -2,6 +2,7 @@ package modes
 
 import (
 	"github.com/y3owk1n/neru/internal/app/components/hints"
+	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/domain/modecmd"
 )
 
@@ -9,6 +10,11 @@ import (
 // fresh activation and a refresh read an absent flag differently, which is
 // why this is two paths.
 func applyHintFlags(ctx *hints.Context, activation modecmd.Activation, isRefresh bool) {
+	// A refresh does not inherit where the elements come from, so one that
+	// supplies no targets scans. The re-activations inside a session carry
+	// the session's targets for that reason.
+	ctx.SetTargets(activation.Targets)
+
 	if isRefresh {
 		applyHintFlagOverrides(ctx, activation)
 
@@ -55,6 +61,10 @@ func applyHintFlagOverrides(ctx *hints.Context, activation modecmd.Activation) {
 		ctx.SetHideOnEmptySearch(*activation.HideOnEmptySearch)
 	}
 
+	if activation.ConfirmOnLabel != nil {
+		ctx.SetConfirmOnLabel(*activation.ConfirmOnLabel)
+	}
+
 	if activation.ExitOnUnmatched != nil {
 		ctx.SetExitOnUnmatched(*activation.ExitOnUnmatched)
 	}
@@ -90,11 +100,45 @@ func applyHintFlagsFresh(ctx *hints.Context, activation modecmd.Activation) {
 	ctx.SetFilterTextContains(activation.FilterTextContains)
 	ctx.SetStartWithSearch(activation.Search != nil && *activation.Search)
 	ctx.SetHideOnEmptySearch(activation.HideOnEmptySearch != nil && *activation.HideOnEmptySearch)
+	ctx.SetConfirmOnLabel(activation.ConfirmOnLabel != nil && *activation.ConfirmOnLabel)
 	ctx.SetExitOnUnmatched(activation.ExitOnUnmatched != nil && *activation.ExitOnUnmatched)
 	ctx.SetStrategyOverride(derefOr(activation.Strategy, ""))
 	ctx.SetCaptureScopeOverride(derefOr(activation.CaptureScope, ""))
 	ctx.SetLabelDirectionOverride(derefOr(activation.LabelDirection, ""))
 	ctx.SetSplitWord(derefOr(activation.SplitWord, false))
+}
+
+// hintSessionActivation reads back the flags the open session was activated
+// with, so a re-activation inside it scans the way the session did. OnExit,
+// the pending action and the modifier are left nil, which a refresh reads as
+// keeping what the context holds.
+//
+// The caller holds h.mu and h.hints.Context is not nil.
+func (h *handlerState) hintSessionActivation() modecmd.Activation {
+	ctx := h.hints.Context
+	cursorFollowSelection := ctx.CursorFollowSelection()
+	startWithSearch := ctx.StartWithSearch()
+	confirmOnLabel := ctx.ConfirmOnLabel()
+	exitOnUnmatched := ctx.ExitOnUnmatched()
+	strategy := ctx.StrategyOverride()
+	captureScope := ctx.CaptureScopeOverride()
+	labelDirection := ctx.LabelDirectionOverride()
+	splitWord := ctx.SplitWord()
+
+	return modecmd.Activation{
+		Mode:                  domain.ModeHints,
+		CursorFollowSelection: &cursorFollowSelection,
+		FilterRoles:           ctx.FilterRoles(),
+		FilterTextContains:    ctx.FilterTextContains(),
+		Search:                &startWithSearch,
+		ConfirmOnLabel:        &confirmOnLabel,
+		ExitOnUnmatched:       &exitOnUnmatched,
+		Strategy:              &strategy,
+		CaptureScope:          &captureScope,
+		LabelDirection:        &labelDirection,
+		SplitWord:             &splitWord,
+		Targets:               ctx.Targets(),
+	}
 }
 
 // derefOr reads a flag that may not have been given, falling back to what
@@ -109,10 +153,12 @@ func derefOr[T any](value *T, fallback T) T {
 
 // hintOverrides are the settings that decide how a hint scan runs.
 type hintOverrides struct {
-	strategy       string
-	captureScope   string
-	labelDirection string
-	splitWord      bool
+	filterRoles        []string
+	filterTextContains []string
+	strategy           string
+	captureScope       string
+	labelDirection     string
+	splitWord          bool
 }
 
 // resolveHintOverrides reads the overrides in force. They come from the
@@ -122,18 +168,22 @@ type hintOverrides struct {
 func (h *handlerState) resolveHintOverrides(activation modecmd.Activation) hintOverrides {
 	if h.hints != nil && h.hints.Context != nil {
 		return hintOverrides{
-			strategy:       h.hints.Context.StrategyOverride(),
-			captureScope:   h.hints.Context.CaptureScopeOverride(),
-			labelDirection: h.hints.Context.LabelDirectionOverride(),
-			splitWord:      h.hints.Context.SplitWord(),
+			filterRoles:        h.hints.Context.FilterRoles(),
+			filterTextContains: h.hints.Context.FilterTextContains(),
+			strategy:           h.hints.Context.StrategyOverride(),
+			captureScope:       h.hints.Context.CaptureScopeOverride(),
+			labelDirection:     h.hints.Context.LabelDirectionOverride(),
+			splitWord:          h.hints.Context.SplitWord(),
 		}
 	}
 
 	return hintOverrides{
-		strategy:       derefOr(activation.Strategy, ""),
-		captureScope:   derefOr(activation.CaptureScope, ""),
-		labelDirection: derefOr(activation.LabelDirection, ""),
-		splitWord:      derefOr(activation.SplitWord, false),
+		filterRoles:        activation.FilterRoles,
+		filterTextContains: activation.FilterTextContains,
+		strategy:           derefOr(activation.Strategy, ""),
+		captureScope:       derefOr(activation.CaptureScope, ""),
+		labelDirection:     derefOr(activation.LabelDirection, ""),
+		splitWord:          derefOr(activation.SplitWord, false),
 	}
 }
 

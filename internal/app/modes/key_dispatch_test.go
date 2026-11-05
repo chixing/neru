@@ -30,7 +30,6 @@ func (m *recordingMode) Activate(modecmd.Activation) {}
 func (m *recordingMode) HandleKey(key string)        { m.keys <- key }
 func (m *recordingMode) Exit()                       {}
 
-func (m *recordingMode) ModeType() domain.Mode                                  { return domain.ModeRecursiveGrid }
 func (m *recordingMode) RefreshForMonitorMove(context.Context, image.Rectangle) {}
 
 func TestHandleKeyPressUsesStickyStrippedKeyForBindings(t *testing.T) {
@@ -57,7 +56,7 @@ func TestHandleKeyPressUsesStickyStrippedKeyForBindings(t *testing.T) {
 			domain.ModeRecursiveGrid: mode,
 		},
 		screenBounds: image.Rect(0, 0, 100, 100),
-		executeActionSequence: func(_ string, steps []string) {
+		executeActionSequence: func(_ string, steps []string, _ []string) {
 			hotkeyActions <- strings.Join(steps, ",")
 		},
 	})
@@ -82,11 +81,11 @@ func TestHandleKeyPressUsesStickyStrippedKeyForBindings(t *testing.T) {
 }
 
 // A keymap is settled once and consulted by every keystroke after it, so the
-// configuration being replaced has to settle a new one: otherwise a key goes on
+// configuration being replaced has to settle a new one. Otherwise a key goes on
 // meaning what it meant under the configuration that is gone.
 //
-// The mode and the focused app both stay put here, which is the whole point —
-// this is the settle trigger that nothing else moves.
+// The mode and the focused app both stay put here, which is the whole point.
+// This is the settle trigger that nothing else moves.
 func TestHandleKeyPress_ReplacingTheConfigSettlesANewKeymap(t *testing.T) {
 	t.Parallel()
 
@@ -113,7 +112,7 @@ func TestHandleKeyPress_ReplacingTheConfigSettlesANewKeymap(t *testing.T) {
 		modes: map[domain.Mode]Mode{
 			domain.ModeRecursiveGrid: &recordingMode{keys: make(chan string, 1)},
 		},
-		executeActionSequence: func(_ string, steps []string) {
+		executeActionSequence: func(_ string, steps []string, _ []string) {
 			ran <- strings.Join(steps, ",")
 		},
 	})
@@ -163,7 +162,7 @@ func TestHandleKeyPressRoutesAllKeysToHintSearch(t *testing.T) {
 			Context: &hintscomponent.Context{},
 		},
 		modes: map[domain.Mode]Mode{},
-		executeActionSequence: func(_ string, steps []string) {
+		executeActionSequence: func(_ string, steps []string, _ []string) {
 			t.Fatalf("hotkey action should be skipped during hint search, got %v", steps)
 		},
 	})
@@ -308,7 +307,7 @@ func newHeldRepeatTestHandler() *Handler {
 			domain.ModeRecursiveGrid: &recordingMode{keys: make(chan string, 1)},
 		},
 		screenBounds:          image.Rect(0, 0, 100, 100),
-		executeActionSequence: func(_ string, _ []string) {},
+		executeActionSequence: func(_ string, _ []string, _ []string) {},
 	})
 }
 
@@ -392,7 +391,7 @@ func TestDispatchHotkeyActions_ForwardsWholeSequence(t *testing.T) {
 	handler := newHandlerWithState(handlerState{
 		logger:   zap.NewNop(),
 		appState: state.NewAppState(),
-		executeActionSequence: func(source string, steps []string) {
+		executeActionSequence: func(source string, steps []string, _ []string) {
 			if source != "test-bind" {
 				t.Errorf("sequence source = %q, want %q", source, "test-bind")
 			}

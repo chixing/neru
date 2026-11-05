@@ -5,7 +5,7 @@ implements it is in the contributor docs.
 
 ## Platform status
 
-| Platform | Status     | Primary modifier | Ships as                          |
+| Platform | Status     | Default `Primary` | Ships as                          |
 | -------- | ---------- | ---------------- | --------------------------------- |
 | macOS 14+     | **Stable** | `Cmd`            | `Neru.app`, codesigned            |
 | Linux    | **Beta**   | `Ctrl`           | Binary and install script         |
@@ -22,9 +22,9 @@ On Linux, Neru supports X11 and the Wayland desktops listed in
 - **Alpha**: core navigation works, but hint coverage is incomplete and per-app
   config does not re-apply on focus change.
 
-Linux and Windows have no known gaps, but stay Beta because CI proves them
-rather than daily use. A Beta platform becomes Stable
-after six releases in a row with no bug filed against it alone.
+Windows has no known gaps, and Linux has one, under [Known gaps](#known-gaps).
+Both stay Beta because CI proves them rather than daily use. A Beta platform
+becomes Stable after six releases in a row with no bug filed against it alone.
 
 ## Capability matrix
 
@@ -37,7 +37,8 @@ after six releases in a row with no bug filed against it alone.
 | Hints from the accessibility tree | ✅ | ⚠️ ¹     | ⚠️ ¹              | ⚠️ ¹          | ⚠️ ¹    |
 | Hints from OCR (`vision`)      | ✅    | ⚠️ ²      | ⚠️ ²              | ⚠️ ²          | ⚠️ ²    |
 | Hints from shapes (`contour`)  | ✅    | ✅        | ✅                | ✅            | ✅      |
-| Hint search                    | ✅    | ⚠️ ³      | ⚠️ ³              | ⚠️ ³          | ⚠️ ³    |
+| Hints from layout (`segment`)  | ✅    | ✅        | ✅                | ✅            | ✅      |
+| Hint search                    | ✅    | ✅        | ✅                | ⚠️ ³          | ⚠️ ³    |
 | Menu bar, Dock and other system surfaces in hints | ✅ | ➖ | ➖          | ➖            | ➖      |
 | Scroll mode                    | ✅    | ✅        | ✅                | ✅            | ✅      |
 | Monitor select                 | ✅    | ✅        | ✅                | ✅            | ✅      |
@@ -48,13 +49,13 @@ after six releases in a row with no bug filed against it alone.
 | Modifier passthrough           | ✅    | ❌        | ⚠️ ⁶              | ⚠️ ⁶          | ✅      |
 | Sticky modifiers, `action feed` | ✅   | ✅        | ✅                | ✅            | ✅      |
 | Per-app config                 | ✅    | ✅        | ⚠️ ⁷              | ⚠️ ⁷          | ✅      |
-| Screen capture for hints       | ✅    | ✅        | ✅                | ⚠️ ⁸          | ✅      |
+| Screen capture for hints       | ✅    | ⚠️ ¹²     | ⚠️ ¹²             | ⚠️ ⁸ ¹²       | ✅      |
 | Tray icon                      | ✅    | ✅        | ✅                | ✅            | ✅      |
 | Notifications                  | ✅    | ⚠️ ⁹      | ⚠️ ⁹              | ⚠️ ⁹          | ⚠️ ¹¹   |
 | Alerts                         | ✅    | ⚠️ ⁹      | ⚠️ ⁹              | ⚠️ ⁹          | ✅      |
 | Login service (`neru services`) | ✅   | ⚠️ ¹⁰     | ⚠️ ¹⁰             | ⚠️ ¹⁰         | ✅      |
 | Hide the system cursor         | ✅    | ➖        | ➖                | ➖            | ➖      |
-| Hide overlays from screen share | ✅   | ➖        | ➖                | ➖            | ➖      |
+| Hide overlays from screen share | ✅   | ❌        | ❌                | ❌            | ⚠️ ¹³   |
 
 COSMIC matches the KDE column. GNOME matches it too, except that per-app
 config and window positions need the Neru GNOME Shell extension, see
@@ -65,18 +66,38 @@ config and window positions need the Neru GNOME Shell extension, see
 ¹ **Hint coverage depends on the app.** Linux reads AT-SPI, and each app
 decides what it exposes. Chromium and Electron apps need
 `--force-renderer-accessibility`. Windows misses elements an app exposes only
-in UI Automation's raw view. Where hints are thin, use `vision`, `contour` or
-a grid mode. On some Wayland compositors hints in native apps can be offset,
+in UI Automation's raw view. Where hints are thin, use `vision`, `contour`,
+`segment` or a grid mode. On some Wayland compositors hints in native apps can be offset,
 see [wlroots compositors](../guide/linux-desktops.md#wlroots-compositors).
+The `identifier` that `neru query hints` reports is empty on Linux for GTK 3
+apps, which set no AT-SPI `AccessibleId`. GTK 4 apps report no screen positions,
+so Neru places their hints only where it can read the window's position. On
+X11, and on Wayland wherever Neru gets no window position, their hints stack
+at the top-left corner. `hints.visible_check_enabled` keeps every element in
+GTK 4 apps, which answer no hit-test. Elsewhere on Linux it drops only
+elements something else in the same window covers. The app answers the hit-test
+itself, so it never sees other windows, on X11 or Wayland.
 
-² **OCR finds text only.** Linux (tesseract) and Windows (`Windows.Media.Ocr`)
-find words but not button shapes, so the `hints.vision.rectangle_*` options do
-nothing there. Windows also needs an OCR language pack, and ignores the
-`*_confidence` options. Neru never logs or stores recognized text.
+² **Text and shapes come from two engines.** Linux (tesseract) and Windows
+(`Windows.Media.Ocr`) read the words, and the `contour` detector finds button
+shapes in the same frame. It uses its shipped thresholds, not
+`[hints.contour]`, and scores every shape one, so the `*_confidence` options
+never drop a shape. Windows also needs an OCR language pack, and ignores the
+`*_confidence` options for words too. Neru never logs or stores recognized
+text.
 
-³ **Hint search reads raw keys outside macOS**, so dead keys and IME
-composition do not work in the search field. `neru doctor` reports the native
-search field as a stub there.
+³ **Hint search opens a text field that takes the keyboard**, as on macOS, on
+X11 and on Wayland compositors with a layer shell. An input method reaches it
+through XIM on X11, so `XMODIFIERS` has to name one, as it does for any X
+application. KDE has the protocols the field needs, but it has not been tested
+there. On Windows, search opens a text field too when Windows lets Neru take
+the foreground, and reads raw keys when it does not. GNOME has no layer shell,
+so search reads raw keys there. Dead keys and input-method composition do not
+work, and shifted symbols such as `!` are dropped, because the raw key does
+not say which symbol the layout puts there. `neru doctor` reports the native
+search field as a stub on GNOME and on Linux builds without cgo. It does not
+report a field that failed to open on one search, such as when Windows refused
+the foreground.
 
 ⁴ **Modified clicks on Wayland** need a writable `/dev/uinput`, see
 [Linux setup](../guide/linux.md#setup-steps).
@@ -107,6 +128,22 @@ startup alerts go to stderr.
 `systray.enabled = false` they report that they are not supported. Alerts are
 dialogs and need no tray.
 
+¹² **Linux takes Neru's overlay off the screen for each capture**, because no
+Linux display server can leave one window out of it. While a mode is open, a
+hints refresh or [`neru action snap`](cli.md#neru-action-snap) with `vision`,
+`contour` or `segment` clears the overlay, waits for the compositor to draw a
+frame without it, captures, and puts it back. The overlay is gone for that
+long, at least one frame, and the click indicator stays in the capture.
+Windows before Windows 10 version 2004 captures the overlay. There snap
+refuses those strategies with `ERR_NOT_SUPPORTED` while a mode is open, and a
+hints refresh takes the labels off before it captures. macOS and newer Windows
+leave the overlay out of the capture.
+
+¹³ **Windows hides the overlay from every capture**, screenshots and
+recordings as well as screen shares, while it stays on the monitor. It takes
+Windows 10 version 2004 or later, and an earlier build leaves the overlay in
+the share.
+
 **Windows on ARM** draws overlays with GDI, the CPU fallback, instead of
 Direct2D.
 
@@ -125,16 +162,12 @@ load, and `neru doctor` lists them under `platform_support`.
 
 | Words | macOS | Linux | Windows | Why |
 | ---- | --- | --- | --- | --- |
-| `general.hide_overlay_in_screen_share` | ✅ | ❌ | ❌ | hiding the overlay from a screen share is an NSWindow sharing level, a Quartz concept with no X11, Wayland or Win32 counterpart |
+| `general.hide_overlay_in_screen_share`, `hooks.on_screen_share_hide` | ✅ | ❌ | ✅ | hiding the overlay from a screen share is an NSWindow sharing level on macOS and a display affinity on Windows, with no X11 or Wayland counterpart |
 | `hints.contour.detect_text` | ✅ | ❌ | ❌ | only the macOS capture path runs text recognition beside contour |
 | `hints.include_menubar_hints`, `hints.additional_menubar_hints_targets`, `hints.include_dock_hints`, `hints.include_nc_hints`, `hints.include_stage_manager_hints`, `hints.include_pip_hints`, `hints.include_screen_capture_hints` | ✅ | ❌ | ❌ | the menu bar, the Dock, Notification Center, Stage Manager, picture-in-picture and the screen-capture chrome are macOS surfaces with no counterpart |
-| `hints.detect_mission_control`, `hints.on_mission_control_activated`, `hints.on_mission_control_deactivated` | ✅ | ❌ | ❌ | Mission Control is a macOS concept, so the detection never fires and the hooks never run |
-| `hints.max_depth` | ✅ | ❌ | ❌ | only the AX walk takes a depth limit; the AT-SPI walk uses a fixed one and the UIA walk records the option without reading it |
-| `hints.ignore_clickable_check`, `hints.app_configs.ignore_clickable_check`, `grid.app_configs.ignore_clickable_check`, `recursive_grid.app_configs.ignore_clickable_check`, `bisect.app_configs.ignore_clickable_check`, `scroll.app_configs.ignore_clickable_check`, `app_configs.ignore_clickable_check` | ✅ | ❌ | ❌ | the clickable check is AX-specific; the AT-SPI and UIA walks decide what is clickable their own way and never consult it |
-| `hints.visible_check_enabled`, `hints.app_configs.visible_check_enabled`, `grid.app_configs.visible_check_enabled`, `recursive_grid.app_configs.visible_check_enabled`, `bisect.app_configs.visible_check_enabled`, `scroll.app_configs.visible_check_enabled`, `app_configs.visible_check_enabled` | ✅ | ❌ | ✅ | the visibility hit-test is an AX and UIA question; the AT-SPI walk never consults it |
+| `hints.detect_mission_control`, `hints.on_mission_control_activated`, `hints.on_mission_control_deactivated`, `hooks.on_mission_control_activated`, `hooks.on_mission_control_deactivated` | ✅ | ❌ | ❌ | Mission Control is a macOS concept, so the detection never fires and the hooks never run |
 | `grid.prewarm_enabled` | ✅ | ❌ | ❌ | only the darwin grid overlay prewarms its layers; the other backends draw on demand |
 | `hints.vision.minimum_confidence`, `hints.vision.button_min_confidence`, `hints.vision.generic_clickable_min_confidence` | ✅ | ✅ | ❌ | Windows.Media.Ocr reports no per-word confidence, so every word scores one there and a floor keeps everything; the Vision framework and tesseract score each word |
-| `hints.vision.detect_rectangles`, `hints.vision.rectangle_max_candidates`, `hints.vision.rectangle_min_size`, `hints.vision.rectangle_min_aspect`, `hints.vision.rectangle_max_aspect` | ✅ | ❌ | ❌ | rectangle detection has no OCR answer, so it stays macOS-only even where the vision strategy lands; that half is text-only |
 | `hide_cursor` (action), `show_cursor` (action) | ✅ | ❌ | ❌ | a Wayland client may not hide another client's cursor, and the blessed Linux stack is Wayland; Windows has no equivalent either |
 
 <!-- END GENERATED PLATFORM SUPPORT -->
@@ -147,7 +180,6 @@ Anything else missing is a gap.
 | Feature                                   | Platform | Why it is exclusive                                          |
 | ----------------------------------------- | -------- | ------------------------------------------------------------ |
 | System cursor hide + virtual-pointer replacement | macOS | A Wayland client may not hide another client's cursor. X11 could, but the supported Linux stack is Wayland, so shipping it on one backend would not be parity |
-| Screen-sharing hide                       | macOS    | NSWindow sharing level is a Quartz concept                    |
 | Secure input detection                    | macOS    | Read through a private macOS API. Neither X11 nor Wayland has the concept |
 
 Linux and Windows have no exclusives.
@@ -157,15 +189,29 @@ Linux and Windows have no exclusives.
 A gap is anything you can write that means less on a platform than on macOS.
 A boundary is a requirement the platform imposes, not something Neru lacks.
 
-**Linux**: none. These are boundaries, not gaps:
+**Linux**: one gap.
+
+- **A Wayland monitor's resolution or scale change** needs a
+  [daemon restart](../guide/troubleshooting.md#restart-the-daemon) before
+  overlays fit it again. Plugging in or removing a monitor is tracked live.
+
+These are boundaries, not gaps:
 
 - Wayland global hotkeys need the `input` group
   ([Linux setup](../guide/linux.md#setup-steps)).
+- On wlroots compositors other than Sway, Hyprland and niri, such as River,
+  Wayfire and labwc, the compositor does not report where the focused window
+  is. Hints in native apps are offset there, and `--capture-scope window`
+  covers the whole screen, see
+  [wlroots compositors](../guide/linux-desktops.md#wlroots-compositors).
 - GNOME Wayland needs a shell extension for the focused window. X11 cannot do
   modifier passthrough. `neru services` needs systemd.
 - A source build with `CGO_ENABLED=0` cannot move the cursor, click, scroll,
   capture keys, draw overlays or run `vision`, and says so once at startup.
   The Linux release binary is built with CGO.
+- Neither X11 nor Wayland can leave one window out of a screen share, so
+  `general.hide_overlay_in_screen_share` and `neru toggle-screen-share` do
+  nothing there.
 
 **Windows**: none. These are boundaries, not gaps:
 

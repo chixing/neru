@@ -50,9 +50,9 @@ the footnotes below give the mechanism behind its limits.
 | **Held-key glide (`held_repeat`)** | `CGEventPost` per tick | XTest per tick | virtual-pointer relative motion per tick | libei per tick | `SetCursorPos` per tick |
 | **Smooth scroll animation**   | continuous axis       | whole notches only ³ | continuous axis ³ (whole notches when modified on Hyprland ⁹) | libei scroll delta, unverified ³ | 120ths of a notch ³ |
 | **Element discovery (hints)** | AXUIElement           | AT-SPI walk         | AT-SPI walk               | AT-SPI walk          | UIA, control view only    |
-| **Overlay**                   | NSPanel + CoreAnimation | X11 + Cairo       | layer-shell + Cairo       | layer-shell + Cairo  | DirectComposition + Direct2D (GDI fallback; windows/arm64 is GDI only ¹⁰) |
-| **Global hotkeys**            | per-key CGEventTap    | `XGrabKey`          | evdev proxy (`input` group) | evdev proxy (`input` group) | `RegisterHotKey`          |
-| **Keyboard capture**          | CGEventTap            | `XGrabKeyboard`     | evdev proxy (uinput; wl-keyboard fallback) | evdev proxy (uinput) | `WH_KEYBOARD_LL`          |
+| **Overlay**                   | NSPanel + CoreAnimation | X11 + Cairo       | layer-shell + Cairo       | layer-shell + Cairo  | DirectComposition + Direct2D (GDI fallback, and windows/arm64 is GDI only ¹⁰) |
+| **Global hotkeys**            | one shared CGEventTap | `XGrabKey`          | evdev proxy (`input` group) | evdev proxy (`input` group) | `RegisterHotKey`          |
+| **Keyboard capture**          | CGEventTap            | `XGrabKeyboard`     | evdev proxy (uinput, wl-keyboard fallback) | evdev proxy (uinput) | `WH_KEYBOARD_LL`          |
 | **Modifier passthrough**      | CGEventTap forwards or blocks per event | none, the grab is all-or-nothing | evdev backend only        | evdev backend only   | `WH_KEYBOARD_LL` forwards or blocks per event |
 | **Dark mode detection**       | Cocoa appearance      | xdg appearance portal | xdg appearance portal   | kdeglobals + portal  | registry                  |
 | **Font resolution**           | NSFont                | fontconfig          | fontconfig                | fontconfig           | GDI `EnumFontFamiliesExW` ¹ |
@@ -63,9 +63,9 @@ the footnotes below give the mechanism behind its limits.
 | **Secure input detection**    | private macOS API     | always false        | always false              | always false         | always false              |
 | **System cursor hide**        | `CGDisplayHideCursor` | none                | none                      | none                 | none                      |
 | **`monitor_select` mode**     | native panels         | Cairo panels        | Cairo panels              | Cairo panels         | layered panels            |
-| **Native hint-search field**  | NSTextField overlay   | key-stream input ⁴  | key-stream input ⁴        | key-stream input ⁴   | key-stream input ⁴        |
+| **Native hint-search field**  | text view in a key panel | XIM window ⁴        | layer-shell field ⁴       | layer-shell field ⁴  | `EDIT` control in a tool window ⁴ |
 | **Screen capture**            | ScreenCaptureKit      | `XGetImage`         | `wlr-screencopy`          | portal ScreenCast, consent ⁵ | `BitBlt` ⁵        |
-| **Vision / OCR detection**    | Vision framework      | tesseract, text only ⁶ | tesseract, text only ⁶ | tesseract, text only ⁶ | `Windows.Media.Ocr`, text only ⁶ |
+| **Vision / OCR detection**    | Vision framework      | tesseract and contour ⁶ | tesseract and contour ⁶ | tesseract and contour ⁶ | `Windows.Media.Ocr` and contour ⁶ |
 | **Key feed (`action feed`)** | `CGEventPost`         | uinput               | uinput / virtual-keyboard | uinput               | `SendInput`               |
 | **Service management (`neru services`)** | launchd user agent | systemd user unit only ² | systemd user unit only ² | systemd user unit only ² | Task Scheduler logon task |
 
@@ -87,22 +87,64 @@ wlroots and libei send fractional deltas, Windows sends 120ths of a notch, and
 X11 sends whole notches. Linux notch paths use 30 px per notch, rounded, at
 least one.
 
-⁴ **Native hint-search field.** macOS draws an `NSTextField` with keyboard
-focus and the system input method. Elsewhere the query is read from the key
-stream.
+⁴ **Native hint-search field.** macOS places an `NSTextView` in an invisible
+key panel over the search box, which the input method types into. On Wayland a
+transparent layer-shell surface over the box takes the keyboard, with
+`zwp_text_input_v3` for input-method text and xkb compose for dead keys. The
+event tap is off for the session, so the evdev proxy forwards keys to the
+compositor as it does when Neru is idle. Windows places a standard `EDIT`
+control in a nearly transparent tool window over the search box, which gets
+input-method text through IMM and dead keys through `TranslateMessage`. The
+keyboard hook is off for the session. Windows lets a background process take
+the foreground only in some cases, so the field joins the foreground window's
+input queue for the request and falls back to the key stream when it is still
+refused. Losing the foreground cancels the search. On X11 a one-pixel
+override-redirect window at the box takes the input focus and reads keys
+through an XIM input context, which brings the input method `XMODIFIERS` names
+and the locale's compose rules for dead keys. The keyboard grab is released for
+the session, and the window that had the focus gets it back. On GNOME, which
+has no layer shell, the query is read from the key stream.
 
 ⁵ **Screen capture.** X11, wlroots and Windows capture without a prompt. KWin
 supports neither protocol, so KDE uses the `org.freedesktop.portal.ScreenCast`
 portal over PipeWire, with the grant kept under `$XDG_STATE_HOME/neru/`. A
 region that leaves the screen, spans two Wayland outputs, or lies on an
 unshared monitor fails rather than coming back clipped. Scaled outputs return
-physical pixels, as on Retina.
+physical pixels. On macOS, Neru caches ScreenCaptureKit's list of displays and
+drops it when the display configuration changes or a capture fails. `contour`
+and `segment` capture only their region, through a source rect, at its size in
+points, and fall back to the whole display holding it. `vision` captures the
+whole display at its size in points. Neru does not use macOS 15.2's
+`captureImageInRect:`, because it leaks the captured image on every call. On
+Windows the `contour` and `segment` strategies get the monitor's DPI scale, so
+their size rules are in points while their results stay in physical pixels.
+The rectangle half of `vision` still applies them in physical pixels.
+On macOS the capture leaves Neru's own windows out through the
+ScreenCaptureKit content filter. From Windows 10 version 2004 each capture sets
+`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` on every window Neru shows,
+waits one `DwmFlush` for the compositor to apply it, reads the screen with
+`BitBlt` and restores `WDA_NONE`. Between captures the windows stay in a screen
+share or recording, unless the overlay is hidden from screen shares. Then every
+window keeps `WDA_EXCLUDEFROMCAPTURE`, a window opened later gets it when it
+registers, and a capture skips the restore. On Linux the overlay takes itself
+off the screen around each capture, through a hider it registers with
+`platform/linux` (`capture_exclusion.go`). Under its render lock it clears
+what it shows without unmapping, so the overlay keeps the keyboard. Wayland
+commits a cleared spare buffer and waits for the compositor's frame callback.
+X11 copies the window into a server-side pixmap, clears it, syncs, and waits
+120 ms when a compositing manager owns `_NET_WM_CM_S<n>`. After the capture
+the drawn buffer or the copy goes back, untouched. The click indicator is a
+surface of its own and stays in the capture. Windows builds older than 2004
+capture Neru's windows with the rest of the screen. There a hints refresh with
+a screen-reading strategy takes the old labels off before it captures, and
+snap refuses those strategies while a mode is open.
 
 ⁶ **Vision.** Linux uses tesseract, which finds language data through
 `TESSDATA_PREFIX` and then the distribution paths, and a missing
 `eng.traineddata` gets `ERR_NOT_SUPPORTED` naming that file. Windows uses
-`Windows.Media.Ocr`, which reports no per-word confidence. Neither reports
-rectangles. Recognized text is never logged or stored.
+`Windows.Media.Ocr`, which reports no per-word confidence. On both, the
+contour detector finds rectangles in the same frame, with its shipped
+thresholds. Recognized text is never logged or stored.
 
 ⁷ **Modifiers on injected input.** On X11, Wayland and Windows, an injected
 pointer event carries whatever modifiers the keyboard holds, so a chord still
@@ -132,6 +174,22 @@ that needs one is matched best-effort from the app_id.
 **App watcher.** On Linux and Windows it reports activation and deactivation
 only. Launch, terminate and Mission Control events are macOS-only. See
 [App identity across platforms](../reference/configuration.md#app-identity-across-platforms-bundle_id).
+
+On macOS, Neru treats Mission Control as up while the Dock's accessibility tree
+has a child group with the identifier `mc`. It checks once a second and on
+every Space change while `hints.detect_mission_control` is on.
+
+The Dock's tree is the signal because App Expose, Show Desktop and the Apps
+launcher never add that group. The window list cannot tell, because the Dock
+keeps a full-display window on screen whenever the Dock itself is visible.
+
+WindowManager draws Mission Control's windows and Spaces bar, so hints read its
+tree while Mission Control is up. WindowManager lists the windows of every
+desktop, so a thumbnail counts only while its window, named by an undocumented
+`wid` attribute, is on screen. A Spaces bar button reports its center as its
+position, so Neru moves its frame back by half its size. While the bar is
+collapsed those centers lie above the screen, so its desktops get hints only
+once it expands.
 
 **Global hotkeys on Wayland** use an evdev keyboard proxy
 ([ADR 0014](../adr/0014-the-wayland-keyboard-is-a-proxy.md)) that needs the
@@ -165,7 +223,7 @@ backends warp the pointer and let the compositor infer the drag.
 | Aspect                | macOS                  | Linux X11               | Linux Wayland                            | Windows                 |
 | --------------------- | ---------------------- | ----------------------- | ---------------------------------------- | ----------------------- |
 | **In-mode capture**   | `CGEventTapCreate`     | `XGrabKeyboard`         | evdev proxy (uinput re-emit), wl-keyboard fallback | `WH_KEYBOARD_LL`        |
-| **Global hotkeys**    | Per-key CGEventTap     | `XGrabKey`              | Chord matcher on the evdev proxy         | `RegisterHotKey`        |
+| **Global hotkeys**    | One shared CGEventTap  | `XGrabKey`              | Chord matcher on the evdev proxy         | `RegisterHotKey`        |
 | **Modifier passthrough** | event tap forwards or blocks | none, grab is all-or-nothing | evdev proxy only              | `WH_KEYBOARD_LL` forwards or blocks |
 
 **A held global hotkey** is one press and one release on every platform, which
@@ -215,22 +273,34 @@ load, and `neru doctor` lists it under `platform_support`.
 | Aspect                  | macOS                                       | Linux                                              | Windows                              |
 | ----------------------- | ------------------------------------------- | -------------------------------------------------- | ------------------------------------ |
 | **Backend**             | AXUIElement                                 | AT-SPI over D-Bus                                  | UI Automation                        |
-| **Traversal**           | Full recursive walk of the accessibility tree | Recursive walk of the active window, depth and node capped | Control-view tree, any depth |
+| **Traversal**           | Full recursive walk of the accessibility tree, to `hints.max_depth` | One Collection query of the active window at the default or unlimited `hints.max_depth`, a recursive walk to it below the default, or when the toolkit lacks Collection, node capped | One `FindAll` of the control view at the default or unlimited `hints.max_depth`, a control-view walker to it below the default |
 | **Sources collected**   | Frontmost + all windows, popovers, menubar, dock, notification center, Stage Manager, PIP | Active window only          | Foreground window's control view     |
-| **Strategies**          | `axtree` (default), `vision` and `contour`, incl. per-app overrides | `axtree`, `vision` (text only) and `contour` | `axtree`, `vision` (text only) and `contour` |
+| **Strategies**          | `axtree` (default), `vision`, `contour` and `segment`, incl. per-app overrides | `axtree`, `vision`, `contour` and `segment` | `axtree`, `vision`, `contour` and `segment` |
 | **Popovers / menus**    | dedicated detection                      | only if inside the active window                | none                              |
+| **Element text** (title, description, value) | `AXTitle`, `AXDescription`, `AXValue` when it is a string | `Name`, `Description`, and `Text.GetText` for the entry and spin button roles, never password text | `Name`, `HelpText`, and the Value pattern's value, never a password field's |
+| **Disabled elements** | skipped when `AXEnabled` is false | skipped without the ENABLED or SENSITIVE state, since GTK 4 sets only SENSITIVE. The Collection query asks for ENABLED, and GTK 4 has no Collection | skipped when `IsEnabled` is false, before their text is read |
+| **`ignore_clickable_check`** | skips the press-action, enabled, hidden and hit tests. The role filter still applies | skips the ENABLED or SENSITIVE test. The Collection query then asks only for SHOWING | skips the `IsEnabled` test |
+| **`visible_check_enabled`** | hit-tests each element's center and keeps it when the hit is the element or inside it | `GetAccessibleAtPoint` from the window down to the deepest element at the center, then `Parent` up from it. The app answers from its own widgets, so other windows never count. A window that answers nothing (GTK 4), or a lookup or parent read that fails, keeps the element | `ElementFromPoint` at the center, then the control-view walker up from the hit. A failed hit-test keeps the control |
+| **Element identifier and focus** (`neru query hints` only) | `AXIdentifier` and `AXFocused`, in the attribute batch every element gets | `AccessibleId` and the FOCUSED state, read only for the query | `AutomationId` and `HasKeyboardFocus`, cached only for the query |
 
 On Linux, coverage depends on each app exposing AT-SPI. On Windows, an element
 an app exposes only in UI Automation's raw view gets no hint. Where the tree is
-thin, use the `vision` or `contour` strategy. Fix a missing element with a role
+thin, use the `vision`, `contour` or `segment` strategy. Fix a missing element with a role
 or filter setting ([Clickable roles](../reference/configuration.md#clickable-roles)).
 
 **Chromium and Electron apps on Linux** hide their web content from AT-SPI by
 default. Launch them with `--force-renderer-accessibility`. Native GTK and Qt
 apps and Firefox need no flag.
 
-**Window-origin offset on Wayland.** AT-SPI positions are window-relative on
-Wayland, so Neru asks the compositor for the window's screen origin:
+**Window-origin offset on Wayland.** AT-SPI positions of native Wayland
+clients are window-relative, so Neru asks the compositor for the window's
+screen origin. When it gets one, it reads element positions in window
+coordinates and adds the origin, less the frame's own window position. When it
+gets none, it reads screen coordinates and uses them as they are, which is
+right on X11 and for XWayland clients. Neru makes the choice per scan because GTK
+4 reports a zero origin for every element in screen coordinates. Native
+Firefox, Chromium, Qt and GTK 3 clients report the same numbers in both,
+measured on niri.
 
 | Compositor | Source                                                       | Limits                                                                                                                    |
 | ---------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
@@ -242,8 +312,8 @@ Wayland, so Neru asks the compositor for the window's screen origin:
 | Anything else (X11, River, Wayfire) | none                                                | X11 needs none, because AT-SPI already reports screen positions there. The rest report no origin, so hints stay window-relative. |
 
 Without an origin, positions stay unoffset. Neru warns when a compositor
-command fails or returns invalid output. The same sources scope vision and
-contour detection, `neru action move_mouse --window`, and grid, recursive grid
+command fails or returns invalid output. The same sources scope vision,
+contour and segment detection, `neru action move_mouse --window`, and grid, recursive grid
 or bisect with `--capture-scope window`. River and Wayfire report
 `ERR_NOT_SUPPORTED` for these.
 
@@ -270,7 +340,7 @@ Mode logic is shared. Only these rows differ, by rendering or element discovery.
 | Mode              | Feature                        | macOS                      | Linux                      | Windows                     |
 | ----------------- | ------------------------------ | -------------------------- | -------------------------- | --------------------------- |
 | **Hints**         | Element discovery              | full AX tree            | AT-SPI, toolkit-dependent | UIA, control view only |
-| **Hints**         | `vision` strategy + per-app overrides | Vision framework, text and rectangles | tesseract; text only, no rectangles | `Windows.Media.Ocr`; text only, no rectangles, no confidence |
+| **Hints**         | `vision` strategy + per-app overrides | Vision framework, text and rectangles | tesseract for text, the contour detector for rectangles | `Windows.Media.Ocr` for text, the contour detector for rectangles, no confidence |
 | **Hints**         | Label arrow / tail             | NSBezierPath            | Cairo triangle          | triangle |
 | **Scroll**        | Smooth scroll animation        | continuous              | continuous (X11: whole notches) | 120ths of a notch |
 | **Monitor select**| Whole mode                     | native panels           | Cairo panels            | one layered window per display |

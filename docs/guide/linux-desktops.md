@@ -13,27 +13,29 @@ Supported on Plasma 6.
    session.
 2. Start Neru. A "Remote Control" prompt appears.
 3. Tick **Enable keyboard**, then allow.
-4. Bind your modes, see [Global hotkeys on Wayland](#global-hotkeys-on-wayland).
+4. Bind your modes. See [Global hotkeys on Wayland](#global-hotkeys-on-wayland).
 
 > [!WARNING]
 > If you allow without ticking **Enable keyboard**, modified clicks degrade
 > and `neru action feed` is refused. See
 > [the fix](#key-feeding-unavailable-the-remotedesktop-portal-session-did-not-grant-a-keyboard-device).
 
-Neru keeps the grant in `remote-desktop.token` under `$XDG_STATE_HOME/neru/`,
-by default `~/.local/state/neru/`. Delete
-that file, or revoke the permission in System Settings, to see the prompt
-again.
+Neru keeps the grant in `remote-desktop.<desktop>.token` under
+`$XDG_STATE_HOME/neru/`, by default `~/.local/state/neru/`, where `<desktop>`
+is the backend `neru doctor` shows as `display_server`, such as
+`wayland-kde`. Each desktop keeps its own grant, so switching between them
+does not prompt again. Delete that file, or revoke the permission in System
+Settings, to see the prompt again.
 
 ### Screen-sharing consent
 
-The `vision` and `contour` hint strategies read the screen. The first time
+The `vision`, `contour` and `segment` hint strategies read the screen. The first time
 one needs a frame, KDE shows a source picker. Pick every screen Neru may read,
 because hints on an unshared screen fail. Neru asks for monitors only, not
 the pointer, and a capture never raises the picker by itself.
 
-Neru keeps this grant in `screen-cast.token` in the same directory. Delete that
-file, or revoke it in **System Settings > Apps & Window Management >
+Neru keeps this grant in `screen-cast.<desktop>.token` in the same directory.
+Delete that file, or revoke it in **System Settings > Apps & Window Management >
 Application Permissions**, to see the picker again.
 
 ### "could not establish a libei input session via the RemoteDesktop portal"
@@ -66,15 +68,14 @@ or later.
 2. Start Neru and approve the prompts, as on
    [KDE](#kde-plasma-wayland), including
    [screen-sharing consent](#screen-sharing-consent).
-3. Bind your modes, see [Global hotkeys on Wayland](#global-hotkeys-on-wayland).
+3. Bind your modes. See [Global hotkeys on Wayland](#global-hotkeys-on-wayland).
 
 ## wlroots compositors
 
-Supported on Sway, Hyprland, niri, River, Wayfire and labwc. Other wlroots
-compositors, such as dwl, cage, SwayFX and scroll, work if they have the
-protocols under [Checking compositor protocols](#checking-compositor-protocols).
-Neru treats a compositor as wlroots when `XDG_CURRENT_DESKTOP` contains
-`:wlroots` or is unset.
+Which compositors take this backend, and how Neru tells, is under
+[Supported desktops](linux.md#supported-desktops). One not listed there works
+if it has the protocols under
+[Checking compositor protocols](#checking-compositor-protocols).
 
 ### Setup
 
@@ -94,20 +95,23 @@ Hints read window positions from the compositor.
 - **River, Wayfire, labwc:** the compositor reports no positions, so Neru
   places hints in native apps relative to the window, not the screen.
 
-The same positions place `--capture-scope window`, `vision` and `contour` on
-these compositors, and on River and Wayfire those report that they are not
-supported. Grid modes with the default screen scope are not affected.
+On River, Wayfire and labwc, `--capture-scope window` covers the whole screen
+instead of the window, for grid modes, `vision`, `contour` and `segment` alike. Neru logs
+a warning each time, and `neru query window` and `move_mouse --window` refuse.
+Grid modes with the default screen scope are not affected. See also
+[Known gaps](../reference/platform-support.md#known-gaps).
 
 ## X11 sessions
 
-Supported on XOrg, i3, GNOME on X11 and other X11 window managers.
-`[hotkeys]` work with no compositor binding or device permission. Its limits,
-such as no modifier passthrough, are in the
+`[hotkeys]` work with no compositor binding or device permission. The
+backend's limits, such as no modifier passthrough, are in the
 [capability matrix](../reference/platform-support.md#capability-matrix).
 
 ## GNOME (Wayland)
 
-Supported with Xwayland and the Neru GNOME Shell extension, on GNOME Shell 50.
+Supported with Xwayland and the Neru GNOME Shell extension. Tested on GNOME
+Shell 50. The extension declares GNOME Shell 45 to 50, and the older versions
+are untested.
 
 ### Setup
 
@@ -139,9 +143,9 @@ scaled monitors. Turn it off. The daemon warns at startup when it sees this.
 
 ### Budgie, Cinnamon and Pantheon
 
-Budgie identifies as GNOME and takes this backend untested, and its shell
-cannot load the extension. Cinnamon and Pantheon on Wayland are not
-supported, and the daemon refuses to start.
+Budgie identifies as GNOME, so Neru gives it this backend. That path is
+untested, and Budgie's shell cannot load the extension. For Cinnamon and Pantheon, see
+[Supported desktops](linux.md#supported-desktops).
 
 ## Global hotkeys on Wayland
 

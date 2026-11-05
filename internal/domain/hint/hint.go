@@ -17,11 +17,6 @@ import (
 	"github.com/y3owk1n/neru/internal/domain/element"
 )
 
-const (
-	// PrefixLengthCheck is the check for prefix length.
-	PrefixLengthCheck = 2
-)
-
 // Interface is a labeled UI element for keyboard-driven navigation.
 // Hints are immutable after creation.
 type Interface struct {
@@ -140,7 +135,6 @@ func NewTrie() *Trie {
 	return &Trie{
 		root: &TrieNode{
 			otherChildren: make(map[rune]*TrieNode),
-			hints:         nil, // Use nil instead of empty slice
 		},
 	}
 }
@@ -156,7 +150,6 @@ func (t *Trie) Insert(hint *Interface) {
 			if node.asciiChildren[index] == nil {
 				node.asciiChildren[index] = &TrieNode{
 					otherChildren: make(map[rune]*TrieNode),
-					hints:         nil,
 				}
 			}
 
@@ -165,7 +158,6 @@ func (t *Trie) Insert(hint *Interface) {
 			if node.otherChildren[char] == nil {
 				node.otherChildren[char] = &TrieNode{
 					otherChildren: make(map[rune]*TrieNode),
-					hints:         nil,
 				}
 			}
 
@@ -180,7 +172,7 @@ func (t *Trie) Insert(hint *Interface) {
 
 // FindByPrefix returns all hints that start with the given prefix.
 func (t *Trie) FindByPrefix(prefix string) []*Interface {
-	prefix = strings.ToUpper(prefix) // Normalize prefix to uppercase
+	prefix = strings.ToUpper(prefix)
 	node := t.root
 
 	// Traverse to the node corresponding to the prefix
@@ -240,10 +232,12 @@ type Collection struct {
 	byLabel map[string]*Interface
 	trie    *Trie
 
-	// searchTexts holds each hint's normalized texts, built on first search:
-	// normalizing is the bulk of a search, and one runs per keystroke.
+	// searchTexts holds each hint's element texts normalized for search. The
+	// first search builds it and later ones reuse it. A search runs on every
+	// keystroke, normalizing is most of its cost, and the hints do not change
+	// while the user types.
 	searchOnce  sync.Once
-	searchTexts [][4]string
+	searchTexts [][]string
 }
 
 // NewCollection creates a new hint collection with indexed lookups.
@@ -283,34 +277,109 @@ func (c *Collection) FilterByPrefix(prefix string) []*Interface {
 	return c.trie.FindByPrefix(prefix)
 }
 
-// fuzzyMinQueryLen is the shortest query that also matches as a subsequence.
-// Shorter ones would match nearly every element.
-const fuzzyMinQueryLen = 3
-
-// FilterByText returns hints whose element text contains query, followed by
-// hints whose text holds the query's characters in order ("bmode" finds
-// "BatchMode"), which tolerates OCR slips and partial words.
-func (c *Collection) FilterByText(query string) *Collection {
+// FilterBySearch returns the hints whose element text contains query. When
+// query has a space, it also returns the hints whose text contains the words
+// before the last space and whose label starts with the word after it, so
+// "save a" keeps the "save" matches labeled A. A label match never hides a
+// text match. Hints kept by label carry the typed label as their matched
+// prefix.
+func (c *Collection) FilterBySearch(query string) *Collection {
 	if query == "" {
 		return c
 	}
 
 	normalizedQuery := normalizeForSearch(query)
 	compactQuery := strings.ReplaceAll(normalizedQuery, " ", "")
+
+	const fuzzyMinQueryLen = 3
+
 	fuzzy := len([]rune(compactQuery)) >= fuzzyMinQueryLen
 
-	var contains, subsequence []*Interface
+	space := strings.LastIndex(query, " ")
+	readsLabel := space >= 0
+	normalizedHead := ""
+	labelPrefix := ""
 
-	for i, texts := range c.normalizedTexts() {
-		switch {
-		case anyText(texts[:], func(t string) bool { return strings.Contains(t, normalizedQuery) }):
-			contains = append(contains, c.hints[i])
-		case fuzzy && anyText(texts[:], func(t string) bool { return isSubsequence(compactQuery, t) }):
-			subsequence = append(subsequence, c.hints[i])
+	if readsLabel {
+		normalizedHead = normalizeForSearch(strings.TrimRight(query[:space], " "))
+		labelPrefix = strings.ToUpper(query[space+1:])
+	}
+
+	filtered := make([]*Interface, 0, len(c.hints))
+
+	var subsequence []*Interface
+
+	for i, texts := range c.normalizedSearchTexts() {
+		hint := c.hints[i]
+
+		if readsLabel && strings.HasPrefix(hint.labelUpper, labelPrefix) &&
+			(normalizedHead == "" || containsAny(texts, normalizedHead)) {
+			if labelPrefix != "" {
+				hint = hint.WithMatchedPrefix(labelPrefix)
+			}
+
+			filtered = append(filtered, hint)
+
+			continue
+		}
+
+		if containsAny(texts, normalizedQuery) {
+			filtered = append(filtered, hint)
+		} else if fuzzy && matchesSubsequence(texts, compactQuery) {
+			subsequence = append(subsequence, hint)
 		}
 	}
 
-	return NewCollection(append(contains, subsequence...))
+	return NewCollection(append(filtered, subsequence...))
+}
+
+// WithoutMatchedPrefixes returns the collection with every hint's matched
+// prefix cleared, or the collection itself when no hint carries one.
+func (c *Collection) WithoutMatchedPrefixes() *Collection {
+	cleared := make([]*Interface, len(c.hints))
+	changed := false
+
+	for i, hint := range c.hints {
+		cleared[i] = hint
+		if hint.matchedPrefix != "" {
+			cleared[i] = hint.WithMatchedPrefix("")
+			changed = true
+		}
+	}
+
+	if !changed {
+		return c
+	}
+
+	return NewCollection(cleared)
+}
+
+func containsAny(texts []string, query string) bool {
+	for _, text := range texts {
+		if strings.Contains(text, query) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func normalizeForSearch(text string) string {
+	if text == "" {
+		return ""
+	}
+
+	searchCaser := cases.Fold()
+	folded := searchCaser.String(text)
+
+	searchTransformer := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+
+	normalized, _, err := transform.String(searchTransformer, folded)
+	if err != nil {
+		return folded
+	}
+
+	return normalized
 }
 
 // Count returns the number of hints in the collection.
@@ -323,18 +392,23 @@ func (c *Collection) Empty() bool {
 	return len(c.hints) == 0
 }
 
-func (c *Collection) normalizedTexts() [][4]string {
+// normalizedSearchTexts returns the texts FilterBySearch matches against, one
+// entry per hint, nil for a hint without an element.
+func (c *Collection) normalizedSearchTexts() [][]string {
 	c.searchOnce.Do(func() {
-		c.searchTexts = make([][4]string, len(c.hints))
+		c.searchTexts = make([][]string, len(c.hints))
 
-		for i, hint := range c.hints {
-			if elem := hint.Element(); elem != nil {
-				c.searchTexts[i] = [4]string{
-					normalizeForSearch(elem.Title()),
-					normalizeForSearch(elem.Description()),
-					normalizeForSearch(elem.Value()),
-					normalizeForSearch(elem.SearchText()),
-				}
+		for index, hint := range c.hints {
+			elem := hint.Element()
+			if elem == nil {
+				continue
+			}
+
+			c.searchTexts[index] = []string{
+				normalizeForSearch(elem.Title()),
+				normalizeForSearch(elem.Description()),
+				normalizeForSearch(elem.Value()),
+				normalizeForSearch(elem.SearchText()),
 			}
 		}
 	})
@@ -342,9 +416,9 @@ func (c *Collection) normalizedTexts() [][4]string {
 	return c.searchTexts
 }
 
-func anyText(texts []string, match func(string) bool) bool {
-	for _, t := range texts {
-		if t != "" && match(t) {
+func matchesSubsequence(texts []string, query string) bool {
+	for _, text := range texts {
+		if isSubsequence(query, text) {
 			return true
 		}
 	}
@@ -364,22 +438,4 @@ func isSubsequence(query, text string) bool {
 	}
 
 	return matched == len(queryRunes)
-}
-
-func normalizeForSearch(text string) string {
-	if text == "" {
-		return ""
-	}
-
-	searchCaser := cases.Fold()
-	folded := searchCaser.String(text)
-
-	searchTransformer := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
-
-	normalized, _, err := transform.String(searchTransformer, folded)
-	if err != nil {
-		return folded
-	}
-
-	return normalized
 }

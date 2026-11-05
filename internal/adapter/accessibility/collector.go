@@ -42,7 +42,7 @@ type elementCollector struct {
 
 	elements []*element.Element
 
-	// firstError fails the collection: a source that cannot be queried leaves
+	// firstError fails the collection, since a source that cannot be queried leaves
 	// the result untrustworthy, not merely incomplete.
 	firstError error
 
@@ -133,7 +133,7 @@ func (c *elementCollector) await(ctx context.Context) error {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		// Timeout and cancellation read differently here: a timeout means the
+		// Timeout and cancellation read differently here. A timeout means the
 		// backend went slow or unresponsive, which is the actionable one.
 		return derrors.WrapContextCanceled(ctx, "element collection")
 	}
@@ -150,7 +150,7 @@ type windowScan struct {
 
 	elements []*element.Element
 
-	// firstError is reported only when no window yielded anything: one bad
+	// firstError is reported only when no window yielded anything. One bad
 	// popover must not discard the frontmost window's elements, but an
 	// unreachable AT-SPI bus must not look like an empty window either.
 	firstError error
@@ -237,7 +237,8 @@ func (a *Adapter) scanWindow(
 	defer func() { <-scan.sem }()
 	defer window.Release()
 
-	nodes, nodesErr := a.client.ClickableNodes(ctx, window, stringRoles(filter.Roles), 0)
+	nodes, nodesErr := a.client.ClickableNodes(ctx, window, stringRoles(filter.Roles), 0,
+		filter.ReadElementState)
 	if nodesErr != nil {
 		a.logger.Warn("Failed to collect clickable nodes from window", zap.Error(nodesErr))
 		scan.recordFailure(nodesErr)
@@ -264,7 +265,8 @@ type supplementarySource struct {
 	enabled bool
 
 	// duringMissionControl marks a surface still reachable while Mission
-	// Control is up. Only the Dock is; the rest are covered by it.
+	// Control is up: the Dock, and Mission Control itself. The rest are covered
+	// by it.
 	duringMissionControl bool
 
 	collect func() []*element.Element
@@ -273,9 +275,14 @@ type supplementarySource struct {
 // supplementarySources lists the surfaces outside the frontmost window. They
 // are macOS-only and resolved by bundle ID, which is why the caller asks the
 // client whether to consider them rather than probing for absent apps.
+//
+// Mission Control's windows count as Dock hints, which is what
+// include_dock_hints promises. On current macOS they are drawn by
+// WindowManager rather than the Dock.
 func (a *Adapter) supplementarySources(
 	ctx context.Context,
 	filter ports.ElementFilter,
+	missionControlActive bool,
 ) []supplementarySource {
 	return []supplementarySource{
 		{
@@ -288,6 +295,12 @@ func (a *Adapter) supplementarySources(
 			enabled:              filter.IncludeDock,
 			duringMissionControl: true,
 			collect:              func() []*element.Element { return a.addDockElements(ctx, nil) },
+		},
+		{
+			name:                 "mission_control",
+			enabled:              filter.IncludeDock && missionControlActive,
+			duringMissionControl: true,
+			collect:              func() []*element.Element { return a.addMissionControlElements(ctx) },
 		},
 		{
 			name:    "notification_center",

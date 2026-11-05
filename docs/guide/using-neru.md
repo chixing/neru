@@ -2,7 +2,7 @@
 
 A tour of every mode, from moving the cursor to clicking, dragging and
 scrolling. It takes about ten minutes. Neru should be running with its
-permissions granted, see [Getting started](getting-started.md).
+permissions granted. See [Getting started](getting-started.md).
 
 The hotkeys below are the macOS and Windows
 [defaults](../reference/configuration.md#global-hotkeys). On Linux, bind them
@@ -17,8 +17,8 @@ run the command shown next to each one, such as `neru hints`.
    middle-clicks.
 4. Press `Escape` to leave the mode.
 
-In hints, the grids and scroll, the arrow keys nudge the cursor 10 px, so you
-can correct a near miss before you click.
+In hints, the grids and scroll, the arrow keys nudge the cursor a few pixels,
+so you can correct a near miss before you click.
 
 ## Hints
 
@@ -27,23 +27,30 @@ can correct a near miss before you click.
 ![Animated demo of hints mode](https://github.com/user-attachments/assets/a19ef869-6400-4b5f-b3c6-92af69c2a76b)
 
 1. Press the hotkey. Every clickable element in the focused window gets a
-   short label such as `as` or `f`.
+   short label such as `as` or `f`. A disabled element, such as a greyed-out
+   button, gets none, since clicking it does nothing.
 2. Type a label. The cursor moves to that element, and fresh labels appear so
    you can pick again.
 3. Press `Shift+L` to click it.
 
 If you mistype, press `Backspace`. To find an element by its text instead of
 its label, press `/` and type. The
-[`[hints]` default hotkeys](../reference/configuration.md#default-hotkeys) list
+[`[hints]` default hotkeys](../reference/configuration.md#hints-default-hotkeys) list
 every key hints mode answers.
 
 Hints read the app's accessibility tree, so they suit native apps, browsers
 and Electron. If an app shows few or no hints, use a grid mode, or try another
-[hint strategy](../reference/configuration.md#hints).
+[hint strategy](../reference/configuration.md#hints). `neru roles --explain`
+shows which native roles your `clickable_roles` select here, and
+[Troubleshooting](troubleshooting.md#hints-and-grids)
+covers the common causes. A tool that knows where the controls are can also
+[supply the targets](../reference/cli.md#supplying-your-own-targets).
 
 **Click on select.** Most people want hints to click as soon as the label is
 typed, like Vimium. Bind `hints --action left_click`, as in
-[Recipes](recipes.md#click-as-soon-as-a-hint-is-typed).
+[Recipes](recipes.md#click-as-soon-as-a-hint-is-typed). To hand the picked
+point to a script instead, add `--on-exit` steps, which read it from `NERU_X`
+and `NERU_Y`. See [Scripting](scripting.md#hand-the-picked-point-to-a-script).
 
 ## Recursive grid
 
@@ -51,8 +58,9 @@ typed, like Vimium. Bind `hints --action left_click`, as in
 
 ![Animated demo of recursive grid mode](https://github.com/user-attachments/assets/d82e14fa-0ac4-4081-9a0a-f99243d1da5b)
 
-1. Press the hotkey. The screen splits into a 3x3 grid, one key per cell
-   (`r t y`, `f g h`, `v b n` by default).
+1. Press the hotkey. The screen splits into a grid with one key per cell, by
+   default 3x3 with `r t y`, `f g h`, `v b n`. Size and keys are under
+   [`[recursive_grid]`](../reference/configuration.md#recursive_grid).
 2. Press the key for the cell that holds your target. The cursor jumps to its
    center and that cell splits again.
 3. Repeat until the cursor is on the target, usually two or three presses.
@@ -73,7 +81,8 @@ labels to read.
 1. Press the hotkey. Neru splits the screen into four quadrants.
 2. Press `h`, `j`, `k` or `l` to keep the left, bottom, top or right half, or
    `y`, `u`, `b` or `n` to keep a quadrant. The cursor moves to the center of
-   what you kept.
+   what you kept. These are the
+   [`[bisect]` default hotkeys](../reference/configuration.md#bisect-default-hotkeys).
 3. Repeat until the cursor is on the target, then press `Shift+L`.
 
 `Backspace` undoes the last cut, and `Space` starts over.
@@ -99,7 +108,7 @@ Grid suits coarse jumps across large monitors. `Space` starts over.
 2. Press the hotkey.
 3. Press `j` and `k` to scroll down and up, then `Escape` when you are done.
 
-The [`[scroll]` default hotkeys](../reference/configuration.md#default-hotkeys-4)
+The [`[scroll]` default hotkeys](../reference/configuration.md#scroll-default-hotkeys)
 list the keys for paging, jumping to the top and scrolling sideways.
 
 ## More than a left click
@@ -121,7 +130,7 @@ scroll, so `Cmd` then `Shift+L` is a Cmd-click. Tap it again to release it. See
 [`[sticky_modifiers]`](../reference/configuration.md#sticky_modifiers).
 
 **Glide.** With `[held_repeat] enabled = true`, holding an arrow key glides
-the cursor smoothly instead of stepping, and `accel_enabled = true` speeds it
+the cursor instead of stepping, and `accel_enabled = true` speeds it
 up the longer you hold. See
 [`[held_repeat]`](../reference/configuration.md#held_repeat).
 
@@ -156,3 +165,10 @@ on macOS. Queries accept arbitrary text and use fuzzy matching after exact
 matches. Tab and Shift+Tab move between matches. Return selects the current or sole match; with several matches it
 closes the input and assigns the shortest available labels for selection.
 Pressing the search hotkey again enters or re-enters search mode.
+
+Upstream search input, cached text normalization, label narrowing and
+`search_hints --confirm-on-label` are retained. A space switches from
+underlines to the original labels, so a query such as `save a` can narrow
+by label. Return preserves those labels after clearing their highlights;
+text-only matches receive the shortest labels. Native input callbacks,
+including Tab and Shift+Tab, run in order and ignore stopped sessions.

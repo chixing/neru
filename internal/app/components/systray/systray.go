@@ -9,6 +9,7 @@ import (
 
 	"github.com/y3owk1n/neru/internal/adapter/platform"
 	"github.com/y3owk1n/neru/internal/buildinfo"
+	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/ports"
 )
@@ -115,11 +116,10 @@ func NewComponent(
 
 	// Register callback immediately for enabled state changes
 	component.enabledStateSubscriptionID = app.OnEnabledStateChanged(func(enabled bool) {
-		// Don't send if channel is closed
 		if component.chanClosed.Load() {
 			return
 		}
-		// Store latest state and signal update
+
 		component.latestState.Store(enabled)
 
 		select {
@@ -129,13 +129,11 @@ func NewComponent(
 		}
 	})
 
-	// Register callback for screen share state changes
 	component.screenShareStateSubscriptionID = app.OnScreenShareStateChanged(func(hidden bool) {
-		// Don't send if channel is closed
 		if component.chanClosed.Load() {
 			return
 		}
-		// Store latest state and signal update
+
 		component.latestScreenShareState.Store(hidden)
 
 		select {
@@ -145,13 +143,11 @@ func NewComponent(
 		}
 	})
 
-	// Register callback for scroll invert state changes
 	component.scrollInvertStateSubscriptionID = app.OnScrollInvertStateChanged(func(inverted bool) {
-		// Don't send if channel is closed
 		if component.chanClosed.Load() {
 			return
 		}
-		// Store latest state and signal update
+
 		component.latestScrollInvertState.Store(inverted)
 
 		select {
@@ -218,6 +214,10 @@ func (c *Component) OnReady() {
 	c.tray.AddSeparator()
 
 	c.mToggleScreenShare = c.tray.AddMenuItem("Screen Share: Visible")
+	if !config.HidesFromScreenShareHere() {
+		c.mToggleScreenShare.Hide()
+	}
+
 	c.mToggleScrollInvert = c.tray.AddMenuItem("Scroll Invert: Off")
 
 	c.tray.AddSeparator()
@@ -227,7 +227,6 @@ func (c *Component) OnReady() {
 	// Clear text title once since we use an icon
 	c.tray.SetTitle("")
 
-	// Initialize all state-dependent UI elements
 	c.updateMenuItems(c.app.IsEnabled())
 
 	go c.handleEvents()
@@ -260,7 +259,6 @@ func (c *Component) Close() {
 
 // updateMenuItems updates the systray menu items based on the current enabled state.
 func (c *Component) updateMenuItems(enabled bool) {
-	// Update icon, tooltip, and menu items to show current status
 	iconBytes, isTemplate := trayIconFor(enabled)
 	c.tray.SetIcon(iconBytes, isTemplate)
 
@@ -383,15 +381,15 @@ func (c *Component) handleVersionCopy() {
 
 // notify puts a short message in front of the user, and reports it when the
 // platform could not. A tray toggle whose only feedback is a notification is
-// silent twice over if the notification is dropped without a word — which is
+// silent twice over if the notification is dropped without a word, which is
 // what a Linux session with no notification daemon does.
 //
 // It runs off the menu loop. Showing a notification is a session-bus round
 // trip on Linux, and the loop it would park is the same one that carries every
-// later menu click, Quit included; nothing here reads the result, so waiting
+// later menu click, Quit included. Nothing here reads the result, so waiting
 // for it buys the user nothing and costs them the menu.
 //
-// Only the failure is logged: the message is UI text, which never goes to a
+// Only the failure is logged. The message is UI text, which never goes to a
 // log (root AGENTS.md, Conventions).
 func (c *Component) notify(message string) {
 	if c.system == nil {
@@ -408,7 +406,7 @@ func (c *Component) notify(message string) {
 
 // handleToggleEnable toggles the enabled state of the application.
 func (c *Component) handleToggleEnable() {
-	// Atomically toggle the enabled state - the callback will update the menu items
+	// Atomically toggle the enabled state. The callback updates the menu items.
 	c.app.ToggleEnabled()
 }
 
@@ -437,7 +435,7 @@ func (c *Component) handleReloadConfig() {
 
 // handleToggleScreenShare toggles the overlay visibility in screen sharing.
 func (c *Component) handleToggleScreenShare() {
-	// Atomically toggle - the callback will update the menu item
+	// Atomically toggle. The callback updates the menu item.
 	newState := c.app.ToggleOverlayHiddenForScreenShare()
 
 	status := "visible"
@@ -459,7 +457,7 @@ func (c *Component) updateScreenShareMenuItem(hidden bool) {
 
 // handleToggleScrollInvert toggles the scroll direction inversion.
 func (c *Component) handleToggleScrollInvert() {
-	// Atomically toggle - the callback will update the menu item
+	// Atomically toggle. The callback updates the menu item.
 	newState := c.app.ToggleScrollInvert()
 
 	status := "off"

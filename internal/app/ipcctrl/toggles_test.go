@@ -2,6 +2,7 @@ package ipcctrl
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/y3owk1n/neru/internal/adapter/ipc"
 	"github.com/y3owk1n/neru/internal/domain"
+	"github.com/y3owk1n/neru/internal/domain/parity"
 	"github.com/y3owk1n/neru/internal/domain/state"
 )
 
@@ -73,7 +75,7 @@ func TestParseToggleState_RejectsBadInput(t *testing.T) {
 	}{
 		{name: "unknown value", args: []string{flagState + "=maybe"}},
 		{name: "empty value", args: []string{flagState + "="}},
-		// The value is missing, not the next flag: swallowing it would turn a
+		// The value is missing, not the next flag. Swallowing it would turn a
 		// typo into a state change the caller never asked for.
 		{name: "flag as value", args: []string{flagState, stateOnArg}},
 		{name: "missing value at end", args: []string{flagState}},
@@ -203,6 +205,7 @@ func TestHandleToggleScreenShare_ConvergesOnRequestedState(t *testing.T) {
 			appState.SetHiddenForScreenShare(testCase.initial)
 
 			handler := NewOverlayHandler(appState, zap.NewNop())
+			handler.platform = func() (parity.Platform, bool) { return parity.Darwin, true }
 
 			resp := handler.handleToggleScreenShare(
 				context.Background(),
@@ -221,17 +224,47 @@ func TestHandleToggleScreenShare_ConvergesOnRequestedState(t *testing.T) {
 	}
 }
 
+// TestHandleToggleScreenShare_RefusesWhereNothingHidesTheOverlay pins that
+// toggle-screen-share answers ERR_NOT_SUPPORTED on a platform where the option
+// it switches does nothing, and changes no state, rather than reporting an
+// overlay hidden that nothing hid.
+func TestHandleToggleScreenShare_RefusesWhereNothingHidesTheOverlay(t *testing.T) {
+	t.Parallel()
+
+	appState := state.NewAppState()
+
+	handler := NewOverlayHandler(appState, zap.NewNop())
+	handler.platform = func() (parity.Platform, bool) { return parity.Linux, true }
+
+	resp := handler.handleToggleScreenShare(context.Background(), ipc.Command{})
+	if resp.Success || resp.Code != ipc.CodeNotSupported {
+		t.Fatalf("handleToggleScreenShare() = %+v, want %s", resp, ipc.CodeNotSupported)
+	}
+
+	if appState.IsHiddenForScreenShare() {
+		t.Error("hidden for screen share = true after a refused toggle")
+	}
+}
+
 // assertToggleData checks the boolean a toggle response reports back, which is
 // what a caller reads to confirm the state it asked for.
 func assertToggleData(t *testing.T, resp ipc.Response, key string, want bool) {
 	t.Helper()
 
-	data, ok := resp.Data.(map[string]bool)
-	if !ok {
-		t.Fatalf("response data = %T, want map[string]bool", resp.Data)
+	// Read as a client reads it, off the wire.
+	encoded, err := json.Marshal(resp.Data)
+	if err != nil {
+		t.Fatalf("json.Marshal(%T) error = %v", resp.Data, err)
 	}
 
-	if got := data[key]; got != want {
-		t.Fatalf("response data[%q] = %t, want %t", key, got, want)
+	var data map[string]any
+
+	err = json.Unmarshal(encoded, &data)
+	if err != nil {
+		t.Fatalf("response data %s is not a JSON object: %v", encoded, err)
+	}
+
+	if got, isBool := data[key].(bool); !isBool || got != want {
+		t.Fatalf("response data[%q] = %v, want %t", key, data[key], want)
 	}
 }

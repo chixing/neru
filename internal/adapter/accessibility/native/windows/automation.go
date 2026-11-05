@@ -3,6 +3,7 @@
 package windows
 
 import (
+	"context"
 	"image"
 	"runtime"
 	"strconv"
@@ -11,11 +12,12 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/domain/element"
 )
 
 // Pure-Go IUIAutomation (COM) element discovery for the Windows hints mode.
-// Does not perform actions; it returns a flat list of on-screen, clickable
+// Does not perform actions. It returns a flat list of on-screen, clickable
 // controls at any depth under the given top-level window.
 //
 // roleUnknown is the AX-style role returned for UIA control types that neru
@@ -23,7 +25,7 @@ import (
 const roleUnknown = "AXUnknown"
 
 // discardCall consumes a fire-and-forget COM/oleaut32 syscall result. These
-// release calls have no actionable failure path; the sink keeps errcheck happy
+// release calls have no actionable failure path. The sink keeps errcheck happy
 // without a `_, _, _ =` assignment (which trips dogsled).
 func discardCall(uintptr, uintptr, error) {}
 
@@ -35,6 +37,7 @@ var (
 	procCoUninitialize   = modole32.NewProc("CoUninitialize")
 	procCoCreateInstance = modole32.NewProc("CoCreateInstance")
 	procSysFreeString    = modoleaut32.NewProc("SysFreeString")
+	procVariantClear     = modoleaut32.NewProc("VariantClear")
 )
 
 const (
@@ -82,14 +85,22 @@ const (
 	vtCreateCacheRequest         = 20
 
 	// IUIAutomationTreeWalker.
-	vtWalkerGetParentElementBuildCache = 9
+	vtWalkerGetParentElementBuildCache      = 9
+	vtWalkerGetFirstChildElementBuildCache  = 10
+	vtWalkerGetNextSiblingElementBuildCache = 12
 
-	// IUIAutomationElement. Only the cached getters are called: every property
+	// IUIAutomationElement. Only the cached getters are called, since every property
 	// the walk reads is fetched by the cache request, so a Current* getter
 	// would be a second cross-process call for data already in hand.
 	vtFindAllBuildCache          = 8
+	vtGetCachedPropertyValue     = 12
 	vtGetCachedControlType       = 53
 	vtGetCachedName              = 55
+	vtGetCachedHasKeyboardFocus  = 58
+	vtGetCachedIsEnabled         = 60
+	vtGetCachedAutomationID      = 61
+	vtGetCachedHelpText          = 63
+	vtGetCachedIsPassword        = 67
 	vtGetCachedIsOffscreen       = 70
 	vtGetCachedBoundingRectangle = 75
 
@@ -108,13 +119,27 @@ const (
 	propBoundingRectangle = 30001
 	propControlType       = 30003
 	propName              = 30005
+	propHasKeyboardFocus  = 30008
+	propIsEnabled         = 30010
+	propAutomationID      = 30011
+	propHelpText          = 30013
+	propIsPassword        = 30019
 	propIsOffscreen       = 30022
+	propValueValue        = 30045
 )
 
+// vtBSTR is the VARTYPE of a VARIANT holding a BSTR.
+const vtBSTR = 8
+
 // AutomationElementMode_None: cached elements carry only the requested
-// properties and no live reference back to the provider, which is all the
-// walk needs since every value is copied out before the array is released.
-const automationElementModeNone = 0
+// properties and no live reference back to the provider, which is all FindAll
+// needs since every value is copied out before the array is released.
+// AutomationElementMode_Full keeps that reference, which a tree walker needs
+// to move from an element to its children and siblings.
+const (
+	automationElementModeNone = 0
+	automationElementModeFull = 1
+)
 
 // UI Automation control-type names referenced from more than one place.
 const (
@@ -128,11 +153,11 @@ const (
 )
 
 // controlTypeNames maps UI Automation CONTROLTYPEID values to the programmatic
-// names behind the UIA_*ControlTypeId constants. These names — not the
-// localized LocalizedControlType, which changes with the system language — are
-// the vocabulary users address with the "uia:" prefix.
+// names behind the UIA_*ControlTypeId constants. These names are the
+// vocabulary users address with the "uia:" prefix. LocalizedControlType is not,
+// because it changes with the system language.
 //
-// The range is contiguous and stable: 50000 is Button and 50040 is AppBar, the
+// The range is contiguous and stable. 50000 is Button and 50040 is AppBar, the
 // last control type added (Windows 8).
 var controlTypeNames = map[int32]string{
 	50000: uiaControlButton,
@@ -186,12 +211,30 @@ type winRect struct {
 	bottom int32
 }
 
+// variant mirrors the Win32 VARIANT: a VARTYPE, three reserved words, and a
+// union two pointers wide, which is 16 bytes on 386 and 24 on 64-bit targets.
+// cachedValue reads only the BSTR member of the union.
+type variant struct {
+	vt       uint16
+	reserved [3]uint16
+	bstr     *uint16
+	_        uintptr
+}
+
 // winElement is the extracted, COM-free description of a clickable control.
+// description is the UIA HelpText, which providers fill from a tooltip or an
+// ARIA title. value is the Value pattern's string, and stays empty for a
+// password field.
 type winElement struct {
-	bounds    image.Rectangle
-	role      string
-	name      string
-	clickable bool
+	bounds      image.Rectangle
+	role        string
+	name        string
+	description string
+	value       string
+	identifier  string
+	enabled     bool
+	focused     bool
+	clickable   bool
 }
 
 // enumerateOptions steers one enumeration.
@@ -202,21 +245,36 @@ type enumerateOptions struct {
 	// roles is the set of UIA control-type names to keep. An empty set falls
 	// back to the shipped defaults.
 	roles map[string]struct{}
+	// anyState keeps controls that are not enabled. It is
+	// hints.ignore_clickable_check.
+	anyState bool
+	// maxDepth is the deepest control-view level read below the window, 0 for
+	// unlimited. It is hints.max_depth.
+	maxDepth int
 	// visibleCheck hit-tests each control's center and drops the ones another
 	// element covers. It is hints.visible_check_enabled on Windows.
 	visibleCheck bool
+	// readState also reads each control's identifier and focused state (see
+	// ports.ElementFilter.ReadElementState).
+	readState bool
 }
 
 // comCall invokes the method at vtable slot index on the COM object this.
 // It returns the HRESULT (or boolean/handle) in the low bits of the result.
-// comCall invokes the method at index in this object's COM vtable.
 //
 // CGO is disabled on Windows (see the justfile), so UI Automation is driven
 // through raw vtable calls rather than a C wrapper. All COM work for one
-// enumeration happens on a single locked OS thread — CoInitialize, object
-// creation, property reads, release — and every property is copied into a plain
-// Go value before its object is released, so no COM pointer escapes this file
-// or crosses a goroutine.
+// enumeration, from CoInitialize through object creation and property reads to
+// release, happens on a single locked OS thread. Every property is copied into a
+// plain Go value before its object is released, so no COM pointer escapes this
+// file or crosses a goroutine.
+//
+// The out-parameter addresses in args are uintptrs, which the runtime does
+// not track. If the stack grows before SyscallN runs, the caller's variables
+// move and COM writes into the old frame. //go:uintptrescapes moves them to
+// the heap and keeps them alive for the call, as it does for syscall.Proc.Call.
+//
+//go:uintptrescapes
 func comCall(this unsafe.Pointer, index int, args ...uintptr) uintptr {
 	vtbl := *(*unsafe.Pointer)(this)
 	method := *(*uintptr)(unsafe.Add(vtbl, uintptr(index)*unsafe.Sizeof(uintptr(0))))
@@ -237,8 +295,12 @@ func failed(hresult uintptr) bool {
 
 // enumerateClickableElements returns the on-screen, clickable controls of the
 // given top-level window handle, filtered as opts says. It returns nil on any
-// failure; callers treat an empty result as "no hints", never as a crash.
-func enumerateClickableElements(hwnd uintptr, opts enumerateOptions) []winElement {
+// failure. Callers treat an empty result as "no hints", never as a crash.
+func enumerateClickableElements(
+	ctx context.Context,
+	hwnd uintptr,
+	opts enumerateOptions,
+) []winElement {
 	keptRoles := opts.roles
 	if len(keptRoles) == 0 {
 		keptRoles = defaultClickableRoles
@@ -256,7 +318,7 @@ func enumerateClickableElements(hwnd uintptr, opts enumerateOptions) []winElemen
 
 	// S_OK and S_FALSE mean this call owns initialization on the thread and
 	// must balance it with CoUninitialize. RPC_E_CHANGED_MODE means COM is
-	// already up in another mode; leave it alone.
+	// already up in another mode. Leave it alone.
 	if uint32(hresult) == hresultSOK || uint32(hresult) == hresultSFalse {
 		defer func() { discardCall(procCoUninitialize.Call()) }()
 	}
@@ -288,18 +350,52 @@ func enumerateClickableElements(hwnd uintptr, opts enumerateOptions) []winElemen
 	}
 	defer comCall(condition, vtRelease)
 
-	cache := createCacheRequest(automation, condition)
+	// FindAll matches the whole subtree and cannot stop at a depth, so a
+	// limit below the default goes to the walker.
+	walk := opts.maxDepth > 0 && opts.maxDepth < config.DefaultMaxDepth
+
+	mode := uintptr(automationElementModeNone)
+	if walk {
+		mode = automationElementModeFull
+	}
+
+	cache := createCacheRequest(automation, condition, mode, opts.readState)
 	if cache == nil {
 		return nil
 	}
 	defer comCall(cache, vtRelease)
 
+	var controls []winElement
+
+	if walk {
+		controls = walkControls(ctx, automation, root, cache, opts.maxDepth, opts.frame, keptRoles,
+			opts.anyState, opts.readState)
+	} else {
+		controls = findAllControls(root, condition, cache, opts.frame, keptRoles, opts.anyState,
+			opts.readState)
+	}
+
+	if opts.visibleCheck {
+		controls = visibleControls(automation, condition, opts.frame, controls)
+	}
+
+	return controls
+}
+
+// findAllControls returns the clickable controls anywhere below root.
+func findAllControls(
+	root, condition, cache unsafe.Pointer,
+	frame image.Rectangle,
+	keptRoles map[string]struct{},
+	anyState bool,
+	readState bool,
+) []winElement {
 	var array unsafe.Pointer
 
 	// One cross-process round trip fetches the whole control-view subtree with
 	// every property the walk reads already attached, so depth costs nothing
 	// per node.
-	hresult = comCall(
+	hresult := comCall(
 		root,
 		vtFindAllBuildCache,
 		uintptr(treeScopeDescendants),
@@ -312,13 +408,85 @@ func enumerateClickableElements(hwnd uintptr, opts enumerateOptions) []winElemen
 	}
 	defer comCall(array, vtRelease)
 
-	controls := collectArray(array, opts.frame, keptRoles)
+	return collectArray(array, frame, keptRoles, anyState, readState)
+}
 
-	if opts.visibleCheck {
-		controls = visibleControls(automation, cache, opts.frame, controls)
+// walkControls returns the clickable controls no deeper than maxDepth below
+// root. The window's children are depth one, as on macOS. It walks the
+// control view one element at a time, with one round trip per element,
+// because FindAll cannot stop at a depth.
+func walkControls(
+	ctx context.Context,
+	automation, root, cache unsafe.Pointer,
+	maxDepth int,
+	frame image.Rectangle,
+	keptRoles map[string]struct{},
+	anyState bool,
+	readState bool,
+) []winElement {
+	var walker unsafe.Pointer
+
+	hresult := comCall(automation, vtGetControlViewWalker, uintptr(unsafe.Pointer(&walker)))
+	if failed(hresult) || walker == nil {
+		return nil
+	}
+	defer comCall(walker, vtRelease)
+
+	var result []winElement
+
+	walkChildren(ctx, walker, cache, root, 1, maxDepth, func(element unsafe.Pointer) {
+		result = appendControl(result, element, frame, keptRoles, anyState, readState)
+	})
+
+	return result
+}
+
+// walkChildren calls visit on each control-view child of parent at depth,
+// then on their children, down to maxDepth. It stops once ctx is done.
+func walkChildren(
+	ctx context.Context,
+	walker, cache, parent unsafe.Pointer,
+	depth, maxDepth int,
+	visit func(unsafe.Pointer),
+) {
+	if depth > maxDepth {
+		return
 	}
 
-	return controls
+	var child unsafe.Pointer
+
+	hresult := comCall(
+		walker,
+		vtWalkerGetFirstChildElementBuildCache,
+		uintptr(parent),
+		uintptr(cache),
+		uintptr(unsafe.Pointer(&child)),
+	)
+
+	for !failed(hresult) && child != nil {
+		if ctx.Err() != nil {
+			comCall(child, vtRelease)
+
+			return
+		}
+
+		visit(child)
+		walkChildren(ctx, walker, cache, child, depth+1, maxDepth, visit)
+
+		var next unsafe.Pointer
+
+		hresult = comCall(
+			walker,
+			vtWalkerGetNextSiblingElementBuildCache,
+			uintptr(child),
+			uintptr(cache),
+			uintptr(unsafe.Pointer(&next)),
+		)
+
+		comCall(child, vtRelease)
+
+		child = next
+	}
 }
 
 // visibleControls keeps the controls whose center hit-tests to themselves or
@@ -326,12 +494,19 @@ func enumerateClickableElements(hwnd uintptr, opts enumerateOptions) []winElemen
 // hints.visible_check_enabled. A control another element covers, in this
 // window or another, hit-tests to that element and is dropped. A hit-test
 // that fails keeps the control, so a provider that cannot answer does not
-// blank the hints.
+// blank the hints. The hits are cached in Full mode, since the walk up from a
+// hit needs the live reference that the FindAll cache leaves out.
 func visibleControls(
-	automation, cache unsafe.Pointer,
+	automation, condition unsafe.Pointer,
 	frame image.Rectangle,
 	controls []winElement,
 ) []winElement {
+	cache := createCacheRequest(automation, condition, automationElementModeFull, false)
+	if cache == nil {
+		return controls
+	}
+	defer comCall(cache, vtRelease)
+
 	var walker unsafe.Pointer
 
 	hresult := comCall(automation, vtGetControlViewWalker, uintptr(unsafe.Pointer(&walker)))
@@ -372,12 +547,12 @@ func elementAt(automation, cache unsafe.Pointer, point image.Point) unsafe.Point
 }
 
 // maxHitAncestors bounds the walk from a hit element up to the window root.
-// Real trees are far shallower; the bound only stops a provider that cycles.
+// Real trees are far shallower. The bound only stops a provider that cycles.
 const maxHitAncestors = 64
 
 // hitReaches reports whether the hit element, or one of its control-view
-// ancestors, is the control: the same walk the AX check does with element
-// identity. Cached elements from two queries carry no comparable identity, so
+// ancestors, is the control. It is the same walk the AX check does with
+// element identity. Cached elements from two queries carry no comparable identity, so
 // each ancestor is matched on its control type, name and frame-clipped
 // bounds, all three of which the control itself satisfies and a covering
 // element does not. It releases hit.
@@ -436,10 +611,19 @@ func centerOf(rect image.Rectangle) image.Point {
 	return image.Pt(rect.Min.X+rect.Dx()/2, rect.Min.Y+rect.Dy()/2)
 }
 
-// createCacheRequest builds the cache request FindAllBuildCache fills: the
-// four properties extractWinElement reads, filtered to the control view so
-// the provider never serializes raw-view scaffolding.
-func createCacheRequest(automation unsafe.Pointer, filter unsafe.Pointer) unsafe.Pointer {
+// createCacheRequest builds the cache request that FindAllBuildCache and the
+// walker fill, in the given AutomationElementMode. It holds the properties
+// extractWinElement and readControlDetails read, filtered to the control view
+// so the provider never serializes raw-view scaffolding. It adds
+// the identifier and focus properties, which only `neru query hints` reports,
+// only with readState, because the provider computes every cached property
+// for every control.
+func createCacheRequest(
+	automation unsafe.Pointer,
+	filter unsafe.Pointer,
+	mode uintptr,
+	readState bool,
+) unsafe.Pointer {
 	var cache unsafe.Pointer
 
 	hresult := comCall(automation, vtCreateCacheRequest, uintptr(unsafe.Pointer(&cache)))
@@ -447,7 +631,15 @@ func createCacheRequest(automation unsafe.Pointer, filter unsafe.Pointer) unsafe
 		return nil
 	}
 
-	for _, property := range []uintptr{propControlType, propName, propBoundingRectangle, propIsOffscreen} {
+	properties := []uintptr{
+		propControlType, propName, propBoundingRectangle, propIsOffscreen, propIsEnabled,
+		propHelpText, propIsPassword, propValueValue,
+	}
+	if readState {
+		properties = append(properties, propAutomationID, propHasKeyboardFocus)
+	}
+
+	for _, property := range properties {
 		if failed(comCall(cache, vtCacheAddProperty, property)) {
 			comCall(cache, vtRelease)
 
@@ -456,7 +648,7 @@ func createCacheRequest(automation unsafe.Pointer, filter unsafe.Pointer) unsafe
 	}
 
 	if failed(comCall(cache, vtCachePutTreeFilter, uintptr(filter))) ||
-		failed(comCall(cache, vtCachePutAutomationElementMode, automationElementModeNone)) {
+		failed(comCall(cache, vtCachePutAutomationElementMode, mode)) {
 		comCall(cache, vtRelease)
 
 		return nil
@@ -489,6 +681,8 @@ func collectArray(
 	array unsafe.Pointer,
 	frame image.Rectangle,
 	keptRoles map[string]struct{},
+	anyState bool,
+	readState bool,
 ) []winElement {
 	var length int32
 
@@ -507,26 +701,49 @@ func collectArray(
 			continue
 		}
 
-		extracted, ok := extractWinElement(element, frame, keptRoles)
+		result = appendControl(result, element, frame, keptRoles, anyState, readState)
 
 		comCall(element, vtRelease)
-
-		if ok {
-			result = append(result, extracted)
-		}
 	}
 
 	return result
 }
 
+// appendControl appends element to result when it is a clickable control. It
+// drops a disabled control before reading its text, since a disabled control
+// gets no hint, as on macOS, unless anyState keeps it for
+// hints.ignore_clickable_check. The caller releases element.
+func appendControl(
+	result []winElement,
+	element unsafe.Pointer,
+	frame image.Rectangle,
+	keptRoles map[string]struct{},
+	anyState bool,
+	readState bool,
+) []winElement {
+	extracted, ok := extractWinElement(element, frame, keptRoles)
+	if !ok {
+		return result
+	}
+
+	extracted.enabled = cachedBool(element, vtGetCachedIsEnabled, true)
+	if !extracted.enabled && !anyState {
+		return result
+	}
+
+	readControlDetails(element, &extracted, readState)
+
+	return append(result, extracted)
+}
+
 // extractWinElement copies the relevant properties from a single UIA element.
 // It returns ok=false for offscreen or zero-size controls, for controls whose
 // role is not in keptRoles (nil keeps every role), and for controls outside
-// frame. Bounds are clipped
-// to frame so a control straddling the window edge targets its visible part.
+// frame. Bounds are clipped to frame so a control straddling the window edge
+// targets its visible part.
 //
 // Role selection happens here rather than downstream because the cache request
-// returns the whole control-view subtree: rejecting an element by role before
+// returns the whole control-view subtree, and rejecting an element by role before
 // its bounds and name are decoded keeps the per-element work to one cached
 // read.
 func extractWinElement(
@@ -572,9 +789,26 @@ func extractWinElement(
 	return winElement{
 		bounds:    bounds,
 		role:      role,
-		name:      cachedName(element),
+		name:      cachedString(element, vtGetCachedName),
 		clickable: true,
 	}, true
+}
+
+// readControlDetails copies a kept control's description and value and, with
+// readState, its identifier and focused state. The visible check matches
+// controls on what extractWinElement reads, so these reads happen only for a
+// control that becomes a hint.
+func readControlDetails(element unsafe.Pointer, control *winElement, readState bool) {
+	control.description = cachedString(element, vtGetCachedHelpText)
+
+	if !cachedBool(element, vtGetCachedIsPassword, true) {
+		control.value = cachedValue(element)
+	}
+
+	if readState {
+		control.identifier = cachedString(element, vtGetCachedAutomationID)
+		control.focused = cachedBool(element, vtGetCachedHasKeyboardFocus, false)
+	}
 }
 
 // clipToFrame returns the part of bounds inside the window frame, which is
@@ -592,23 +826,54 @@ func clipToFrame(bounds, frame image.Rectangle) image.Rectangle {
 	return bounds.Intersect(frame)
 }
 
-// cachedName reads the element's cached name (BSTR) and frees it.
-func cachedName(element unsafe.Pointer) string {
+// cachedString reads the cached BSTR property behind the getter at slot and
+// frees it.
+func cachedString(element unsafe.Pointer, slot int) string {
 	var bstr *uint16
-	if failed(comCall(element, vtGetCachedName, uintptr(unsafe.Pointer(&bstr)))) || bstr == nil {
+	if failed(comCall(element, slot, uintptr(unsafe.Pointer(&bstr)))) || bstr == nil {
 		return ""
 	}
 
-	name := windows.UTF16PtrToString(bstr)
+	text := windows.UTF16PtrToString(bstr)
 
 	discardCall(procSysFreeString.Call(uintptr(unsafe.Pointer(bstr))))
 
-	return name
+	return text
+}
+
+// cachedBool reads the cached BOOL property behind the getter at slot, or
+// fallback when the provider cannot answer.
+func cachedBool(element unsafe.Pointer, slot int, fallback bool) bool {
+	var value int32
+	if failed(comCall(element, slot, uintptr(unsafe.Pointer(&value)))) {
+		return fallback
+	}
+
+	return value != 0
+}
+
+// cachedValue reads the Value pattern's cached string. A control without the
+// pattern answers with an empty VARIANT, which reads as "".
+func cachedValue(element unsafe.Pointer) string {
+	var value variant
+	if failed(
+		comCall(element, vtGetCachedPropertyValue, propValueValue, uintptr(unsafe.Pointer(&value))),
+	) {
+		return ""
+	}
+
+	defer func() { discardCall(procVariantClear.Call(uintptr(unsafe.Pointer(&value)))) }()
+
+	if value.vt != vtBSTR || value.bstr == nil {
+		return ""
+	}
+
+	return windows.UTF16PtrToString(value.bstr)
 }
 
 // controlTypeName returns the programmatic name for a UIA CONTROLTYPEID. The
 // second result is false for ids outside the known range, which a third-party
-// provider may still report; those elements carry the numeric id so they remain
+// provider may still report. Those elements carry the numeric id so they remain
 // addressable rather than silently disappearing.
 func controlTypeName(controlType int32) (string, bool) {
 	name, ok := controlTypeNames[controlType]

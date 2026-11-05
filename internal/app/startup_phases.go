@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"sync"
 
 	"go.uber.org/zap"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/y3owk1n/neru/internal/app/services"
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/derrors"
+	"github.com/y3owk1n/neru/internal/domain/event"
 	domainHint "github.com/y3owk1n/neru/internal/domain/hint"
 	"github.com/y3owk1n/neru/internal/domain/motion"
 	"github.com/y3owk1n/neru/internal/domain/state"
@@ -32,7 +34,6 @@ func initializeInfrastructure(app *App) error {
 	cfg := app.config
 	logger := app.logger
 
-	// Initialize platform system port if not provided
 	if app.systemPort == nil {
 		systemPort, err := platform.NewSystemPort()
 		if err != nil {
@@ -56,12 +57,10 @@ func initializeInfrastructure(app *App) error {
 		return err
 	}
 
-	// Initialize app watcher if not provided
 	if app.appWatcher == nil {
 		app.appWatcher = initializeAppWatcher(logger)
 	}
 
-	// Initialize hotkey service if not provided
 	if app.hotkeyManager == nil {
 		app.hotkeyManager = initializeHotkeyService(logger)
 	}
@@ -97,11 +96,9 @@ func initializeServicesAndAdapters(app *App) error {
 	cfg := app.config
 	logger := app.logger
 
-	// Initialize config service
 	cfgService := app.newConfigService(logger)
 	configurePlatformRuntimeConfigProviders(cfgService, logger)
 
-	// Initialize adapters
 	// accAdapter is retained on the App because the focus-change path calls
 	// PrimeApplication directly, outside any service.
 	accAdapter, overlayAdapter := initializeAdapters(
@@ -120,6 +117,7 @@ func initializeServicesAndAdapters(app *App) error {
 		accAdapter,
 		overlayAdapter,
 		app.systemPort,
+		app.vision,
 		logger,
 	)
 	if err != nil {
@@ -131,7 +129,6 @@ func initializeServicesAndAdapters(app *App) error {
 	// a real generator instead of silently falling back to the default.
 	registerOppositeLabelDirectionGenerator(app, hintService, cfg)
 
-	// Store services on app
 	app.hintService = hintService
 	app.gridService = gridService
 	app.actionService = actionService
@@ -186,16 +183,18 @@ func registerOppositeLabelDirectionGenerator(
 func initializeApplicationState(app *App) {
 	app.appState = state.NewAppState()
 	app.cursorState = state.NewCursorState()
+	app.events = event.NewBus(app.logger)
+	app.appState.PublishTo(app.events)
 }
 
 // initializeUIComponents asks the overlay to build the components it draws
 // through, then assembles the per-mode components around them.
 //
 // The overlay is handed the configuration and a theme provider and nothing
-// else: the surface those components attach to is the overlay's own, and
-// nothing built there comes back — since #1213 no app-layer component holds a
-// render object. Most components that fail to build are logged and left nil;
-// the virtual pointer is the one whose failure still fails this phase, as it
+// else. The surface those components attach to is the overlay's own, and
+// nothing built there comes back. Since #1213 no app-layer component holds a
+// render object. Most components that fail to build are logged and left nil.
+// The virtual pointer is the one whose failure still fails this phase, as it
 // always has. A session running on an injected port has no backend to ask, and
 // nothing to build against.
 func initializeUIComponents(app *App) error {
@@ -259,7 +258,6 @@ func initializeModeHandler(app *App) {
 	cfg := app.config
 	logger := app.logger
 
-	// Group related dependencies for better readability
 	deps := struct {
 		config      *config.Config
 		logger      *zap.Logger
@@ -282,7 +280,7 @@ func initializeModeHandler(app *App) {
 		}
 		callbacks struct {
 			refreshHotkeys        func()
-			executeActionSequence func(source string, steps []string)
+			executeActionSequence func(source string, steps []string, env []string)
 		}
 	}{
 		config:      cfg,
@@ -318,10 +316,10 @@ func initializeModeHandler(app *App) {
 		},
 		callbacks: struct {
 			refreshHotkeys        func()
-			executeActionSequence func(source string, steps []string)
+			executeActionSequence func(source string, steps []string, env []string)
 		}{
 			refreshHotkeys:        func() { app.hotkeys.RefreshFor("") },
-			executeActionSequence: app.runActionSequence,
+			executeActionSequence: app.runActionSequenceWithEnv,
 		},
 	}
 
@@ -357,11 +355,12 @@ func initializeModeHandler(app *App) {
 		TextInput:              app.textInput,
 		System:                 app.systemPort,
 		Motion:                 app.motion.Group("modes"),
+		Events:                 app.events,
 	})
 }
 
 // initializeIPCController sets up the IPC controller for external communication.
-// Note: eventTap and ipcServer are nil at this point; they are set later
+// eventTap and ipcServer are nil at this point. They are set later
 // via SetInfrastructure in initializeEventTapAndIPC (Phase 8). The
 // SetConfigField callback is set after creation so the constructor's
 // signature stays stable for test callers.
@@ -377,13 +376,14 @@ func initializeIPCController(app *App) {
 		Modes:         app.modes,
 		System:        app.systemPort,
 		Overlay:       app.overlayPort,
-		// EventTap and IPCServer stay zero here; phase 8 fills them in
+		// EventTap and IPCServer stay zero here. Phase 8 fills them in
 		// through SetInfrastructure.
 		KeyFeed:         app.keyFeed,
 		ReloadConfig:    app.ReloadConfig,
 		ExecuteSequence: app.executeActionSequenceWithPolicy,
 		ExecuteMacro:    app.executeMacro,
 		SetEnabled:      app.SetEnabled,
+		Events:          app.events,
 		Logger:          app.logger,
 	})
 
@@ -408,14 +408,26 @@ func setupScreenShareStateSubscription(app *App) {
 	// Apply initial config value to overlay if set to hide in screen share.
 	// The OnScreenShareStateChanged callback fires immediately with the current
 	// state, so no direct SetSharingType call is needed here.
-	if app.config != nil && app.config.General.HideOverlayInScreenShare {
+	if app.config != nil && app.config.General.HideOverlayInScreenShare &&
+		config.HidesFromScreenShareHere() {
 		app.appState.SetHiddenForScreenShare(true)
 	}
 
-	app.screenShareSubscriptionID = app.appState.OnScreenShareStateChanged(func(hidden bool) {
-		if app.overlayPort != nil {
-			app.overlayPort.SetHiddenInScreenShare(hidden)
+	// AppState notifies each change on a goroutine of its own, so callbacks can
+	// run out of order. Each applies the state as it is once it holds applyMu,
+	// rather than the value it was handed, so the last one to run applies the
+	// latest change.
+	var applyMu sync.Mutex
+
+	app.screenShareSubscriptionID = app.appState.OnScreenShareStateChanged(func(bool) {
+		if app.overlayPort == nil {
+			return
 		}
+
+		applyMu.Lock()
+		defer applyMu.Unlock()
+
+		app.overlayPort.SetHiddenInScreenShare(app.appState.IsHiddenForScreenShare())
 	})
 }
 
@@ -430,7 +442,7 @@ func cleanupScreenShareStateSubscription(app *App) {
 // hotkeyBinderDeps is what the hotkey binder is built from.
 //
 // It is a function rather than a literal at the call site so the one thing about
-// it that is easy to get wrong can be tested: this phase runs before the phase
+// it that is easy to get wrong can be tested. This phase runs before the phase
 // that builds the event tap, so every dependency here has to tolerate a field
 // that is still nil. Reading one *now* to hand over a method value panics on the
 // spot, which is a crash before the daemon has logged anything it could be
@@ -445,7 +457,7 @@ func hotkeyBinderDeps(app *App) keybinding.Deps {
 		RunSequence: app.runActionSequence,
 		// The taps hand a registered chord back to the mechanism that owns it, so
 		// they are told what registration actually took rather than what the
-		// configuration asked for. Late-bound for the reason above: the field is
+		// configuration asked for. Late-bound for the reason above. The field is
 		// filled by phase 8 and the nil check keeps a startup that never reaches
 		// it harmless.
 		PublishRegisteredHotkeys: func(keys []string) {
@@ -465,7 +477,6 @@ func initializeEventTapAndIPC(app *App) error {
 	cfg := app.config
 	logger := app.logger
 
-	// Initialize event tap if not provided
 	if app.eventTap == nil {
 		tap := eventtapadapter.NewEventTap(app.HandleKeyPress, logger)
 		if tap != nil {
@@ -474,7 +485,7 @@ func initializeEventTapAndIPC(app *App) error {
 			// A backend that presents an action's modifiers by pressing real
 			// keys has to say so, or the tap reads its own injection as the
 			// user pressing that modifier. Which backends need it is a
-			// per-platform answer; the concrete tap is only in reach here.
+			// per-platform answer, and the concrete tap is only in reach here.
 			registerSyntheticModifierSink(tap, logger)
 		}
 	}
@@ -491,7 +502,6 @@ func initializeEventTapAndIPC(app *App) error {
 	// (registered with raw keycodes) are re-registered when the layout changes.
 	app.registerLayoutChangeHandler()
 
-	// Initialize IPC server if not provided
 	if app.ipcServer == nil {
 		server, err := ipcadapter.NewServer(app.ipcController.HandleCommand, logger)
 		if err != nil {
@@ -500,6 +510,10 @@ func initializeEventTapAndIPC(app *App) error {
 				derrors.CodeIPCFailed,
 				"failed to create IPC server",
 			)
+		}
+
+		for action, stream := range app.ipcController.Streams {
+			server.HandleStream(action, stream)
 		}
 
 		app.ipcServer = ipcadapter.NewAdapter(server, logger)
@@ -531,13 +545,14 @@ func cleanupInfrastructure(app *App) {
 	// after the App is torn down.
 	app.unregisterLayoutChangeHandler()
 
-	// Clean up hotkey service
-	if app.hotkeyManager != nil {
+	// initializeIPCController builds the binder in phase 7, so a startup that
+	// failed earlier has no hotkeys registered to release.
+	if app.hotkeys != nil {
 		app.hotkeys.Unregister()
-		app.hotkeyManager = nil
 	}
 
-	// Clean up app watcher
+	app.hotkeyManager = nil
+
 	if app.appWatcher != nil {
 		app.appWatcher.Stop()
 		app.appWatcher = nil
@@ -572,7 +587,6 @@ func cleanupUIComponents(app *App) {
 
 // cleanupEventTapAndIPC cleans up resources allocated during event tap and IPC initialization.
 func cleanupEventTapAndIPC(app *App) {
-	// Clean up IPC server
 	if app.ipcServer != nil {
 		// Try to stop the server gracefully.
 		// Use a fresh context since app.ctx may already be canceled.
@@ -589,7 +603,6 @@ func cleanupEventTapAndIPC(app *App) {
 		app.ipcServer = nil
 	}
 
-	// Clean up event tap
 	if app.eventTap != nil {
 		app.eventTap.Destroy()
 		app.eventTap = nil
@@ -599,6 +612,5 @@ func cleanupEventTapAndIPC(app *App) {
 		registerSyntheticModifierSink(nil, app.logger)
 	}
 
-	// Clean up IPC controller
 	app.ipcController = nil
 }

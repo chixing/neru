@@ -17,6 +17,7 @@ import (
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/config/loader"
 	"github.com/y3owk1n/neru/internal/domain/state"
+	"github.com/y3owk1n/neru/internal/ports"
 	portmocks "github.com/y3owk1n/neru/internal/ports/mocks"
 )
 
@@ -32,8 +33,9 @@ func newTestModesHandler(
 	logger *zap.Logger,
 	appState *state.AppState,
 	actionService *services.ActionService,
+	system ports.SystemPort,
 ) *modes.Handler {
-	// Only the fields this test needs; every other dependency is legitimately
+	// Only the fields this test needs. Every other dependency is legitimately
 	// the zero value, which the deps struct expresses by omission.
 	return modes.NewHandler(modes.HandlerDeps{
 		Ctx:                   context.Background(),
@@ -43,8 +45,9 @@ func newTestModesHandler(
 		CursorState:           state.NewCursorState(),
 		ScrollComponent:       &components.ScrollComponent{Context: &scroll.Context{}},
 		ActionService:         actionService,
+		System:                system,
 		RefreshHotkeys:        func() {},
-		ExecuteActionSequence: func(string, []string) {},
+		ExecuteActionSequence: func(string, []string, []string) {},
 		Shutdown:              func() {},
 	})
 }
@@ -69,7 +72,7 @@ func newToggleTestController(
 		ConfigService: loader.NewService(cfg, "", logger, nil),
 		AppState:      appState,
 		Config:        cfg,
-		Modes:         newTestModesHandler(cfg, logger, appState, actionService),
+		Modes:         newTestModesHandler(cfg, logger, appState, actionService, nil),
 		ExecuteMacro:  executeMacro,
 		Logger:        logger,
 	})
@@ -114,7 +117,7 @@ func TestHandleCommand_ToggleStateConvergesThroughTheController(t *testing.T) {
 
 	controller := newToggleTestController(appState, nil)
 
-	// Asking twice for the same state must land there both times: that is what
+	// Asking twice for the same state must land there both times, because that is what
 	// a script relies on and what a bare toggle cannot give it.
 	for range 2 {
 		resp := controller.HandleCommand(context.Background(), ipc.Command{
@@ -144,10 +147,7 @@ func TestHandleCommand_StatusReportsTheToggles(t *testing.T) {
 		t.Fatalf("HandleCommand(status) = %+v, want success", resp)
 	}
 
-	status, ok := resp.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("status data = %T, want map[string]any", resp.Data)
-	}
+	status := wireObject(t, resp.Data)
 
 	for key, want := range map[string]bool{
 		"scroll_inverted":         true,
@@ -163,6 +163,12 @@ func TestHandleCommand_StatusReportsTheToggles(t *testing.T) {
 		}
 	}
 
+	// No sticky modifier is held, which is an empty set rather than a missing
+	// key, so a watch client resyncing from a snapshot reads it as released.
+	if mods, present := status["sticky_modifiers"]; !present || mods != "" {
+		t.Fatalf("status[sticky_modifiers] = %v (present %t), want \"\"", mods, present)
+	}
+
 	// No mode is running, so the session-scoped toggle has no state to report.
 	// Null and false are different answers and the payload must not conflate
 	// them.
@@ -171,12 +177,12 @@ func TestHandleCommand_StatusReportsTheToggles(t *testing.T) {
 		t.Fatal("status is missing cursor_follow_selection")
 	}
 
-	if follow, isPointer := value.(*bool); !isPointer || follow != nil {
+	if value != nil {
 		t.Fatalf("status[cursor_follow_selection] = %v, want nil while no mode runs", value)
 	}
 
 	// What a script actually reads is the encoded form, so pin that rather than
-	// the Go value: "neru status --json | jq .cursor_follow_selection" has to
+	// the Go value. "neru status --json | jq .cursor_follow_selection" has to
 	// print null, not false and not a missing key.
 	encoded, encodeErr := json.Marshal(status)
 	if encodeErr != nil {
@@ -195,10 +201,10 @@ func TestHandleCommand_StatusReportsTheToggles(t *testing.T) {
 func TestHandleCommand_StatusReportsSavedCursorSlots(t *testing.T) {
 	controller := newToggleTestController(state.NewAppState(), nil)
 
-	// Empty is an empty object, not a null: a script indexing into it should
+	// Empty is an empty object, not a null. A script indexing into it should
 	// not have to guard the container as well as the key.
 	before := statusField(t, controller, "saved_cursor_slots")
-	if slots, ok := before.(map[string]map[string]int); !ok || len(slots) != 0 {
+	if slots, ok := before.(map[string]any); !ok || len(slots) != 0 {
 		t.Fatalf("saved_cursor_slots = %v (%T), want an empty object", before, before)
 	}
 
@@ -212,12 +218,12 @@ func TestHandleCommand_StatusReportsSavedCursorSlots(t *testing.T) {
 
 	after := statusField(t, controller, "saved_cursor_slots")
 
-	slots, ok := after.(map[string]map[string]int)
+	slots, ok := after.(map[string]any)
 	if !ok {
-		t.Fatalf("saved_cursor_slots = %T, want map[string]map[string]int", after)
+		t.Fatalf("saved_cursor_slots = %T, want an object", after)
 	}
 
-	home, present := slots["home"]
+	home, present := slots["home"].(map[string]any)
 	if !present {
 		t.Fatalf("saved_cursor_slots = %v, want an entry for home", slots)
 	}
@@ -232,6 +238,26 @@ func TestHandleCommand_StatusReportsSavedCursorSlots(t *testing.T) {
 	}
 }
 
+// wireObject returns a reply's data as a client decodes it from the wire, so
+// a test reads the keys a client reads rather than the Go type behind them.
+func wireObject(t *testing.T, data any) map[string]any {
+	t.Helper()
+
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("json.Marshal(%T) error = %v", data, err)
+	}
+
+	var object map[string]any
+
+	err = json.Unmarshal(encoded, &object)
+	if err != nil {
+		t.Fatalf("reply data %s is not a JSON object: %v", encoded, err)
+	}
+
+	return object
+}
+
 // statusField reads one key out of the status payload.
 func statusField(t *testing.T, controller *ipcctrl.Controller, key string) any {
 	t.Helper()
@@ -241,10 +267,7 @@ func statusField(t *testing.T, controller *ipcctrl.Controller, key string) any {
 		t.Fatalf("HandleCommand(status) = %+v, want success", resp)
 	}
 
-	status, ok := resp.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("status data = %T, want map[string]any", resp.Data)
-	}
+	status := wireObject(t, resp.Data)
 
 	value, present := status[key]
 	if !present {

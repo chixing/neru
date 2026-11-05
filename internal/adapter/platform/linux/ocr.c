@@ -1,5 +1,6 @@
 #include "ocr.h"
 
+#include "locale_guard.h"
 #include "screencapture.h"
 
 #include <errno.h>
@@ -11,10 +12,10 @@
 #include <time.h>
 
 // The engine is cached for the daemon's lifetime, and that is a latency
-// decision rather than a convenience: TessBaseAPIInit2 loads an LSTM model from
+// decision rather than a convenience. TessBaseAPIInit2 loads an LSTM model from
 // disk, which costs hundreds of milliseconds, and a hint activation that paid
 // it every time would be unusable. What is cached is the *engine*, never a
-// frame — every recognition ends in neru_ocr_reset_locked, so between calls the
+// frame. Every recognition ends in neru_ocr_reset_locked, so between calls the
 // handle holds a loaded model and nothing derived from anyone's screen.
 //
 // Recognition is serialized on this mutex. TessBaseAPI is not thread-safe, and
@@ -22,12 +23,21 @@
 //
 // Nothing waits on it forever, which is the point of neru_ocr_lock below. The
 // only bound on a recognition is tesseract's own deadline, and tesseract checks
-// that *between* recognition units — so one pathological frame can overrun it.
+// that *between* recognition units, so one pathological frame can overrun it.
 // A plain lock would then wedge every later activation in cgo, where Go cannot
 // cancel it, and the daemon would need restarting to hint again. A bounded wait
 // turns that into one failed activation that says so.
 static pthread_mutex_t neru_ocr_mutex = PTHREAD_MUTEX_INITIALIZER;
 static TessBaseAPI *neru_ocr_api;
+
+// neru_ocr_locale_busy is set when the last engine creation gave up waiting for
+// the locale guard (locale_guard.h), so the caller reports busy rather than
+// unusable language data. Guarded by neru_ocr_mutex.
+static int neru_ocr_locale_busy;
+
+// NERU_OCR_LOCALE_WAIT_MS bounds the wait for the locale guard, which the X11
+// hint-search field holds while an input-method server answers.
+#define NERU_OCR_LOCALE_WAIT_MS 1000
 static char *neru_ocr_datapath;
 static char *neru_ocr_language;
 
@@ -82,7 +92,7 @@ static int neru_ocr_lock(int wait_ms) {
 #define NERU_OCR_BYTES_PER_PIXEL 4
 
 // How many words to allocate room for before growing. UI text is scattered
-// labels; a window with more than this is doubled rather than reallocated per
+// labels, and a window with more than this is doubled rather than reallocated per
 // word.
 #define NERU_OCR_INITIAL_CAPACITY 64
 
@@ -123,21 +133,35 @@ static TessBaseAPI *neru_ocr_acquire_locked(const NeruOCRConfig *config) {
 
 	neru_ocr_release_locked();
 
-	TessBaseAPI *api = TessBaseAPICreate();
-	if (api == NULL) {
+	// Tesseract asserts the C locale while it builds the engine, and the X11
+	// hint-search field leaves it briefly (locale_guard.h).
+	neru_ocr_locale_busy = 0;
+	if (neru_locale_guard_timedlock(NERU_OCR_LOCALE_WAIT_MS) != 0) {
+		neru_ocr_locale_busy = 1;
+
 		return NULL;
 	}
 
-	// OEM_LSTM_ONLY rather than the legacy engine or the combination: the
-	// legacy half is slower, needs its own data files, and is what tesseract 5
-	// itself defaults away from.
-	if (TessBaseAPIInit2(api, config->datapath, config->language, OEM_LSTM_ONLY) != 0) {
+	TessBaseAPI *api = TessBaseAPICreate();
+	if (api == NULL) {
+		neru_locale_guard_unlock();
+
+		return NULL;
+	}
+
+	// OEM_LSTM_ONLY rather than the legacy engine or the combination, because
+	// the legacy half is slower, needs its own data files, and is what
+	// tesseract 5 itself defaults away from.
+	int initialized = TessBaseAPIInit2(api, config->datapath, config->language, OEM_LSTM_ONLY) == 0;
+	neru_locale_guard_unlock();
+
+	if (!initialized) {
 		TessBaseAPIDelete(api);
 
 		return NULL;
 	}
 
-	// Sparse text rather than the document-oriented default: UI text is
+	// Sparse text rather than the document-oriented default, because UI text is
 	// scattered labels in no reading order, and the layout analysis that helps
 	// a scanned page actively merges unrelated controls into "paragraphs".
 	TessBaseAPISetPageSegMode(api, PSM_SPARSE_TEXT);
@@ -174,14 +198,14 @@ static TessBaseAPI *neru_ocr_acquire_locked(const NeruOCRConfig *config) {
 //
 // It deliberately does *not* call TessBaseAPIClearAdaptiveClassifier, and that
 // is a measured decision rather than an oversight. Clearing the adaptive
-// classifier per frame reads like the tidy thing to do — it holds character
-// shapes learned from the frame just read — but it also resets the document
+// classifier per frame reads like the tidy thing to do, since it holds character
+// shapes learned from the frame just read, but it also resets the document
 // dictionary, and the reinitialization that costs is paid by the *next*
-// recognition: on a 1904x994 frame it took recognition from 0.5s to 3.5s, a
+// recognition. On a 1904x994 frame it took recognition from 0.5s to 3.5s, a
 // sevenfold regression on the one path where latency is the product. Keeping it
 // measured flat across repeated frames instead.
 //
-// What is retained is classifier state — character shape templates — and not
+// What is retained is classifier state, meaning character shape templates, and not
 // text, not pixels, and nothing that can be read back as screen content. It
 // lives in memory for the life of the daemon and never touches disk.
 static void neru_ocr_reset_locked(TessBaseAPI *api) { TessBaseAPIClear(api); }
@@ -193,9 +217,14 @@ int neru_ocr_probe(const NeruOCRConfig *config) {
 	}
 
 	TessBaseAPI *api = neru_ocr_acquire_locked(config);
+	int busy = neru_ocr_locale_busy;
 	pthread_mutex_unlock(&neru_ocr_mutex);
 
-	return api != NULL ? NERU_OCR_OK : NERU_OCR_ERR_INIT;
+	if (api == NULL) {
+		return busy ? NERU_OCR_ERR_BUSY : NERU_OCR_ERR_INIT;
+	}
+
+	return NERU_OCR_OK;
 }
 
 // neru_ocr_append grows words and copies one finding into it. The copy is what
@@ -242,8 +271,8 @@ static int neru_ocr_collect(
 	do {
 		char *text = TessResultIteratorGetUTF8Text(iterator, level);
 		if (text == NULL) {
-			// In a do-while, continue evaluates the condition — which is the
-			// iterator advance — so this skips the element rather than
+			// In a do-while, continue evaluates the condition, which is the
+			// iterator advance, so this skips the element rather than
 			// spinning on it.
 			continue;
 		}
@@ -269,7 +298,7 @@ static int neru_ocr_collect(
 			status = neru_ocr_append(words, count, capacity, text, confidence, left, top, right, bottom);
 		}
 
-		// The tesseract-owned string held screen text; wipe it before handing
+		// The tesseract-owned string held screen text. Wipe it before handing
 		// it back rather than leaving a readable copy in freed heap.
 		neru_capture_wipe((unsigned char *)text, strlen(text));
 		TessDeleteText(text);
@@ -303,15 +332,16 @@ int neru_ocr_recognize(
 
 	TessBaseAPI *api = neru_ocr_acquire_locked(config);
 	if (api == NULL) {
+		int busy = neru_ocr_locale_busy;
 		pthread_mutex_unlock(&neru_ocr_mutex);
 
-		return NERU_OCR_ERR_INIT;
+		return busy ? NERU_OCR_ERR_BUSY : NERU_OCR_ERR_INIT;
 	}
 
 	TessBaseAPISetImage(api, pixels, width, height, NERU_OCR_BYTES_PER_PIXEL, stride);
 	TessBaseAPISetSourceResolution(api, NERU_OCR_SOURCE_DPI);
 
-	// The deadline is why recognition goes through a monitor at all: tesseract
+	// The deadline is why recognition goes through a monitor at all. Tesseract
 	// has no other way to stop, and a caller blocked in cgo cannot be canceled
 	// from Go.
 	ETEXT_DESC *monitor = NULL;
@@ -344,7 +374,7 @@ int neru_ocr_recognize(
 
 		// Tesseract reports one failure code for "gave up on the deadline" and
 		// "could not read this frame", and the two want opposite responses from
-		// a user. The clock is what separates them: recognition that ran to the
+		// a user. The clock is what separates them. Recognition that ran to the
 		// budget was stopped by it.
 		if (config->timeoutMS > 0 && elapsed >= (int64_t)config->timeoutMS) {
 			return NERU_OCR_ERR_TIMEOUT;

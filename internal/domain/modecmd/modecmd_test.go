@@ -24,15 +24,19 @@ const (
 	flagHideOnEmpty     = "--hide-on-empty-search"
 	flagExitOnUnmatched = "--exit-on-unmatched"
 	argAction           = "--action=left_click"
+	argActionMoveMouse  = "--action=move_mouse"
+	argOnExitScroll     = "--on-exit=scroll"
 	argSearch           = "--search"
 	argToggle           = "--toggle"
 	argOnExitStep       = "--on-exit=action left_click"
 	argModifierCmd      = "--modifier=cmd"
 	argBadStrategy      = "--strategy=nonsense"
+	argStrategyVision   = "--strategy=vision"
 	argZoomToDepth2     = "--zoom-to-depth=2"
 	flagMistyped        = "--serach"
 	stepLeftClick       = "action left_click"
 	directionReverse    = "reverse"
+	argTargets          = `--targets={"hints":[{"x":10,"y":20,"width":80,"height":24,"title":"Save"}]}`
 
 	// msgZoomToDepth is the one message that flag gives, whichever way its
 	// value is unusable.
@@ -41,13 +45,18 @@ const (
 	// The messages both this file and the diagnosis cases pin, so that the two
 	// readings of the same command are held to the same sentence.
 	msgRepeatNeedsAction = "--repeat requires --action"
-	msgStrategyValue     = "--strategy requires axtree, vision, or contour"
+	msgStrategyValue     = "--strategy requires axtree, vision, contour, or segment"
 	msgGridRejectsSearch = "grid does not accept --search"
+
+	// The messages --targets gives for an unusable value and for a flag it
+	// replaces.
+	msgTargets               = `--targets requires JSON listing at least one target with a width and height, as {"hints":[{"x":10,"y":20,"width":80,"height":24}]}`
+	msgTargetsWithCollection = "--targets cannot be combined with --role, --text, --strategy, --capture-scope or --split-word, because the targets replace the scan, so filter them before sending them"
 )
 
 // flagCase is one flag together with proof that parsing it took effect.
 //
-// Every flag in the table needs one: a flag the grammar declares but does not
+// Every flag in the table needs one. A flag the grammar declares but does not
 // act on is a flag that fails silently, which is the failure this module
 // exists to remove.
 type flagCase struct {
@@ -127,6 +136,16 @@ func flagCases() map[modecmd.Flag]flagCase {
 				a.HideOnEmptySearch = new(true)
 			},
 		},
+		modecmd.FlagConfirmOnLabel: {
+			mode: domain.ModeHints,
+			args: []string{"--confirm-on-label"},
+			applied: func(a modecmd.Activation) bool {
+				return a.ConfirmOnLabel != nil && *a.ConfirmOnLabel
+			},
+			build: func(a *modecmd.Activation) {
+				a.ConfirmOnLabel = new(true)
+			},
+		},
 		modecmd.FlagExitOnUnmatched: {
 			mode: domain.ModeHints,
 			args: []string{flagExitOnUnmatched},
@@ -151,7 +170,7 @@ func flagCases() map[modecmd.Flag]flagCase {
 		},
 		modecmd.FlagStrategy: {
 			mode:    domain.ModeHints,
-			args:    []string{"--strategy=vision"},
+			args:    []string{argStrategyVision},
 			applied: func(a modecmd.Activation) bool { return a.Strategy != nil },
 			build:   func(a *modecmd.Activation) { a.Strategy = new("vision") },
 		},
@@ -166,6 +185,14 @@ func flagCases() map[modecmd.Flag]flagCase {
 			args:    []string{"--label-direction=" + directionReverse},
 			applied: func(a modecmd.Activation) bool { return a.LabelDirection != nil },
 			build:   func(a *modecmd.Activation) { a.LabelDirection = new(directionReverse) },
+		},
+		modecmd.FlagTargets: {
+			mode:    domain.ModeHints,
+			args:    []string{argTargets},
+			applied: func(a modecmd.Activation) bool { return len(a.Targets) == 1 },
+			build: func(a *modecmd.Activation) {
+				a.Targets = []modecmd.Target{{X: 10, Y: 20, Width: 80, Height: 24, Title: "Save"}}
+			},
 		},
 		modecmd.FlagSplitWord: {
 			mode:    domain.ModeHints,
@@ -248,7 +275,7 @@ func TestParse_ShortFormsReachTheSameFlag(t *testing.T) {
 			testCase := covered[descriptor.Name()]
 
 			short := slices.Clone(testCase.args)
-			// Rewrite only this flag's own argument into its short form; any
+			// Rewrite only this flag's own argument into its short form. Any
 			// others the case needed stay as they are.
 			for index, arg := range short {
 				if descriptor.Match(arg) {
@@ -280,7 +307,7 @@ func valueOf(arg string) string {
 }
 
 // TestParse_ValueFlagsRefuseAMissingValue pins the other half of what the
-// vocabulary declares: a flag that takes a value says so when it arrives
+// vocabulary declares. A flag that takes a value says so when it arrives
 // without one, rather than swallowing whatever follows.
 func TestParse_ValueFlagsRefuseAMissingValue(t *testing.T) {
 	t.Parallel()
@@ -310,7 +337,7 @@ func TestParse_ValueFlagsRefuseAMissingValue(t *testing.T) {
 // that carries none is reported.
 //
 // Reading "--toggle=false" as a request to toggle is the shape of failure this
-// module exists to remove: the flag was read, the value was not, and nothing
+// module exists to remove. The flag was read, the value was not, and nothing
 // said so.
 func TestParse_PresenceFlagsRefuseAValue(t *testing.T) {
 	t.Parallel()
@@ -375,7 +402,7 @@ func TestParse_ListFlagsRefuseAnEmptyValue(t *testing.T) {
 }
 
 // TestParse_AcceptsBothArgumentShapes pins the normalization every other case
-// depends on: a caller modeled on the CLI's own traffic repeats the mode name
+// depends on. A caller modeled on the CLI's own traffic repeats the mode name
 // as the first argument, and a binding does not.
 func TestParse_AcceptsBothArgumentShapes(t *testing.T) {
 	t.Parallel()
@@ -481,7 +508,7 @@ func TestParse_OnExitAccumulatesSteps(t *testing.T) {
 			want: []string{"first", "second"},
 		},
 		{
-			// Absent is not the same as empty: it leaves whatever a previous
+			// Absent is not the same as empty. It leaves whatever a previous
 			// activation stored alone.
 			name: "omitted stays nil",
 			args: []string{argAction},
@@ -502,7 +529,7 @@ func TestParse_OnExitAccumulatesSteps(t *testing.T) {
 		},
 		{
 			// A step that is nothing but padding is no step, and says what an
-			// empty one says: clear what was stored and run nothing.
+			// empty one says. It clears what was stored and runs nothing.
 			name: "padding only clears",
 			args: []string{argAction, "--on-exit=   "},
 			want: []string{},
@@ -531,7 +558,7 @@ func TestParse_OnExitAccumulatesSteps(t *testing.T) {
 }
 
 // TestParse_RefusesFlagsTheModeDoesNotAccept pins the failure the whole module
-// exists for: a flag a mode has no use for was accepted, stored and dropped,
+// exists for. A flag a mode had no use for was accepted, stored and dropped,
 // so the mode activated and the flag did nothing.
 func TestParse_RefusesFlagsTheModeDoesNotAccept(t *testing.T) {
 	t.Parallel()
@@ -693,6 +720,24 @@ func TestParse_RefusalMessages(t *testing.T) {
 			[]string{"--label-direction=sideways"},
 			"--label-direction requires normal or reverse",
 		},
+		{domain.ModeHints, []string{"--targets"}, msgTargets},
+		{domain.ModeHints, []string{"--targets=not json"}, msgTargets},
+		{domain.ModeHints, []string{`--targets={"hints":[]}`}, msgTargets},
+		{
+			domain.ModeHints,
+			[]string{`--targets={"hints":[{"x":10,"y":20,"width":0,"height":24}]}`},
+			msgTargets,
+		},
+		{
+			domain.ModeHints,
+			[]string{`--targets={"hints":[{"width":60,"height":30}]}`},
+			msgTargets,
+		},
+		{
+			domain.ModeHints,
+			[]string{`--targets={"hints":[{"x":null,"y":20,"width":60,"height":30}]}`},
+			msgTargets,
+		},
 		{
 			domain.ModeGrid,
 			[]string{"--cursor-selection-mode"},
@@ -734,7 +779,7 @@ func TestParse_RefusalMessages(t *testing.T) {
 // TestValidate_EnforcesFlagDependencies pins the rules that make one flag
 // meaningless without another, and the one message each of them gives.
 //
-// --on-exit is the rule that used to exist on the command line only: over the
+// --on-exit is the rule that used to exist on the command line only. Over the
 // wire and from a binding the steps were stored and never run.
 func TestValidate_EnforcesFlagDependencies(t *testing.T) {
 	t.Parallel()
@@ -758,10 +803,22 @@ func TestValidate_EnforcesFlagDependencies(t *testing.T) {
 			want: "--on-exit requires --action (it runs only when the action is fulfilled)",
 		},
 		{
+			name: "on-exit with repeat",
+			mode: domain.ModeHints,
+			args: []string{argAction, flagRepeat, "--on-exit=" + stepLeftClick},
+			want: "--on-exit cannot be combined with --repeat, because a repeating mode closes only when canceled, and a cancel skips the steps",
+		},
+		{
 			name: "modifier without action",
 			mode: domain.ModeHints,
 			args: []string{argModifierCmd},
 			want: "--modifier requires --action",
+		},
+		{
+			name: "modifier with only move_mouse",
+			mode: domain.ModeHints,
+			args: []string{argActionMoveMouse, argModifierCmd},
+			want: "--modifier needs a mouse button action, because move_mouse presses nothing for it to hold",
 		},
 		{
 			name: "hide-on-empty-search without search",
@@ -774,6 +831,24 @@ func TestValidate_EnforcesFlagDependencies(t *testing.T) {
 			mode: domain.ModeHints,
 			args: []string{argAction, "--modifier=,"},
 			want: "modifier values cannot be empty",
+		},
+		{
+			name: "targets with a collection flag",
+			mode: domain.ModeHints,
+			args: []string{argTargets, "--role=button"},
+			want: msgTargetsWithCollection,
+		},
+		{
+			name: "targets with a strategy",
+			mode: domain.ModeHints,
+			args: []string{argTargets, argStrategyVision},
+			want: msgTargetsWithCollection,
+		},
+		{
+			name: "targets with repeat",
+			mode: domain.ModeHints,
+			args: []string{argTargets, argAction, flagRepeat},
+			want: "--targets cannot be combined with --repeat, because the targets go stale once the action runs",
 		},
 	}
 
@@ -794,8 +869,8 @@ func TestValidate_EnforcesFlagDependencies(t *testing.T) {
 }
 
 // TestValidate_PinsTheActionVocabulary pins which actions a mode may be given.
-// A mode action is fulfilled by a selection, so only the mouse buttons make
-// sense; everything else has its own command.
+// A mode action is fulfilled by a selection, so only the mouse buttons and
+// move_mouse make sense. Everything else has its own command.
 func TestValidate_PinsTheActionVocabulary(t *testing.T) {
 	t.Parallel()
 
@@ -817,12 +892,12 @@ func TestValidate_PinsTheActionVocabulary(t *testing.T) {
 		{
 			name: "scroll sub-action",
 			args: []string{"--action=scroll_up"},
-			want: `scroll sub-action "scroll_up" cannot be used as a mode action; only mouse button actions can`,
+			want: `scroll sub-action "scroll_up" cannot be used as a mode action; only mouse button actions and move_mouse can`,
 		},
 		{
-			name: "action that is not a mouse button",
-			args: []string{"--action=move_mouse"},
-			want: `"move_mouse" cannot be used as a mode action; only mouse button actions can`,
+			name: "relative move",
+			args: []string{"--action=move_mouse_relative"},
+			want: `"move_mouse_relative" cannot be used as a mode action; only mouse button actions and move_mouse can`,
 		},
 	}
 
@@ -850,6 +925,51 @@ func TestValidate_AcceptsAChainedAction(t *testing.T) {
 	_, err := modecmd.Parse(domain.ModeHints, []string{"--action=left_click,left_click"})
 	if err != nil {
 		t.Errorf("chained action refused: %v", err)
+	}
+}
+
+// TestValidate_AcceptsMoveMouse pins that a mode can stop at its selection
+// without pressing anything, so --on-exit steps run from there in every
+// selection mode.
+func TestValidate_AcceptsMoveMouse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mode domain.Mode
+		args []string
+	}{
+		{
+			name: "hints",
+			mode: domain.ModeHints,
+			args: []string{argActionMoveMouse, argOnExitScroll},
+		},
+		{
+			name: "grid",
+			mode: domain.ModeGrid,
+			args: []string{argActionMoveMouse, argOnExitScroll},
+		},
+		{
+			name: "recursive grid",
+			mode: domain.ModeRecursiveGrid,
+			args: []string{argActionMoveMouse, argOnExitScroll},
+		},
+		{
+			name: "modifier held for a click later in the chain",
+			mode: domain.ModeHints,
+			args: []string{"--action=move_mouse,left_click", argModifierCmd},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := modecmd.Parse(testCase.mode, testCase.args)
+			if err != nil {
+				t.Errorf("Parse(%v) refused: %v", testCase.args, err)
+			}
+		})
 	}
 }
 
@@ -946,6 +1066,12 @@ func TestParse_CycleLists(t *testing.T) {
 			wantValue: domain.StrategyContour,
 		},
 		{
+			name:      "segment is a strategy",
+			mode:      domain.ModeHints,
+			args:      []string{"--strategy=" + domain.StrategySegment},
+			wantValue: domain.StrategySegment,
+		},
+		{
 			name:    "an unknown entry is refused like a lone one",
 			mode:    domain.ModeHints,
 			args:    []string{"--strategy=" + domain.StrategyVision + ",nope"},
@@ -960,10 +1086,11 @@ func TestParse_CycleLists(t *testing.T) {
 			wantErr: "--strategy lists a value twice",
 		},
 		{
-			name:    "toggle alongside a list",
-			mode:    domain.ModeGrid,
-			args:    []string{argToggle, "--capture-scope=window,screen"},
-			wantErr: "--toggle cannot be combined with a cycle list",
+			name:      "toggle alongside a list",
+			mode:      domain.ModeGrid,
+			args:      []string{argToggle, "--capture-scope=window,screen"},
+			wantValue: domain.CaptureScopeWindow,
+			wantCycle: []string{domain.CaptureScopeWindow, domain.CaptureScopeScreen},
 		},
 		{
 			name: "two lists in one command",

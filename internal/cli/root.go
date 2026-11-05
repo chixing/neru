@@ -18,7 +18,7 @@ const (
 	//
 	// This is the client-side ceiling for a full request/response round-trip
 	// and MUST stay comfortably larger than the daemon's own per-request work
-	// budget — notably the hints element scan (modes.HintTimeout, 5s) plus
+	// budget, notably the hints element scan (modes.HintTimeout, 5s) plus
 	// activation overhead. If the client gives up first, it disconnects and the
 	// daemon logs a spurious "broken pipe" when it finally writes the response
 	// (which the client is no longer there to read). The headroom keeps a slow
@@ -31,7 +31,7 @@ var (
 	// LaunchFunc is set by main to handle daemon launch.
 	LaunchFunc func(configPath string)
 	// timeoutSec is overridden by the --timeout flag (default
-	// DefaultIPCTimeoutSeconds); kept in sync so any pre-parse use matches.
+	// DefaultIPCTimeoutSeconds). It is kept in sync so any pre-parse use matches.
 	timeoutSec = DefaultIPCTimeoutSeconds
 
 	// CLI utilities.
@@ -52,9 +52,7 @@ vim-like navigation capabilities across applications using accessibility APIs.`,
 	Version:       buildinfo.Version,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if IsRunningFromAppBundle() && len(args) == 0 {
-			launchProgram(cmd, configPath)
-
-			return nil
+			return launchProgram(cmd, configPath)
 		}
 
 		return cmd.Help()
@@ -69,16 +67,16 @@ func (e *silentError) Error() string { return e.err.Error() }
 func (e *silentError) Unwrap() error { return e.err }
 
 // setSilenceUsage walks the command tree and installs a PersistentPreRunE
-// wrapper on every command that sets SilenceUsage = true.  Because the
+// wrapper on every command that sets SilenceUsage = true. Because the
 // wrapper is attached directly to each command it cannot be silently
-// shadowed by a subcommand that defines its own PersistentPreRun(E) —
+// shadowed by a subcommand that defines its own PersistentPreRun(E),
 // unlike a single PersistentPreRun on the root which Cobra would skip
 // whenever a child overrides the hook.
 func setSilenceUsage(cmd *cobra.Command) {
 	origE := cmd.PersistentPreRunE
 	origNonE := cmd.PersistentPreRun
 
-	// Clear the non-E variant so Cobra never double-calls it; the
+	// Clear the non-E variant so Cobra never double-calls it. The
 	// wrapper below invokes it when needed.
 	cmd.PersistentPreRun = nil
 
@@ -125,7 +123,6 @@ func init() {
 	// via cmd.PrintErrln still correctly go to stderr.
 	RootCmd.SetOut(os.Stdout)
 
-	// Initialize CLI utilities.
 	formatter = cliutil.NewOutputFormatter()
 
 	RootCmd.SetVersionTemplate(
@@ -143,17 +140,22 @@ func init() {
 }
 
 // IsRunningFromAppBundle reports whether the executable is running from a
-// platform app bundle. On macOS this checks for ".app/Contents/MacOS".
-// On other platforms this always returns false (no bundle concept).
-// Implementation is in root_darwin.go / root_other.go.
+// platform app bundle. On macOS this checks for ".app/Contents/MacOS". On
+// Windows it reports a launch by the shell rather than from a terminal. On
+// other platforms it always returns false. The implementations are in
+// root_darwin.go, root_windows.go and root_other.go.
 func IsRunningFromAppBundle() bool {
 	return isRunningFromAppBundle()
 }
 
-func launchProgram(cmd *cobra.Command, cfgPath string) {
+// launchProgram runs the daemon in this process, or reports that one is
+// already running. It returns to the command rather than exiting, so its
+// caller decides the exit status.
+func launchProgram(cmd *cobra.Command, cfgPath string) error {
 	if ipc.IsServerRunning() {
 		cmd.Println("Neru is already running")
-		os.Exit(0)
+
+		return nil
 	}
 
 	// From here on this process is the daemon rather than a CLI client. On
@@ -162,12 +164,17 @@ func launchProgram(cmd *cobra.Command, cfgPath string) {
 	// elsewhere, and no-op when a terminal owns the console.
 	detachConsoleIfOwned()
 
-	if LaunchFunc != nil {
-		LaunchFunc(cfgPath)
-	} else {
+	if LaunchFunc == nil {
 		cmd.PrintErrln("Error: Launch function not initialized")
-		os.Exit(1)
+
+		return &silentError{
+			err: derrors.New(derrors.CodeInternal, "launch function not initialized"),
+		}
 	}
+
+	LaunchFunc(cfgPath)
+
+	return nil
 }
 
 // sendCommand transmits a command to the running Neru daemon via IPC.

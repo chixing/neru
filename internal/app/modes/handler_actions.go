@@ -2,14 +2,12 @@ package modes
 
 import (
 	"context"
-	"sync/atomic"
 
 	"go.uber.org/zap"
 
 	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/domain/bisect"
-	"github.com/y3owk1n/neru/internal/domain/modecmd"
 	"github.com/y3owk1n/neru/internal/ports"
 )
 
@@ -24,7 +22,7 @@ func (h *Handler) ResetCurrentMode() {
 		return
 	}
 
-	editor.ResetInput()
+	h.trackSelection(editor.ResetInput)
 }
 
 // BackspaceCurrentMode takes back the active mode's most recent unit of input
@@ -39,13 +37,13 @@ func (h *Handler) BackspaceCurrentMode() {
 		return
 	}
 
-	editor.Backspace()
+	h.trackSelection(editor.Backspace)
 }
 
 // MoveCellCurrentMode slides the active mode's selection count cells in dir
 // without changing the active layer.
 //
-// Grid mode moves an open subgrid to the neighboring cell; recursive-grid
+// Grid mode moves an open subgrid to the neighboring cell. Recursive-grid
 // mode slides the highlighted region at the current depth, crossing into a
 // neighboring parent when it runs off the edge of its own. Modes with no cell
 // selection ignore it, as does a move that would leave the screen.
@@ -58,7 +56,7 @@ func (h *Handler) MoveCellCurrentMode(dir domain.Direction, count int) {
 		return
 	}
 
-	navigator.MoveCell(dir, count)
+	h.trackSelection(func() { navigator.MoveCell(dir, count) })
 }
 
 // BisectCurrentMode keeps the half or quadrant of the active mode's region
@@ -73,15 +71,16 @@ func (h *Handler) BisectCurrentMode(cut bisect.Cut, count int) {
 		return
 	}
 
-	cutter.Bisect(cut, count)
+	h.trackSelection(func() { cutter.Bisect(cut, count) })
 }
 
-// StartHintSearch activates text filtering for hints mode.
-func (h *Handler) StartHintSearch() error {
+// StartHintSearch activates text filtering for hints mode. confirmOnLabel
+// turns on --confirm-on-label for this search alone.
+func (h *Handler) StartHintSearch(confirmOnLabel bool) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	return h.startHintSearch()
+	return h.startHintSearch(confirmOnLabel)
 }
 
 // CycleHint cycles through visible hints in hints mode, selecting the next or previous one.
@@ -92,6 +91,58 @@ func (h *Handler) CycleHint(ctx context.Context, backward bool, executeAction bo
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	return h.cycleHint(ctx, backward, executeAction)
+}
+
+// RefreshHints rescans the open hints session with the flags it was activated
+// with, so a strategy or capture-scope cycle stays on the entry in use and the
+// filters, action and on-exit steps carry over. It bypasses ActivateMode, which
+// would advance the cycle or, with --toggle, exit.
+//
+// It refuses supplied targets, because there is nothing to scan again and
+// relabeling them would look like a refresh that found the same elements.
+func (h *Handler) RefreshHints() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.appState.CurrentMode() != domain.ModeHints {
+		return derrors.New(derrors.CodeInvalidInput, "refresh_hints requires hints mode")
+	}
+
+	if h.hints == nil || h.hints.Context == nil {
+		return derrors.New(derrors.CodeActionFailed, "hints component not available")
+	}
+
+	if h.hints.Context.TargetsSupplied() {
+		return derrors.New(
+			derrors.CodeInvalidInput,
+			"refresh_hints cannot rescan supplied targets",
+		)
+	}
+
+	h.activationRefusal = nil
+	h.activateHintModeInternal(h.hintSessionActivation())
+
+	// A refresh that cannot draw leaves the mode rather than keep labels
+	// pointing at elements that may be gone, and the caller hears why.
+	if h.appState.CurrentMode() != domain.ModeHints {
+		if h.activationRefusal != nil {
+			return h.activationRefusal
+		}
+
+		return derrors.New(
+			derrors.CodeActionFailed,
+			"refresh_hints found no hints, hints mode exited",
+		)
+	}
+
+	return nil
+}
+
+// cycleHint is the body of CycleHint.
+//
+// Caller must hold h.mu.
+func (h *handlerState) cycleHint(ctx context.Context, backward bool, executeAction bool) error {
 	if h.appState.CurrentMode() != domain.ModeHints {
 		return derrors.New(derrors.CodeInvalidInput, "cycle_hint requires hints mode")
 	}
@@ -158,55 +209,40 @@ func (h *Handler) CycleHint(ctx context.Context, backward bool, executeAction bo
 	pendingModifier := h.hints.Context.PendingModifier()
 	if pendingAction != nil && executeAction {
 		repeat := h.hints.Context.Repeat()
-		cursorFollowSelection := h.hints.Context.CursorFollowSelection()
-		filterRoles := h.hints.Context.FilterRoles()
-		filterTextContains := h.hints.Context.FilterTextContains()
-		startWithSearch := h.hints.Context.StartWithSearch()
-		exitOnUnmatched := h.hints.Context.ExitOnUnmatched()
-		strategyOverride := h.hints.Context.StrategyOverride()
-		captureScopeOverride := h.hints.Context.CaptureScopeOverride()
-		labelDirectionOverride := h.hints.Context.LabelDirectionOverride()
-		splitWord := h.hints.Context.SplitWord()
+		session := h.hintSessionActivation()
 
 		h.executeActionAtPoint(pendingAction, pendingModifier, center, repeat, func() {
-			h.activateHintModeInternal(modecmd.Activation{
-				Mode:               domain.ModeHints,
-				FilterRoles:        filterRoles,
-				FilterTextContains: filterTextContains,
-				Search:             &startWithSearch,
-				ExitOnUnmatched:    &exitOnUnmatched,
-				Strategy:           &strategyOverride,
-				CaptureScope:       &captureScopeOverride,
-				LabelDirection:     &labelDirectionOverride,
-				SplitWord:          &splitWord,
-				// OnExit is left nil to preserve the stored steps across
-				// re-activation.
-			})
+			h.activateHintModeInternal(session)
 
-			// Restore state so subsequent cycles continue to execute the action
-			// Guard: only restore if repeat was originally set (mode is still hints).
+			// Restore the state so later cycles keep executing the action, but
+			// only when repeat was set and the mode is still hints.
 			if repeat && h.appState.CurrentMode() == domain.ModeHints &&
 				h.hints != nil && h.hints.Context != nil {
 				h.hints.Context.SetPendingAction(pendingAction)
 				h.hints.Context.SetPendingModifier(pendingModifier)
 				h.hints.Context.SetRepeat(true)
-				h.hints.Context.SetCursorFollowSelection(cursorFollowSelection)
-				h.hints.Context.SetFilterRoles(filterRoles)
-				h.hints.Context.SetFilterTextContains(filterTextContains)
-				h.hints.Context.SetStartWithSearch(startWithSearch)
-				h.hints.Context.SetExitOnUnmatched(exitOnUnmatched)
-				h.hints.Context.SetStrategyOverride(strategyOverride)
-				h.hints.Context.SetCaptureScopeOverride(captureScopeOverride)
-				h.hints.Context.SetLabelDirectionOverride(labelDirectionOverride)
-				h.hints.Context.SetSplitWord(splitWord)
+				h.hints.Context.SetCursorFollowSelection(*session.CursorFollowSelection)
+				h.hints.Context.SetFilterRoles(session.FilterRoles)
+				h.hints.Context.SetFilterTextContains(session.FilterTextContains)
+				h.hints.Context.SetStartWithSearch(*session.Search)
+				h.hints.Context.SetConfirmOnLabel(*session.ConfirmOnLabel)
+				h.hints.Context.SetExitOnUnmatched(*session.ExitOnUnmatched)
+				h.hints.Context.SetStrategyOverride(*session.Strategy)
+				h.hints.Context.SetCaptureScopeOverride(*session.CaptureScope)
+				h.hints.Context.SetLabelDirectionOverride(*session.LabelDirection)
+				h.hints.Context.SetSplitWord(*session.SplitWord)
 			}
 		})
+
+		return nil
 	}
+
+	h.publishSelect(center, "")
 
 	return nil
 }
 
-func (h *handlerState) startHintSearch() error {
+func (h *handlerState) startHintSearch(confirmOnLabel bool) error {
 	if h.appState.CurrentMode() != domain.ModeHints {
 		return derrors.New(derrors.CodeInvalidInput, "search_hints requires hints mode")
 	}
@@ -222,6 +258,9 @@ func (h *handlerState) startHintSearch() error {
 	h.stopHintSearchTextInput(true)
 	h.hints.Context.SetSearchQuery("")
 	h.hints.Context.SetSearchActive(true)
+	h.hints.Context.SetSearchConfirmOnLabel(confirmOnLabel)
+
+	session := h.hintSearchSession
 
 	if h.hints.Context.HideOnEmptySearch() {
 		// When hide-on-empty-search is active, hide all hints initially.
@@ -250,15 +289,15 @@ func (h *handlerState) startHintSearch() error {
 	// asked for rather than derived a second time here.
 	bounds := h.hintSearchBounds()
 	if bounds.Empty() {
-		// The overlay put no box on screen — it draws none, or it could not
+		// The overlay put no box on screen, because it draws none or could not
 		// place the anchor it was configured with. Handing the platform's field
 		// the keyboard anyway would put an invisible input somewhere the user
-		// is not looking; the query keeps arriving through the event tap's key
+		// is not looking. The query keeps arriving through the event tap's key
 		// stream instead, which is what every overlay without a search box
 		// already relies on.
 		//
 		// That promise only holds if the tap is on, and this method opened by
-		// stopping any live session *without* re-enabling it — on the
+		// stopping any live session *without* re-enabling it, on the
 		// assumption that the session about to start would want it off. There
 		// is no session now, so give the keyboard back or the search has no way
 		// left to receive a key.
@@ -273,27 +312,18 @@ func (h *handlerState) startHintSearch() error {
 		Y:      bounds.Min.Y,
 		Width:  bounds.Dx(),
 		Height: bounds.Dy(),
+		Screen: h.screenBounds,
 	}
-
-	echoScreen := h.screenBounds
 
 	started, _ := h.textInput.StartHintSearchSession(
 		h.ctx,
 		ports.TextInputCallbacks{
 			OnQueryChanged: func(query string) {
-				// While the scan holds h.mu, show the typing so the input
-				// feels live; the query is applied once the scan releases it.
-				if atomic.LoadInt32(&h.hintScanRunning) == 1 && h.overlayPort != nil {
-					_ = h.overlayPort.DrawHintSearch(
-						ports.HintSearch{Screen: echoScreen, Query: query},
-					)
-				}
-
 				h.outer.mu.Lock()
 				defer h.outer.mu.Unlock()
 
-				if h.appState.CurrentMode() != domain.ModeHints || h.hints == nil ||
-					h.hints.Context == nil {
+				if h.hintSearchSession != session || h.appState.CurrentMode() != domain.ModeHints ||
+					h.hints == nil || h.hints.Context == nil {
 					return
 				}
 
@@ -305,14 +335,24 @@ func (h *handlerState) startHintSearch() error {
 				h.applyHintSearchFilter()
 			},
 			OnCycle: func(backward bool) {
-				// CycleHint takes h.mu itself and checks the mode.
-				_ = h.outer.CycleHint(h.ctx, backward, false)
+				h.outer.mu.Lock()
+				defer h.outer.mu.Unlock()
+
+				if h.hintSearchSession != session || h.appState.CurrentMode() != domain.ModeHints ||
+					h.hints == nil || h.hints.Context == nil || !h.hints.Context.SearchActive() {
+					return
+				}
+
+				err := h.cycleHint(h.ctx, backward, false)
+				if err != nil {
+					h.logger.Warn("Failed to cycle hint search matches", zap.Error(err))
+				}
 			},
 			OnConfirm: func() {
 				h.outer.mu.Lock()
 				defer h.outer.mu.Unlock()
 
-				if h.appState.CurrentMode() != domain.ModeHints {
+				if h.hintSearchSession != session || h.appState.CurrentMode() != domain.ModeHints {
 					return
 				}
 
@@ -322,7 +362,7 @@ func (h *handlerState) startHintSearch() error {
 				h.outer.mu.Lock()
 				defer h.outer.mu.Unlock()
 
-				if h.appState.CurrentMode() != domain.ModeHints {
+				if h.hintSearchSession != session || h.appState.CurrentMode() != domain.ModeHints {
 					return
 				}
 
@@ -332,13 +372,19 @@ func (h *handlerState) startHintSearch() error {
 		textInputFrame,
 	)
 
-	if started {
-		h.hintSearchTextInputActive = true
+	if !started {
+		// A session this one replaced left the tap off for it, and no field
+		// took its place, so the key stream is all that is left.
+		h.stopHintSearchTextInput(false)
 
-		if h.hasEventTap() {
-			h.disableEventTap()
-			h.hintSearchEventTapDisabled = true
-		}
+		return nil
+	}
+
+	h.hintSearchTextInputActive = true
+
+	if h.hasEventTap() {
+		h.disableEventTap()
+		h.hintSearchEventTapDisabled = true
 	}
 
 	return nil
@@ -354,6 +400,8 @@ func (h *handlerState) stopHintSearchTextInput(keepEventTapDisabled bool) {
 		}
 	}
 
+	// Callbacks the stopped session already queued see a new count and stop.
+	h.hintSearchSession++
 	h.hintSearchTextInputActive = false
 
 	if h.hintSearchEventTapDisabled && h.hasEventTap() &&

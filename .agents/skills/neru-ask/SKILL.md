@@ -7,7 +7,7 @@ description: "Answer a Neru user's question about what Neru does, which command,
 
 Neru is a keyboard-driven mouse replacement. A daemon watches global hotkeys
 and draws overlays, and a CLI sends it commands over a socket. Modes take the
-keyboard until a target is picked: hints label clickable elements, grid and
+keyboard until a target is picked. Hints label clickable elements, grid and
 recursive grid divide the screen, scroll moves content, monitor select jumps
 between displays. Actions click, scroll, and move the cursor without a mode.
 Every answer should come from the installed version, since commands, flags,
@@ -27,9 +27,11 @@ source build all ship them.
 - `neru status` for whether the daemon runs and which mode is open.
 - `neru doctor` for config validity, socket health, permissions, and which
   capabilities this platform has. It runs without the daemon.
-- `neru hints --debug` for the elements hints would label in the focused
-  window, as a count and a sample, without drawing anything. Run it
-  first for any "hints show nothing in app X" report.
+- `neru query hints` for every element hints would label in the focused
+  window, with its role and text, without drawing anything. Run it first
+  for any "hints show nothing in app X" report. From a terminal it reports
+  the terminal, so run it from a hotkey or as `sleep 3; neru query hints`.
+  Versions before it have `neru hints --debug`, which prints a sample.
 - `neru config dump` for the config in force, defaults filled in.
 - `neru roles --explain` for the clickable roles and how each resolves here.
 - `neru docs cli` and `neru docs config` open the two references in a
@@ -100,16 +102,17 @@ old name from the same `docs/` URL:
 
 Things a user often does not know:
 
-- **Hints have three strategies.** `axtree` reads the accessibility tree
+- **Hints have four strategies.** `axtree` reads the accessibility tree
   and is the default. `vision` recognises text on a screen capture, and on
-  macOS rectangles too. `contour` finds edges on every platform. An app
+  macOS rectangles too. `contour` finds edges on every platform, and
+  `segment` finds controls and words from pixels on every platform. An app
   with a poor tree, such as an Electron app or a game, gets `--strategy
   vision` for one call or a per-app strategy in config.
 - **Grid modes need no accessibility tree.** When hints show nothing in an
   app, grid and recursive grid still work, because they divide the screen
   rather than read elements.
 - **Hints only label roles in `hints.clickable_roles`.** A missing hint is
-  usually a role outside that list. `neru hints --debug` shows what was
+  usually a role outside that list. `neru query hints` shows what was
   collected, `neru roles --explain` shows what the platform can name, and
   `neru hints --role` overrides the list for one call.
 - **Inside a mode the keys are bindable too.** Each mode has its own
@@ -136,14 +139,16 @@ Things a user often does not know:
 
 - Config, hotkeys, macros, modes, per-app overrides, or service work goes to
   `neru-setup-config`.
+- Building a tool on Neru, such as a status bar, a launcher, or a program
+  that reads its state or drives it, goes to `neru-build-integration`.
 - A question with a one-command answer gets the command and the help page
   that documents it.
 - When something does not work, in this order: `neru status`, `neru doctor`,
-  then `neru hints --debug` for a hints report or `neru config validate` for
+  then `neru query hints` for a hints report or `neru config validate` for
   a hotkey report, then the Troubleshooting doc as above, before guessing at
   a cause. Its Permissions and Hotkeys Not Working sections cover most
   reports. On macOS, a hotkey that never fires after an update is usually a
-  stale Accessibility grant: remove Neru from the list and add it again.
+  stale Accessibility grant. Remove Neru from the list and add it again.
 - A bug or a missing feature goes to a GitHub issue on `y3owk1n/neru`.
   Blank issues are disabled, so use the issue forms, and include
   `neru --version` and `neru doctor` output. Questions and config help

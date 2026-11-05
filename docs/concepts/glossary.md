@@ -24,11 +24,18 @@ whole `screen`. Set with `capture_scope` or `--capture-scope`.
 hotkeys and draws the overlays. Every other `neru` command sends it a request, so most commands
 fail with a connection error when it is not running.
 
+**Event.** Something that happens inside Neru, such as a mode opening or Neru
+pausing. A hook runs steps when one fires. See
+[`[hooks]`](../reference/configuration.md#hooks).
+
 **Focused app.** The app your keystrokes go to. Neru applies its
 `app_configs` entry, if one matches its app identity.
 
 **Hint.** A short label Neru draws on a clickable element in hints mode. Type
 it to move the cursor there.
+
+**Hook.** The steps you write under `[hooks]` for an event, run each time it
+fires. See [`[hooks]`](../reference/configuration.md#hooks).
 
 **Hotkey.** A key combination Neru registers, such as `Primary+Shift+Space`.
 Global hotkeys work from anywhere, and a mode's hotkeys work while that mode is
@@ -51,9 +58,18 @@ hints, grid, recursive grid, bisect, scroll or monitor select. You can also
 declare your own under [`[modes]`](../reference/configuration.md#modes). See
 [Using Neru](../guide/using-neru.md).
 
+**Mode command.** A step that opens a mode, written as the mode's name and its
+flags, such as `hints --action left_click`. You write the same text in a
+binding and after `neru` in a shell. See the
+[mode flag reference](../reference/cli.md#mode-flag-reference).
+
 **Mode flag.** An option on a mode command, such as `--action` in
 `hints --action left_click`. It means the same in a binding, in a shell and
 over IPC. See the [mode flag reference](../reference/cli.md#mode-flag-reference).
+
+**Option.** One setting you can write in `config.toml`, such as
+`hints.hint_characters`. Each option has one key, one default and one meaning.
+See the [configuration reference](../reference/configuration.md).
 
 **Overlay.** The transparent layer Neru draws hints, grids and indicators on.
 Clicks pass through it.
@@ -66,12 +82,17 @@ config. See [How the layers combine](../guide/configuring.md#how-the-layers-comb
 Linux and Windows. Write `Primary` in a hotkey to share one config across
 platforms.
 
+**Probe.** A read-only question asked with `neru query`, such as which
+elements hints mode would label. Neru answers it without opening the mode. See
+[`neru query`](../reference/cli.md#neru-query).
+
 **Selection.** The point a mode has picked, such as a typed hint or a grid
 cell. Clicks and other actions aimed at a point run at the selection while a
 mode has one, and at the cursor otherwise. See [Targeting](../reference/cli.md#targeting).
 
 **Sequence.** Several steps run in order as one unit. A binding with an array
-value, a macro, a mode's `--on-exit` steps and `neru run` are all sequences.
+value, a macro, a mode's `--on-exit` steps, a hook and `neru run` are all
+sequences.
 See [Sequences](bindings.md#sequences).
 
 **Step.** One unit of work in a binding: a mode command, an action, a macro, a
@@ -83,5 +104,5 @@ stays held for the following clicks and scrolls. See
 [Using Neru](../guide/using-neru.md#more-than-a-left-click).
 
 **Strategy.** How hints mode finds elements: `axtree` reads the accessibility
-tree, `vision` reads the screen with OCR, and `contour` finds shapes in the
-screen image. See [`[hints]`](../reference/configuration.md#hints).
+tree, `vision` reads the screen with OCR, `contour` finds shapes in the
+screen image, and `segment` splits it into controls, pictures and words. See [`[hints]`](../reference/configuration.md#hints).

@@ -7,9 +7,17 @@ import (
 	"github.com/y3owk1n/neru/internal/derrors"
 )
 
+// ColorPattern is the regular expression a color value matches: #RGB,
+// #RRGGBB or #AARRGGBB. SolidColorPattern is the same without the alpha form,
+// for the theme palette. The published config schema repeats both.
+const (
+	ColorPattern      = `^#([A-Fa-f0-9]{3}|[A-Fa-f0-9]{6}|[A-Fa-f0-9]{8})$`
+	SolidColorPattern = `^#([A-Fa-f0-9]{3}|[A-Fa-f0-9]{6})$`
+)
+
 var (
-	colorRegex      = regexp.MustCompile(`^#([A-Fa-f0-9]{3}|[A-Fa-f0-9]{6}|[A-Fa-f0-9]{8})$`)
-	solidColorRegex = regexp.MustCompile(`^#([A-Fa-f0-9]{3}|[A-Fa-f0-9]{6})$`)
+	colorRegex      = regexp.MustCompile(ColorPattern)
+	solidColorRegex = regexp.MustCompile(SolidColorPattern)
 )
 
 // Color is a color that can be specified as either a single value
@@ -100,22 +108,15 @@ func (c *Color) ForTheme(theme ThemeProvider, defaultLight, defaultDark string) 
 	}
 
 	if theme != nil && theme.IsDarkMode() {
-		if dark != "" {
-			return dark
-		}
-
-		return defaultDark
+		return dark
 	}
 
-	if light != "" {
-		return light
-	}
-
-	return defaultLight
+	return light
 }
 
-// ForThemeWithOverride resolves a color with a three-tier fallback:
-// per-mode override (receiver) → shared UI default → hardcoded default.
+// ForThemeWithOverride resolves a color with a three-tier fallback. The
+// per-mode override (the receiver) wins, then the shared UI default, then the
+// hardcoded default.
 func (c *Color) ForThemeWithOverride(
 	uiDefault Color,
 	theme ThemeProvider,
@@ -153,7 +154,7 @@ func (c *Color) Validate(fieldName string) error {
 }
 
 // ValidateSolidColor checks if the color value is a valid solid hex color.
-// Unlike ValidateColor, this rejects alpha-bearing #AARRGGBB inputs.
+// Unlike Color.Validate, this rejects alpha-bearing #AARRGGBB inputs.
 func ValidateSolidColor(color, fieldName string) error {
 	if color == "" {
 		return nil
