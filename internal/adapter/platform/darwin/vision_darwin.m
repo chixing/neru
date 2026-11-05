@@ -552,7 +552,7 @@ VisionResult *NeruDetectElements(CGRect screenBounds, NeruVisionConfig config) {
 // big capture is lost. Reading tiles no larger than this keeps it legible.
 static const CGFloat kTextTileMax = 1920;
 // Tiles overlap by this much so a word on a seam is read whole by one of them.
-static const CGFloat kTextTileOverlap = 48;
+static const CGFloat kTextTileOverlap = 128;
 
 VisionResult *NeruRecognizeTextInImage(CGImageRef image, CGRect cropPx, int accurate, int timeoutMS) {
 	@autoreleasepool {
