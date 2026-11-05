@@ -160,7 +160,8 @@ Each display shows a number. Type one and the cursor moves there.
 
 ## Personal fork hint search
 
-Search opens before the scan completes. While typing, matches are underlined
+Screen-reading search opens before the scan completes. Accessibility-tree
+search scans first so the native field cannot steal the target window's focus. While typing, matches are underlined
 on macOS. Queries accept arbitrary text and use fuzzy matching after exact
 matches. Tab and Shift+Tab move between matches. Return selects the current or sole match; with several matches it
 closes the input and assigns the shortest available labels for selection.

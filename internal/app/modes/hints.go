@@ -216,9 +216,11 @@ func (h *handlerState) activateHintModeInternal(activation modecmd.Activation) {
 		h.hints.Context.SetActiveScan(strategy, captureScope)
 	}
 
-	// A search opens its input before the scan, so typing can start at once;
-	// the query waits on h.mu and is applied once the hints exist.
-	earlySearch := !isRefresh && activation.Search != nil && *activation.Search
+	// Screen-reading searches open input before the scan using pinned bounds.
+	// AX asks for the focused app during its scan, so its field must open
+	// afterwards or it would steal focus from the target window.
+	earlySearch := !isRefresh && activation.Targets == nil && readsScreen(strategy) &&
+		activation.Search != nil && *activation.Search
 
 	if earlySearch && h.system != nil {
 		// The search input takes focus from the window the scan is about.

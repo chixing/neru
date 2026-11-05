@@ -4250,3 +4250,28 @@ func TestSimulation_HintSearchTabSelectsCurrentMatch(t *testing.T) {
 		t.Fatalf("cursor after cycling and Return = %v, want %v", got, elements[0].Center())
 	}
 }
+
+// TestSimulation_AXSearchScansBeforeItsNativeFieldTakesFocus pins the native
+// field's activation ordering. An AX scan asks for the currently focused app,
+// so opening the field first would scan Neru rather than the target window.
+func TestSimulation_AXSearchScansBeforeItsNativeFieldTakesFocus(t *testing.T) {
+	cfg := simConfig()
+	cfg.Hotkeys.Bindings[hintsHotkey] = []string{"hints --search --strategy axtree"}
+	sim := newSimHarness(t, cfg, threeButtons(t))
+	sim.textInput.Started = true
+
+	fieldWasOpen := make(chan bool, 1)
+	sim.ax.setScanGate(func() {
+		fieldWasOpen <- sim.textInput.StartCount() != 0
+	})
+	sim.pressHotkey(hintsHotkey)
+	sim.waitMode(domain.ModeHints)
+	sim.waitFor(
+		"native search field opened",
+		func() bool { return sim.textInput.StartCount() == 1 },
+	)
+
+	if <-fieldWasOpen {
+		t.Fatal("native search field took focus before the accessibility scan")
+	}
+}
