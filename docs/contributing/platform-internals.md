@@ -226,6 +226,15 @@ backends warp the pointer and let the compositor infer the drag.
 | **Global hotkeys**    | One shared CGEventTap  | `XGrabKey`              | Chord matcher on the evdev proxy         | `RegisterHotKey`        |
 | **Modifier passthrough** | event tap forwards or blocks | none, grab is all-or-nothing | evdev proxy only              | `WH_KEYBOARD_LL` forwards or blocks |
 
+**macOS capture intent.** The in-mode tap starts disabled before its run-loop
+source is attached. Enable and disable record the requested state immediately;
+queued main-thread updates and timeout recovery apply that latest state. A
+timeout delivered after mode exit cannot turn capture back on. If an unwanted
+tap nevertheless receives input, it returns the event unchanged and disables
+itself. Pausing also releases capture when the mode already reports idle, so
+pause can recover native state that has drifted from the application's state.
+The separate global-hotkey listener remains available while enabled and idle.
+
 **A held global hotkey** is one press and one release on every platform, which
 is what `[held_repeat]` repeats between.
 

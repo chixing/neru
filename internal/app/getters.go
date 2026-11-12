@@ -81,8 +81,13 @@ func (a *App) Events() *event.Bus {
 // enabled-state change. Call it from unlocked context, because ExitMode takes
 // the handler's lock.
 func (a *App) applyEnabled(enabled bool) {
-	if !enabled && a.modes != nil {
-		a.modes.ExitMode()
+	if !enabled {
+		if a.modes != nil {
+			a.modes.ExitMode()
+		}
+		// Idle mode teardown is a no-op. Still release capture so pausing
+		// recovers a native tap whose state drifted from the mode's state.
+		a.disableEventTap()
 	}
 
 	if a.hotkeys != nil {

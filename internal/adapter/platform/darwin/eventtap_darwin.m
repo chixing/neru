@@ -10,11 +10,13 @@
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <os/lock.h>
+#include <stdatomic.h>
 
 #pragma mark - Type Definitions
 
 typedef struct {
 	CFMachPortRef eventTap;                            ///< Event tap reference
+	atomic_bool desiredEnabled;                        ///< Capture requested by the current mode
 	CFRunLoopSourceRef runLoopSource;                  ///< Run loop source
 	EventTapCallback callback;                         ///< Callback function
 	EventTapPassthroughCallback passthroughCallback;   ///< Called when a modifier shortcut passes through
@@ -312,13 +314,23 @@ CGEventRef eventTapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef 
 		return event;
 
 	@autoreleasepool {
-		// macOS disables the event tap if the callback takes too long.
-		// Re-enable it automatically so key events keep flowing.
+		// A timeout can arrive after an intentional disable. Recover only the
+		// capture a mode still wants, never resurrect an idle or paused tap.
 		// This must be checked first, because timeout is a special pseudo-event,
 		// not a real input event, so reading arbitrary fields from it
 		// (e.g., kCGEventSourceUserData) is unnecessary and fragile.
 		if (type == kCGEventTapDisabledByTimeout) {
-			CGEventTapEnable(context->eventTap, true);
+			CGEventTapEnable(context->eventTap, atomic_load_explicit(&context->desiredEnabled, memory_order_acquire));
+			return event;
+		}
+		if (type == kCGEventTapDisabledByUserInput) {
+			return event;
+		}
+
+		// Disable takes effect even while its main-queue block is pending.
+		// Fail open if WindowServer ever delivers input to an unwanted tap.
+		if (!atomic_load_explicit(&context->desiredEnabled, memory_order_acquire)) {
+			CGEventTapEnable(context->eventTap, false);
 			return event;
 		}
 
@@ -881,6 +893,7 @@ EventTap NeruCreateEventTap(EventTapCallback callback, void *userData) {
 
 	context->callback = callback;
 	context->userData = userData;
+	atomic_init(&context->desiredEnabled, false);
 
 	// Initialize hotkey state with lightweight locks (no dispatch queue overhead)
 	context->hotkeyLookup = [[NSDictionary alloc] init];
@@ -927,6 +940,9 @@ EventTap NeruCreateEventTap(EventTapCallback callback, void *userData) {
 		return NULL;
 	}
 
+	// CGEventTapCreate starts enabled. Close the idle capture window before
+	// attaching a run-loop source, which can be delayed by a busy login.
+	CGEventTapEnable(context->eventTap, false);
 	context->runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, context->eventTap, 0);
 
 	// Add to main run loop once during creation to avoid re-entry on enable
@@ -1198,13 +1214,12 @@ void NeruEnableEventTap(EventTap tap) {
 		return;
 
 	EventTapContext *context = (EventTapContext *)tap;
+	atomic_store_explicit(&context->desiredEnabled, true, memory_order_release);
 
 	dispatch_async(dispatch_get_main_queue(), ^{
-		// Enable immediately. The event tap callback already lets registered
-		// hotkeys pass through (isHotkey check), so there is no need to delay.
-		// Removing the previous 150ms dispatch_after eliminates a dead window
-		// where key events are silently dropped right after mode activation.
-		CGEventTapEnable(context->eventTap, true);
+		// Apply the latest request, not the one this queued block captured.
+		// A later disable must not be undone while the main queue catches up.
+		CGEventTapEnable(context->eventTap, atomic_load_explicit(&context->desiredEnabled, memory_order_acquire));
 	});
 }
 
@@ -1215,10 +1230,11 @@ void NeruDisableEventTap(EventTap tap) {
 		return;
 
 	EventTapContext *context = (EventTapContext *)tap;
+	atomic_store_explicit(&context->desiredEnabled, false, memory_order_release);
 
 	// Disable on main thread to avoid races
 	dispatch_async(dispatch_get_main_queue(), ^{
-		CGEventTapEnable(context->eventTap, false);
+		CGEventTapEnable(context->eventTap, atomic_load_explicit(&context->desiredEnabled, memory_order_acquire));
 	});
 }
 
@@ -1229,6 +1245,7 @@ void NeruDestroyEventTap(EventTap tap) {
 		return;
 
 	EventTapContext *context = (EventTapContext *)tap;
+	atomic_store_explicit(&context->desiredEnabled, false, memory_order_release);
 
 	// Helper block for cleanup tasks that must run on main thread
 	void (^cleanupBlock)(void) = ^{
