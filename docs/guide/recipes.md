@@ -152,6 +152,14 @@ or open hints with search showing:
 ```
 
 - Typing filters by element title, description or value. `Space` is allowed.
+  Type text in another script by its romanization, so `shenzhen` finds 深圳
+  and `boris` finds Борис.
+- The initials of words match too. Each letter lands on the start of the next
+  word or right after the letter before it, so `sas` finds "Save As", `orf`
+  finds "openRecentFile" and `sz` finds 深圳.
+- `Tab` takes the best match first. That is the whole title, then
+  a title that starts with the text, then a word that does, then initials,
+  and last a match inside a word.
 - A label typed after a space narrows the matches to that label. `save a`
   keeps the `save` matches whose label starts with `A`, along with any text
   still matching `save a`. Once one is left, `Return` acts on it.
@@ -159,19 +167,20 @@ or open hints with search showing:
   `Return`. A single match by text alone still waits for `Return`. To turn
   this on only for searches opened with `/`, bind
   `"/" = "action search_hints --confirm-on-label"` under `[hints.hotkeys]`.
-- `Backspace` deletes a character. `Escape` cancels and restores every hint.
-- `Tab` (`action cycle_hint`) moves between matches without running the action.
+- `Backspace` deletes a character. `Escape` cancels. A search started with
+  `--search` exits hints entirely. A search opened with `/` restores every hint.
+- `Tab` moves between matches without running the action. `Shift+Tab` moves back.
 
 `Return` closes the search. What else it does depends on the matches:
 
 | Matches | With `--action`                                   | Without `--action`                      |
 | ------- | ------------------------------------------------- | --------------------------------------- |
-| None    | Every hint comes back                             | Every hint comes back                   |
+| None    | Cancels the search                                | Cancels the search                      |
 | One     | Moves the cursor to it and runs the action        | Moves the cursor to it                  |
-| Several | The matches keep their labels, so type one        | Moves the cursor to the first match     |
+| Several | Selects the match chosen with Tab or shows labels | Selects the match chosen with Tab or shows labels |
 
-Search needs element text, so it does not work with the `contour` or `segment`
-strategy.
+Search needs element text. On macOS the fork also reads text for `contour`
+search. See [personal fork hint search](using-neru.md#personal-fork-hint-search).
 
 ### Wait for a page to load before hints redraw
 
@@ -279,9 +288,10 @@ it with a second key:
 
 Snap searches only the region you zoomed into and leaves the mode open, so
 `Shift+L` still clicks afterwards. The same lines work in `[grid.hotkeys]`
-once a subgrid is open, and in `[bisect.hotkeys]` after a cut. When snap
-finds nothing, `Shift+Tab` still clicks, at the grid's selection, so the key
-works the same with or without an element to snap to. To skip the click
+once a full label picks a cell, with or without the subgrid, and in
+`[bisect.hotkeys]` after a cut. When snap finds nothing, `Shift+Tab` still
+clicks, at the grid's selection, so the key works the same with or without an
+element to snap to. To skip the click
 instead, write `"action snap --bail-on-error"`.
 
 ### Walk from element to element
@@ -382,6 +392,29 @@ Swap recursive grid layouts. `--no-reload` defers the reload to the last step:
 
 `config set` values persist in the override file. See
 [Configuring Neru](configuring.md#how-the-layers-combine).
+
+### Open vim mode straight into a jump
+
+Open vim mode with the jump already waiting for text, by feeding it `s`
+once it is open:
+
+```toml
+[hotkeys]
+"Primary+Shift+V" = ["vim", "action feed --mode s"]
+```
+
+### Read the screen again before each jump
+
+Have `s` read the screen first, so the jump searches the page as it is now
+rather than as it was when vim mode opened:
+
+```toml
+[vim.keymaps.normal]
+"s" = "<Plug>(read-screen)<Plug>(jump)"
+```
+
+See [vim keymaps](../reference/configuration.md#vim-keymaps) for the other
+commands a mapping can run.
 
 ### Leave global hotkeys to another tool
 

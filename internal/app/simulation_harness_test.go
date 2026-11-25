@@ -36,6 +36,7 @@ import (
 	"github.com/y3owk1n/neru/internal/domain/element"
 	"github.com/y3owk1n/neru/internal/domain/event"
 	domainGrid "github.com/y3owk1n/neru/internal/domain/grid"
+	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 	"github.com/y3owk1n/neru/internal/ports"
 	"github.com/y3owk1n/neru/internal/ports/mocks"
 )
@@ -185,10 +186,16 @@ type simOverlayPort struct {
 	// monitor picker. Showing that frame reports CodeNotSupported, the way an
 	// adapter over a backend without the capability does.
 	refuseMonitorSelect bool
+	// refuseVim stands in for a backend with no vim surface, which is every
+	// backend but the macOS one.
+	refuseVim bool
 	// refuseHintSearch stands in for a backend that draws no hint search
 	// badge. The draw reports CodeNotSupported, the way the Linux overlay does
 	// for a search input no backend there implements.
 	refuseHintSearch bool
+	// vimStatusHeight is how tall the vim status bar it reports is. Zero
+	// reports none.
+	vimStatusHeight int
 
 	mu sync.Mutex
 	// visible is whether the overlay is on screen, and shows counts how many
@@ -208,6 +215,7 @@ type simOverlayPort struct {
 	gridDraws          []simGridDraw
 	recursiveGridDraws []image.Rectangle
 	bisectDraws        []ports.BisectFrame
+	vimDraws           []ports.VimFrame
 	monitorDraws       [][]ports.MonitorSelectTarget
 
 	matchPrefixes []string
@@ -271,6 +279,10 @@ func (m *simOverlayPort) ShowFrame(_ context.Context, frame ports.Frame) error {
 		return derrors.New(derrors.CodeNotSupported, "no monitor picker on this backend")
 	}
 
+	if _, isVim := frame.(ports.VimFrame); isVim && m.refuseVim {
+		return derrors.New(derrors.CodeNotSupported, "no vim surface on this backend")
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -323,6 +335,16 @@ func (m *simOverlayPort) DrawHintSearch(search ports.HintSearch) error {
 }
 
 func (m *simOverlayPort) HideHintSearch() {}
+
+// VimStatusBar reports a bar vimStatusHeight tall at the bottom of region,
+// or none.
+func (m *simOverlayPort) VimStatusBar(region image.Rectangle) image.Rectangle {
+	if m.vimStatusHeight <= 0 {
+		return image.Rectangle{}
+	}
+
+	return image.Rect(region.Min.X, region.Max.Y-m.vimStatusHeight, region.Max.X, region.Max.Y)
+}
 
 // HintSearchBounds reports a search box for a platform field to sit over. A
 // refusing overlay draws no box, so it reports none.
@@ -454,13 +476,6 @@ func (m *simOverlayPort) SetHiddenInScreenShare(hidden bool) {
 	m.screenShareHidden = append(m.screenShareHidden, hidden)
 }
 
-// SetKeyboardCaptureEnabled does nothing, and no journey can make it fire, because the
-// caller is gated on the event tap reporting that the overlay holds the
-// keyboard, which only the Linux evdev tap does and the simulated tap never
-// does. It is spelled out rather than inherited so that stays a stated fact
-// about the fixture rather than a method silently swallowing a call.
-func (m *simOverlayPort) SetKeyboardCaptureEnabled(_ bool) {}
-
 // Destroy releases the overlay. What it records is the one thing a shutdown
 // journey needs to observe. From here on there is no surface, so anything that
 // still reaches this port is reaching one that has been freed.
@@ -524,6 +539,8 @@ func (m *simOverlayPort) recordLocked(frame ports.Frame) {
 		m.recursiveGridDraws = append(m.recursiveGridDraws, drawn.Bounds)
 	case ports.BisectFrame:
 		m.bisectDraws = append(m.bisectDraws, drawn)
+	case ports.VimFrame:
+		m.vimDraws = append(m.vimDraws, drawn)
 	case ports.MonitorSelectFrame:
 		m.monitorDraws = append(m.monitorDraws, slices.Clone(drawn.Targets))
 	case ports.ScrollFrame:
@@ -552,6 +569,14 @@ func (m *simOverlayPort) setIndicatorVisible(indicator ports.Indicator, visible 
 
 // drawnModeNames reports every mode with content on screen right now, sorted
 // so a failure message reads the same way twice.
+// vimDrawCount reports how many vim frames were drawn.
+func (m *simOverlayPort) vimDrawCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return len(m.vimDraws)
+}
+
 func (m *simOverlayPort) drawnModeNames() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -643,6 +668,18 @@ func (m *simOverlayPort) lastBisectFrame() (ports.BisectFrame, bool) {
 	}
 
 	return m.bisectDraws[len(m.bisectDraws)-1], true
+}
+
+// lastVimFrame returns the most recent vim frame, and whether one was drawn.
+func (m *simOverlayPort) lastVimFrame() (ports.VimFrame, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.vimDraws) == 0 {
+		return ports.VimFrame{}, false
+	}
+
+	return m.vimDraws[len(m.vimDraws)-1], true
 }
 
 // showCount reports how many times a frame was put on screen with the window
@@ -839,13 +876,16 @@ type simClick struct {
 // simAXPort plays the role of the OS accessibility tree. It serves a fixed
 // set of fixture elements and records every action the app performs.
 type simAXPort struct {
-	mu             sync.Mutex
-	elements       []*element.Element
-	clicks         []simClick
-	elementActions []action.Type
-	scrolls        []image.Point
-	scrollMods     []action.Modifiers
-	releases       int
+	mu         sync.Mutex
+	elements   []*element.Element
+	clicks     []simClick
+	scrolls    []image.Point
+	scrollMods []action.Modifiers
+	releases   int
+
+	// clickErr is what every click at a point answers, as when the desktop
+	// refuses a synthetic click.
+	clickErr error
 
 	// filters is the element filter each scan was handed, in order.
 	filters []ports.ElementFilter
@@ -872,6 +912,10 @@ type simAXPort struct {
 	// scanGate, when a journey sets it, runs before a scan answers, outside
 	// the port's lock, so the journey can hold a scan open.
 	scanGate func()
+
+	// focusGate, when a journey sets it, runs before the next focused-app
+	// lookup answers, outside the port's lock, and only for that one lookup.
+	focusGate func()
 }
 
 var _ ports.AccessibilityPort = (*simAXPort)(nil)
@@ -910,19 +954,6 @@ func (a *simAXPort) UpdateMissionControlDetection(enabled bool) {
 	a.mcDetection = enabled
 }
 
-func (a *simAXPort) PerformAction(
-	_ context.Context,
-	_ *element.Element,
-	actionType action.Type,
-) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	a.elementActions = append(a.elementActions, actionType)
-
-	return nil
-}
-
 func (a *simAXPort) PerformActionAtPoint(
 	_ context.Context,
 	actionType action.Type,
@@ -934,7 +965,7 @@ func (a *simAXPort) PerformActionAtPoint(
 
 	a.clicks = append(a.clicks, simClick{action: actionType, point: point, modifiers: modifiers})
 
-	return nil
+	return a.clickErr
 }
 
 func (a *simAXPort) Scroll(
@@ -962,6 +993,15 @@ func (a *simAXPort) ReleaseHeldButtons(_ context.Context) error {
 
 func (a *simAXPort) FocusedAppBundleID(_ context.Context) (string, error) {
 	a.mu.Lock()
+	gate := a.focusGate
+	a.focusGate = nil
+	a.mu.Unlock()
+
+	if gate != nil {
+		gate()
+	}
+
+	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.focusedAppQueries++
@@ -986,6 +1026,14 @@ func (a *simAXPort) setPrime(prime func(ctx context.Context, bundleID string) (b
 	defer a.mu.Unlock()
 
 	a.prime = prime
+}
+
+// setFocusGate makes the next focused-app lookup run gate before it answers.
+func (a *simAXPort) setFocusGate(gate func()) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.focusGate = gate
 }
 
 // setScanGate makes every scan run gate before it answers.
@@ -1036,6 +1084,14 @@ func (a *simAXPort) focusedAppQueryCount() int {
 	defer a.mu.Unlock()
 
 	return a.focusedAppQueries
+}
+
+// failClicks makes every later click at a point fail with err.
+func (a *simAXPort) failClicks(err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.clickErr = err
 }
 
 func (a *simAXPort) recordedClicks() []simClick {
@@ -1213,8 +1269,40 @@ type simHarness struct {
 	// it rather than by poking the accessibility fake alone, because the
 	// activation event is the half of a focus change that reaches the app.
 	watcher *mocks.MockAppWatcherPort
-	desktop *simDesktop
-	runDone chan error
+	// clipboard records what copy_text wrote.
+	clipboard *mocks.MockClipboardPort
+	keyFeed   *mocks.MockKeyFeedPort
+	desktop   *simDesktop
+	// system is the platform system port, for a journey that changes what
+	// the platform answers, such as a screen capture permission not granted.
+	system *mocks.MockSystemPort
+	// screenCapture is the fixture desktop's screen-recording permission.
+	screenCapture *simScreenCapture
+	runDone       chan error
+}
+
+// simScreenCapture is the screen-recording permission the system port
+// reports. It starts granted. A journey that denies it answers the permission
+// dialog through consents, and a granted answer grants it, as macOS does.
+type simScreenCapture struct {
+	denied   atomic.Bool
+	requests atomic.Int32
+	consents chan ports.ScreenCaptureConsent
+}
+
+func (s *simScreenCapture) request(ctx context.Context) ports.ScreenCaptureConsent {
+	s.requests.Add(1)
+
+	select {
+	case consent := <-s.consents:
+		if consent == ports.ScreenCaptureGranted {
+			s.denied.Store(false)
+		}
+
+		return consent
+	case <-ctx.Done():
+		return ports.ScreenCaptureCanceled
+	}
 }
 
 // focusApp switches the fixture desktop to another application. The desktop
@@ -1426,7 +1514,7 @@ func newSimHarnessHeadlessOverlay(
 		cfg,
 		nil,
 		displays,
-		&simOverlayPort{refuseMonitorSelect: true},
+		&simOverlayPort{refuseMonitorSelect: true, refuseVim: true},
 		nil,
 	)
 }
@@ -1479,6 +1567,8 @@ func buildSimHarness(
 	desktop := &simDesktop{}
 	desktop.set(displays)
 
+	screenCapture := &simScreenCapture{consents: make(chan ports.ScreenCaptureConsent)}
+
 	// The active screen is wherever the cursor currently is, matching how the
 	// real system port resolves it.
 	activeBounds := func() image.Rectangle {
@@ -1526,7 +1616,14 @@ func buildSimHarness(
 		CursorPositionFunc: func(_ context.Context) (image.Point, error) {
 			return cursor.position(), nil
 		},
+		CheckScreenCapturePermissionFunc: func(context.Context) bool {
+			return !screenCapture.denied.Load()
+		},
+		RequestScreenCapturePermissionFunc: screenCapture.request,
 	}
+
+	clipboard := &mocks.MockClipboardPort{}
+	keyFeed := &mocks.MockKeyFeedPort{}
 
 	application, err := app.New(
 		app.WithConfig(cfg),
@@ -1541,26 +1638,33 @@ func buildSimHarness(
 		app.WithOverlayPort(overlayPort),
 		app.WithSystemPort(system),
 		app.WithAccessibility(axPort),
+		app.WithMouse(axPort),
 		app.WithVisionPort(vision),
+		app.WithClipboard(clipboard),
+		app.WithKeyFeed(keyFeed),
 	)
 	if err != nil {
 		tb.Fatalf("app.New failed: %v", err)
 	}
 
 	sim := &simHarness{
-		t:          tb,
-		app:        application,
-		appearance: appearance,
-		overlay:    recorder,
-		ax:         axPort,
-		vision:     vision,
-		textInput:  textInput,
-		cursor:     cursor,
-		hotkeys:    hotkeys,
-		tap:        tap,
-		watcher:    watcher,
-		desktop:    desktop,
-		runDone:    make(chan error, 1),
+		t:             tb,
+		app:           application,
+		appearance:    appearance,
+		overlay:       recorder,
+		ax:            axPort,
+		vision:        vision,
+		system:        system,
+		textInput:     textInput,
+		cursor:        cursor,
+		hotkeys:       hotkeys,
+		tap:           tap,
+		clipboard:     clipboard,
+		keyFeed:       keyFeed,
+		watcher:       watcher,
+		desktop:       desktop,
+		screenCapture: screenCapture,
+		runDone:       make(chan error, 1),
 	}
 
 	// Subscribed before Run, so the ready event cannot be missed.
@@ -1634,7 +1738,7 @@ func (h *simHarness) press(keys ...string) {
 func (h *simHarness) pressHotkey(binding string) {
 	h.t.Helper()
 
-	canonical := config.CanonicalHotkeyForPlatform(binding)
+	canonical := keyvocab.CanonicalHotkeyForPlatform(binding)
 
 	var callback ports.HotkeyCallback
 

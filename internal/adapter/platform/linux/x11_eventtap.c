@@ -36,9 +36,11 @@ int neru_eventtap_grab_keyboard(Display *display) {
 	    CurrentTime);
 }
 
+// Synced, so a key another connection sends after this returns reaches the
+// focused window instead of the grab.
 void neru_eventtap_ungrab_keyboard(Display *display) {
 	XUngrabKeyboard(display, CurrentTime);
-	XFlush(display);
+	XSync(display, False);
 }
 
 int neru_eventtap_pending(Display *display) { return XPending(display); }
@@ -139,9 +141,8 @@ static KeySym neru_eventtap_modifier_keysym(const char *modifier) {
 }
 
 int neru_eventtap_post_modifier(const char *modifier, int is_down) {
-	// Open a fresh Display connection per call rather than share the grab Display
-	// used by runX11(). Xlib is not thread-safe without XInitThreads, so XTest
-	// injection gets a connection of its own.
+	// A fresh connection per call, not runX11()'s grab Display, because Xlib is
+	// not thread-safe without XInitThreads.
 	Display *display = neru_eventtap_open();
 	if (display == NULL)
 		return 0;

@@ -148,6 +148,14 @@ func (h *handlerState) handleKeyPress(key string) {
 		key = h.stripStickyModifiersFromKey(key, activeMods)
 	}
 
+	// A hint character held with a select_with modifier set types into the
+	// label before any binding is asked. Validation refuses a binding that
+	// such a chord would shadow. Sticky modifiers are already stripped, so only
+	// physically held ones select an entry.
+	if h.routeSelectWithLabelKey(key) {
+		return
+	}
+
 	// Check for per-mode hotkeys before mode-specific handling.
 	// If sticky modifiers were stripped, resolve bindings with the stripped key
 	// only. Sticky modifiers are for the next action, not Neru's own navigation
@@ -213,16 +221,23 @@ func (h *Handler) ModeHotkeyOverride(key string) ([]string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.appState.CurrentMode() == domain.ModeIdle {
+	if h.appState.CurrentMode() == domain.ModeIdle || h.vimTyping() {
 		return nil, false
 	}
 
-	binding, ok := h.settledKeymap().Lookup(config.NormalizeKeyForComparison(key))
+	binding, ok := h.settledKeymap().Lookup(keyvocab.NormalizeKeyForComparison(key))
 	if !ok {
 		return nil, false
 	}
 
 	return binding.Steps, true
+}
+
+// vimTyping reports whether vim is typing into the app. Every key is then the
+// app's, so a key bound in [vim.hotkeys] still types and only the global
+// chords answer. Caller must hold h.mu.
+func (h *handlerState) vimTyping() bool {
+	return h.appState.CurrentMode() == domain.ModeVim && h.vim != nil && h.vim.typing
 }
 
 // stripStickyModifiersFromKey removes any currently active sticky modifiers from the
@@ -285,12 +300,17 @@ func (h *handlerState) handleHotkey(key string) (
 	}
 
 	keymap, globalHotkeys := h.settledKeymaps()
+
+	if h.vimTyping() {
+		keymap = config.Keymap{}
+	}
+
 	if keymap.Len() == 0 && globalHotkeys.Len() == 0 {
 		return nil, "", false
 	}
 
 	currentModeName := domain.ModeString(h.appState.CurrentMode())
-	normalizedKey := config.NormalizeKeyForComparison(key)
+	normalizedKey := keyvocab.NormalizeKeyForComparison(key)
 
 	// Phase 1: complete pending sequence if available and still valid.
 	if h.hotkeyLastKey != "" {

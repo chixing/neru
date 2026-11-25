@@ -7,8 +7,8 @@ import (
 
 	"go.uber.org/zap"
 
-	configpkg "github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/domain"
+	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 )
 
 // Manager handles recursive-grid navigation state and input processing.
@@ -20,27 +20,6 @@ type Manager struct {
 	depthKeys map[int]string        // Per-depth key overrides (sparse)
 	dims      domain.GridDimensions // Default shape at depths with no override
 	callbacks SelectionCallbacks    // What the selection tells its owner
-}
-
-// NewManager creates a recursive-grid manager with default dimensions (3x3)
-// and default size/depth limits. Used primarily in tests.
-func NewManager(
-	screenBounds image.Rectangle,
-	keys string,
-	callbacks SelectionCallbacks,
-	logger *zap.Logger,
-) *Manager {
-	return NewManagerWithLayers(
-		screenBounds,
-		keys,
-		25, //nolint:mnd
-		25, //nolint:mnd
-		10, //nolint:mnd
-		DefaultDimensions(),
-		nil, nil,
-		callbacks,
-		logger,
-	)
 }
 
 // NewManagerWithLayers creates a manager with a custom shape and optional
@@ -147,9 +126,7 @@ func NewManagerWithLayers(
 	}
 
 	return &Manager{
-		BaseManager: domain.BaseManager{
-			Logger: logger,
-		},
+		Logger: logger,
 		grid: NewRecursiveGridWithLayers(
 			screenBounds,
 			minSizeWidth,
@@ -170,7 +147,7 @@ func NewManagerWithLayers(
 func (m *Manager) HandleInput(key string) (image.Point, bool) {
 	// Normalize to canonical key form (handles named keys and fullwidth input),
 	// then lowercase for case-insensitive comparisons.
-	key = strings.ToLower(configpkg.NormalizeKeyForComparison(key))
+	key = strings.ToLower(keyvocab.NormalizeKeyForComparison(key))
 
 	cell := m.keyToCell(key)
 	if cell < 0 {
@@ -251,11 +228,6 @@ func (m *Manager) CurrentDepth() int {
 	return m.grid.CurrentDepth()
 }
 
-// IsComplete returns true if the grid cannot be divided further (min size or max depth).
-func (m *Manager) IsComplete() bool {
-	return m.grid.IsComplete()
-}
-
 // CanDivide returns true if the current bounds can be divided further.
 func (m *Manager) CanDivide() bool {
 	return m.grid.CanDivide()
@@ -264,11 +236,6 @@ func (m *Manager) CanDivide() bool {
 // CurrentCenter returns the center point of the current bounds.
 func (m *Manager) CurrentCenter() image.Point {
 	return m.grid.CurrentCenter()
-}
-
-// CellCenter returns the center point for a specific cell.
-func (m *Manager) CellCenter(q Cell) image.Point {
-	return m.grid.CellCenter(q)
 }
 
 // CellBounds returns the bounds for a specific cell.
@@ -348,7 +315,7 @@ func (m *Manager) keyToCell(key string) Cell {
 	idx := 0
 
 	for _, k := range currentKeys {
-		normalizedMapped := strings.ToLower(configpkg.NormalizeKeyForComparison(string(k)))
+		normalizedMapped := strings.ToLower(keyvocab.NormalizeKeyForComparison(string(k)))
 		if strings.EqualFold(normalizedMapped, key) {
 			return Cell(idx)
 		}

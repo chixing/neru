@@ -41,6 +41,9 @@ const (
 	CapabilityCursor CapabilityKey = "cursor"
 	// CapabilityScroll covers scroll injection at the cursor.
 	CapabilityScroll CapabilityKey = "scroll"
+	// CapabilityMouseButtons covers mouse button injection: clicks, presses
+	// and releases at a point.
+	CapabilityMouseButtons CapabilityKey = "mouse_buttons"
 	// CapabilityAccessibility covers clickable-element discovery.
 	CapabilityAccessibility CapabilityKey = "accessibility"
 	// CapabilityOverlay covers native overlay windows.
@@ -55,14 +58,14 @@ const (
 	CapabilityAppWatcher CapabilityKey = "app_watcher"
 	// CapabilityDarkModeDetection covers system dark-mode detection.
 	CapabilityDarkModeDetection CapabilityKey = "dark_mode_detection"
-	// CapabilityTextInput covers the native hint-search text field.
-	CapabilityTextInput CapabilityKey = "text_input"
 	// CapabilityVision covers OCR/vision-based element detection.
 	CapabilityVision CapabilityKey = "vision"
 	// CapabilityKeyFeed covers synthetic key injection into the focused app.
 	CapabilityKeyFeed CapabilityKey = "key_feed"
 	// CapabilitySystray covers the system tray / notification-area icon.
 	CapabilitySystray CapabilityKey = "systray"
+	// CapabilityClipboard covers writing text to the system clipboard.
+	CapabilityClipboard CapabilityKey = "clipboard"
 )
 
 // PlatformCapabilities describes the current platform support surface.
@@ -77,6 +80,7 @@ type PlatformCapabilities struct {
 	Screen            FeatureCapability
 	Cursor            FeatureCapability
 	Scroll            FeatureCapability
+	MouseButtons      FeatureCapability
 	Accessibility     FeatureCapability
 	Overlay           FeatureCapability
 	Notifications     FeatureCapability
@@ -84,10 +88,10 @@ type PlatformCapabilities struct {
 	KeyboardEventTap  FeatureCapability
 	AppWatcher        FeatureCapability
 	DarkModeDetection FeatureCapability
-	TextInput         FeatureCapability
 	Vision            FeatureCapability
 	KeyFeed           FeatureCapability
 	Systray           FeatureCapability
+	Clipboard         FeatureCapability
 }
 
 // CapabilityEntry pairs a capability with its stable wire key so callers can
@@ -113,6 +117,11 @@ func (c PlatformCapabilities) Entries() []CapabilityEntry {
 		{Key: CapabilityScreen, Field: "Screen", FeatureCapability: c.Screen},
 		{Key: CapabilityCursor, Field: "Cursor", FeatureCapability: c.Cursor},
 		{Key: CapabilityScroll, Field: "Scroll", FeatureCapability: c.Scroll},
+		{
+			Key:               CapabilityMouseButtons,
+			Field:             "MouseButtons",
+			FeatureCapability: c.MouseButtons,
+		},
 		{
 			Key:               CapabilityAccessibility,
 			Field:             "Accessibility",
@@ -140,9 +149,9 @@ func (c PlatformCapabilities) Entries() []CapabilityEntry {
 			Field:             "DarkModeDetection",
 			FeatureCapability: c.DarkModeDetection,
 		},
-		{Key: CapabilityTextInput, Field: "TextInput", FeatureCapability: c.TextInput},
 		{Key: CapabilityVision, Field: "Vision", FeatureCapability: c.Vision},
 		{Key: CapabilityKeyFeed, Field: "KeyFeed", FeatureCapability: c.KeyFeed},
 		{Key: CapabilitySystray, Field: "Systray", FeatureCapability: c.Systray},
+		{Key: CapabilityClipboard, Field: "Clipboard", FeatureCapability: c.Clipboard},
 	}
 }

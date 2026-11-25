@@ -210,36 +210,12 @@ var (
 	wndProcCallback = syscall.NewCallback(trayWndProc)
 )
 
-// Title returns the menu item title.
-func (m *MenuItem) Title() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.title
-}
-
-// Disabled returns whether the menu item is disabled.
-func (m *MenuItem) Disabled() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.disabled
-}
-
 // Checked returns whether the menu item is checked.
 func (m *MenuItem) Checked() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	return m.checked
-}
-
-// Hidden returns whether the menu item is hidden.
-func (m *MenuItem) Hidden() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.hidden
 }
 
 // SetTitle sets the menu item title.
@@ -390,20 +366,6 @@ func Quit() {
 
 // SetTitle is a no-op, because Windows tray icons have no inline title text.
 func SetTitle(title string) {}
-
-// SetTooltip sets the tooltip shown when hovering the tray icon.
-func SetTooltip(tooltip string) {
-	trayMu.Lock()
-	defer trayMu.Unlock()
-
-	if trayHWND == 0 {
-		return
-	}
-
-	copyTip(&trayNID, tooltip)
-	trayNID.uFlags = nifMessage | nifIcon | nifTip
-	_ = shellNotify(nimModify, &trayNID)
-}
 
 // SetIcon replaces the tray icon with one built from the passed PNG bytes.
 // The shared component selects a host-appropriate asset, the colored brand

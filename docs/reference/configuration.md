@@ -136,8 +136,8 @@ also accepts two-letter sequences such as `gg`. Neru refuses the file when:
   `"Ctrl+Space"` and `"Control+Space"`. `[hotkeys]` refuses this too. A key
   that matches a default this way replaces the default.
 
-Every built-in mode except `monitor_select` ships these, plus the defaults
-listed in its own section:
+Every built-in mode except `monitor_select` and `vim` ships these, plus the
+defaults listed in its own section:
 
 ```toml
 "Escape"    = "idle"
@@ -155,7 +155,7 @@ listed in its own section:
 ### Per-app hotkey overrides
 
 `[[<mode>.app_configs]]` overrides `[<mode>.hotkeys]` for `hints`, `grid`,
-`recursive_grid`, `bisect`, `scroll` and declared modes
+`recursive_grid`, `bisect`, `vim`, `scroll` and declared modes
 (`[[modes.<name>.app_configs]]`), under the same
 [merging rules](#merging-behavior).
 
@@ -283,7 +283,7 @@ indicator = "Window"
 
 The name is the table key: letters, digits, `_` and `-`, starting with a
 letter. Neru refuses the built-in mode names (`hints`, `grid`,
-`recursive_grid`, `bisect`, `scroll`, `monitor_select`, `idle`) and `mode`. The
+`recursive_grid`, `bisect`, `scroll`, `monitor_select`, `vim`, `idle`) and `mode`. The
 indicator style comes
 from [`[mode_indicator.ui]`](#mode_indicator).
 
@@ -305,26 +305,30 @@ on_mode_exit     = "exec [ \"$NERU_REASON\" = switched ] || sketchybar --trigger
 on_config_reload = "exec [ \"$NERU_OK\" = true ] || say 'Neru config did not load'"
 ```
 
-| Option                           | Type         | Default | Runs when                                                                 |
-| -------------------------------- | ------------ | ------- | ------------------------------------------------------------------------- |
-| `on_mode_enter`                  | string/array | none    | A mode opens                                                              |
-| `on_mode_exit`                   | string/array | none    | A mode closes, including on the way into another one                      |
-| `on_select`                      | string/array | none    | A step you take moves a mode's target, such as a hint label, a grid cell or a recursive grid level, or a [`snap`](cli.md#neru-action-snap) moves the cursor |
-| `on_app_focus`                   | string/array | none    | Another application comes to the front                                    |
-| `on_enable`                      | string/array | none    | Neru resumes, such as on `neru start`                                     |
-| `on_disable`                     | string/array | none    | Neru pauses, such as on `neru stop`                                       |
-| `on_config_reload`               | string/array | none    | A config reload finishes, whether or not the new file loaded              |
-| `on_mission_control_activated`   | string/array | none    | Mission Control opens. macOS only, needs `hints.detect_mission_control`   |
-| `on_mission_control_deactivated` | string/array | none    | Mission Control closes. macOS only, needs `hints.detect_mission_control`  |
-| `on_scroll_invert`               | string/array | none    | Scroll inversion switches on or off                                       |
-| `on_screen_share_hide`           | string/array | none    | `toggle-screen-share` switches on or off. macOS and Windows only, since nothing hides the overlay on Linux |
-| `on_cursor_save`                 | string/array | none    | `save_cursor_pos` saves a position                                        |
-| `on_cursor_restore`              | string/array | none    | `restore_cursor_pos` takes a saved position, which empties its slot       |
-| `on_sticky_modifiers`            | string/array | none    | A sticky modifier is armed or released. Needs `sticky_modifiers.enabled`  |
-| `on_monitor_move`                | string/array | none    | `move_monitor` or `monitor_select` moves the cursor to another display    |
-| `on_screen_change`               | string/array | none    | The displays change, such as on a dock, an undock or a wake               |
-| `on_ready`                       | string/array | none    | The daemon has started and takes hotkeys                                  |
-| `on_quit`                        | string/array | none    | The daemon starts to shut down. Runs `exec` steps only                    |
+<!-- BEGIN GENERATED HOOKS: edit internal/domain/event/catalog.go, then run `just genhookref` -->
+
+| Option | Type | Default | Runs when |
+| ------ | ---- | ------- | --------- |
+| `on_mode_enter` | string/array | none | A mode opens |
+| `on_mode_exit` | string/array | none | A mode closes, including on the way into another one |
+| `on_select` | string/array | none | A step you take moves a mode's target, such as a hint label, a grid cell or a recursive grid level, or a `snap` moves the cursor |
+| `on_app_focus` | string/array | none | Another application comes to the front |
+| `on_enable` | string/array | none | Neru resumes, such as on `neru start` |
+| `on_disable` | string/array | none | Neru pauses, such as on `neru stop` |
+| `on_config_reload` | string/array | none | A config reload finishes, whether or not the new file loaded |
+| `on_mission_control_activated` | string/array | none | Mission Control opens. macOS only, needs `hints.detect_mission_control` |
+| `on_mission_control_deactivated` | string/array | none | Mission Control closes. macOS only, needs `hints.detect_mission_control` |
+| `on_scroll_invert` | string/array | none | Scroll inversion switches on or off |
+| `on_screen_share_hide` | string/array | none | `toggle-screen-share` switches on or off. macOS and Windows only, since nothing hides the overlay on Linux |
+| `on_cursor_save` | string/array | none | `save_cursor_pos` saves a position |
+| `on_cursor_restore` | string/array | none | `restore_cursor_pos` takes a saved position, which empties its slot |
+| `on_sticky_modifiers` | string/array | none | A sticky modifier is armed or released. Needs `sticky_modifiers.enabled` |
+| `on_monitor_move` | string/array | none | `move_monitor` or `monitor_select` moves the cursor to another display |
+| `on_screen_change` | string/array | none | The displays change, such as on a dock, an undock or a wake |
+| `on_ready` | string/array | none | The daemon has started and takes hotkeys |
+| `on_quit` | string/array | none | The daemon starts to shut down. Runs `exec` steps only |
+
+<!-- END GENERATED HOOKS -->
 
 A reload takes effect from the next event.
 
@@ -363,19 +367,24 @@ With it on, `neru config validate` warns about each deprecated key set.
 `exec` steps get the event as environment variables. Each is set only for the
 events that carry it.
 
-| Variable         | Set for                         | Value                                                            |
-| ---------------- | ------------------------------- | ---------------------------------------------------------------- |
-| `NERU_EVENT`     | every hook                      | The event, such as `mode_enter`                                  |
-| `NERU_MODE`      | `on_mode_enter`, `on_mode_exit`, `on_select` | The mode, named as `neru status` names it           |
-| `NERU_REASON`    | `on_mode_exit`                  | `completed` after a selection, `switched` when another mode opens in its place, else `canceled` |
-| `NERU_ACTION`    | `on_select`, and `on_mode_exit` when `completed` | The action the selection ran, such as `left_click`, or `left_click,left_click` for a chain, or `snap` for a snap. Unset when it ran none, such as for a binding with no `--action` |
-| `NERU_BUNDLE_ID` | `on_app_focus`                  | The application, as [`bundle_id`](#app-identity-across-platforms-bundle_id) names it |
-| `NERU_OK`        | `on_config_reload`              | `true` or `false`                                                |
-| `NERU_ON`        | `on_scroll_invert`, `on_screen_share_hide` | `true` when switched on, else `false`                 |
-| `NERU_SLOT`      | `on_cursor_save`, `on_cursor_restore` | The cursor slot, `default` when none was named             |
-| `NERU_X`, `NERU_Y` | `on_cursor_save`, `on_select` | The position saved, or the point selected                         |
-| `NERU_MODIFIERS` | `on_sticky_modifiers`           | The set held now, such as `cmd,shift`, in the spelling `--modifier` takes. Empty when none is |
-| `NERU_MONITOR`   | `on_monitor_move`               | The display, as `move_monitor --name` takes it                   |
+<!-- BEGIN GENERATED HOOK VARIABLES: edit internal/domain/event/catalog.go, then run `just genhookref` -->
+
+| Variable | Set for | Value |
+| -------- | ------- | ----- |
+| `NERU_EVENT` | every hook | The event, such as `mode_enter` |
+| `NERU_MODE` | `on_mode_enter`, `on_mode_exit`, `on_select` | The mode, named as `neru status` names it |
+| `NERU_REASON` | `on_mode_exit` | `completed` after a selection, `switched` when another mode opens in its place, else `canceled` |
+| `NERU_ACTION` | `on_mode_exit`, `on_select` | The action the selection ran, such as `left_click`, or `left_click,left_click` for a chain, or `snap` for a snap. `on_mode_exit` sees it only when `NERU_REASON` is `completed`. Unset when it ran none, such as for a binding with no `--action` |
+| `NERU_BUNDLE_ID` | `on_app_focus` | The application, as `bundle_id` names it |
+| `NERU_OK` | `on_config_reload` | `true` or `false` |
+| `NERU_ON` | `on_scroll_invert`, `on_screen_share_hide` | `true` when switched on, else `false` |
+| `NERU_SLOT` | `on_cursor_save`, `on_cursor_restore` | The cursor slot, `default` when none was named |
+| `NERU_X` | `on_select`, `on_cursor_save` | The x of the position saved, or of the point selected |
+| `NERU_Y` | `on_select`, `on_cursor_save` | The y of the position saved, or of the point selected |
+| `NERU_MODIFIERS` | `on_sticky_modifiers` | The set held now, such as `cmd,shift`, in the spelling `--modifier` takes. Empty when none is |
+| `NERU_MONITOR` | `on_monitor_move` | The display, as `move_monitor --name` takes it |
+
+<!-- END GENERATED HOOK VARIABLES -->
 
 A binding's `--on-exit` steps get the same variables as the `on_select` hook
 for that selection, so `NERU_EVENT` is `select`. They are not a hook, so they
@@ -582,6 +591,7 @@ font_size = 12
 | `capture_scope`                    | string       | `"window"`               | Region `vision`, `contour` and `segment` scan: `"window"` (the screen if nothing is focused) or `"screen"`. Overridable per app and with `neru hints --capture-scope` |
 | `hint_characters`                  | string       | `"asdfghjkl"`            | Characters used for labels. Refused if empty, shorter than 2, non-ASCII, or with a repeated character |
 | `label_direction`                  | string       | `"normal"`               | `"normal"` or `"reverse"`, see [Choosing a label direction](#choosing-a-label-direction). Overridable per app and with `neru hints --label-direction`      |
+| `label_alternation`                | string       | `"none"`                 | `"none"` or `"halves"`, see [Alternating hands](#alternating-hands) |
 | `max_depth`                        | int          | `50`                     | Deepest accessibility tree level to read, `0` for unlimited                                                                                                               |
 | `include_menubar_hints`            | bool         | `false`                  | Show hints on menubar items                                                                                                                                |
 | `include_dock_hints`               | bool         | `false`                  | Show hints on Dock items, and on Mission Control's windows and desktops while `detect_mission_control` is on                                              |
@@ -596,6 +606,7 @@ font_size = 12
 | `clickable_roles`                  | array        | shared semantic defaults | Roles that generate hints. See [Clickable roles](#clickable-roles)                                                                                         |
 | `ignore_clickable_check`           | bool         | `false`                  | Hint elements of the clickable roles even when the app reports them as disabled. On macOS it also skips the press-action, hidden and hit tests |
 | `visible_check_enabled`            | bool         | `false`                  | Enable visibility hit-test (slower but fewer noisy hints)                                                                                                  |
+| `select_with`                      | table        | none                     | Steps to run in place of the session's `--action` when a label is finished with modifiers held. See [Select with modifiers](#select-with-modifiers). Overridable per app |
 
 #### Choosing a label direction
 
@@ -612,6 +623,21 @@ keystrokes. Use `reverse` when many hints cluster in one region or you
 regularly need more than `len(hint_characters)` hints, since it spreads first
 characters evenly. Set it per app in the [per-app config](#hints-per-app-config)
 or per activation with [`neru hints --label-direction`](cli.md#neru-hints).
+
+#### Alternating hands
+
+`label_alternation = "halves"` makes each key of a multi-character label come
+from the opposite hand to the key before it. The first half of
+`hint_characters` is one hand and the second half the other, with the extra
+character in the first half for an odd count. So write each hand's characters
+together. The default `asdfghjkl` splits into `asdfg` and `hjkl`, and order
+within each half still sets which keys are preferred.
+
+Alternation fits fewer labels of each length. With L and R characters in the
+two halves and N in all, it applies from N+1 hints up to `L*R*N`, which is 180
+for the default. Labels reach three characters after `2*L*R` hints (40)
+instead of after `N*N` (81). Above `L*R*N` hints, or with fewer than four characters, labels
+are the same as with `"none"`. It works with both label directions.
 
 ### Clickable roles
 
@@ -810,6 +836,52 @@ targets = "phrases"
 "Shift+Tab" = "action cycle_hint --backward"
 ```
 
+### Select with modifiers
+
+`[hints.select_with]` lets the key that finishes a label choose what the
+selection does. Hold a modifier set while typing that key, and the steps for
+that set run in place of the session's `--action`.
+
+```toml
+[hints.select_with]
+ctrl = ["action session_action", "idle"]   # the session's action, then exit
+alt = "action right_click"
+cmd = "action left_click --modifier cmd"   # open a link in a new tab
+"ctrl+alt" = ["action copy_text", "idle"]  # copy the hint's text, then exit
+```
+
+- **Keys** are modifier sets: one or more of `cmd`, `ctrl`, `alt`, `shift` and
+  `primary`, joined with `+`, as in `"cmd+shift"`. Aliases such as `command`,
+  `control` and `option` work too. A set matches only when exactly those
+  modifiers are held.
+- **Values** are steps, written as in a hotkey binding, so actions, macros,
+  `exec` and mode commands all work. They run after the cursor moves to the
+  hint, so a click step acts on it.
+- **`action session_action`** runs the session's own `--action` there, with
+  its `--modifier`. Use it when an entry should do what the session does and
+  then something more, such as exiting a `--repeat` session in one key.
+- **Afterwards** the session ends as its `--action` would have. A `--repeat`
+  session, or one opened without `--action`, reopens hints. Any other session
+  exits and runs its binding's `--on-exit`. A step that leaves the mode ends
+  it early. Leaving to idle still runs `--on-exit`, and entering another mode
+  runs nothing. Until the steps finish, Neru ignores labels you type, while
+  bindings such as `Escape` still work.
+- **Hold the modifier for the whole label if you like.** Every hint character
+  typed with a set that has an entry goes into the label, and only the key
+  that finishes it decides. A chord whose modifiers have no entry is a key
+  binding as usual.
+- **Neru refuses a binding for one of those chords at load.** A mapped set
+  plus each hint character is label input, so a binding for any of those
+  chords could never run. Rebind the key or drop the character from
+  `hint_characters`. With the defaults, `shift` collides with `Shift+L`, since
+  `l` is a hint character. Neru checks every hotkey table in force, global and
+  per-app included.
+- **Only a physically held modifier selects an entry.** A sticky modifier
+  still means "hold this on the next click", so a label typed with one runs
+  the session's action holding it.
+- On Linux a held Shift turns a symbol hint character into its shifted
+  symbol, so use letters with `shift`.
+
 ### Hints per-app config
 
 An empty string or an unset bool keeps the `[hints]` value. How an entry
@@ -825,6 +897,7 @@ applies is under [Per-app hotkey overrides](#per-app-hotkey-overrides).
 | `ignore_clickable_check`     | bool   | Hint elements of the clickable roles in this app even when it reports them as disabled. On macOS it also skips the press-action, hidden and hit tests |
 | `visible_check_enabled`      | bool   | Enable visibility hit-test for this app                                                      |
 | `hotkeys`                    | map    | [per-app hotkey overrides](#per-app-hotkey-overrides)                                        |
+| `select_with`                | map    | Entries that replace [`select_with`](#select-with-modifiers) ones for the same modifier set while this app is focused. `"__disabled__"` removes one |
 
 ## [grid]
 
@@ -1055,6 +1128,132 @@ accepted and do nothing.
 `[[bisect.app_configs]]` takes `bundle_id`, `capture_scope` and
 [`hotkeys`](#per-app-hotkey-overrides), as in [grid](#grid).
 
+## [vim]
+
+Settings for vim mode. How the mode behaves is in
+[`neru vim`](cli.md#neru-vim).
+
+```toml
+[vim]
+capture_scope = "screen"
+
+[vim.ui]
+cursor_color = "#FF8800AA"
+
+[vim.keymaps.normal]
+"<Space>j" = "<Plug>(jump)"
+
+[vim.hotkeys]
+"Ctrl+c" = "idle"
+```
+
+### Vim options
+
+| Option          | Type   | Default    | Description                                                                                         |
+| --------------- | ------ | ---------- | --------------------------------------------------------------------------------------------------- |
+| `enabled`       | bool   | `true`     | Turn the mode on or off                                                                             |
+| `capture_scope` | string | `"window"` | What is read: `window` (the screen if nothing is focused) or `screen`. `--capture-scope` overrides it |
+
+### Vim UI
+
+| Option                    | Type   | Default | Description                                                                                                  |
+| ------------------------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `font_size`               | int    | `13`    | Status bar and notice font size                                                                              |
+| `font_family`             | string | `""`    | Status bar and notice font. Accepts [generic aliases](#fonts), and empty means a monospaced face             |
+| `cursor_color`            | color  | derived | Bar down the cursor's left edge. The cursor's fill is this color at about a third of its alpha. Also the fill of the cursor's character in the lens |
+| `selection_color`         | color  | derived | Fill of the visual selection                                                                                 |
+| `match_color`             | color  | derived | Underline of each search match, and outline of the one under the cursor                                      |
+| `container_color`         | color  | derived | Outline of the container the cursor is in, and at a third of its opacity of the block around it. A fully transparent color hides both |
+| `status_background_color` | color  | derived | Background of the status bar                                                                                 |
+| `status_text_color`       | color  | derived | Text of the status bar, and of the mode chip while vim waits on input                                        |
+
+Vim draws jump labels and the lens as hint badges, in the font, colors,
+border and padding of [`[hints.ui]`](#hints). The waiting notice takes the
+hint badge's colors, border and corners, in the font above. The status bar's
+mode chip is `theme.accent` in normal mode and `theme.accent_alt` in visual
+mode, with text in `theme.on_accent_alt`. While vim waits on a command, a
+jump, a motion or typing, the chip is an outline in the hint border color.
+
+### Vim keymaps
+
+`[vim.keymaps.normal]` and `[vim.keymaps.visual]` map keys to other keys
+inside vim, the way vim's `nnoremap` and `xnoremap` do. Both sides are in
+vim's notation, such as `"<Space>j"`, `"<C-j>"` or `"<CR>"`, and letter case
+counts, so `H` and `h` are different keys. Both tables ship empty.
+
+```toml
+[vim.keymaps.normal]
+"H" = "^"
+"L" = "$"
+"<Space>j" = "<Plug>(jump)"
+"s" = "<Nop>"
+"S" = "<Plug>(read-screen)<Plug>(jump)"
+
+[vim.keymaps.visual]
+"H" = "^"
+```
+
+- The keys a mapping runs are vim's own and never mapped again, so mapping
+  `"<Space>j" = "s"` runs vim's own `s`, which changes a character. Write
+  vim mode's commands as `<Plug>(name)`, with the names in the table below.
+- One mapping can run several commands, in order, as `S` above reads the
+  screen and then starts a jump. One key runs at most eight of them.
+- `"<Nop>"` makes the keys do nothing.
+- A key that starts a longer mapping waits one second for the rest of it,
+  then runs as typed.
+- Your mapping of a key replaces vim mode's own mapping of it, which the
+  table below lists. A default key you map to something else no longer runs
+  its command.
+- Mappings apply in normal and visual mode. Vim mode never maps keys typed on
+  the `:` line, after an operator such as `d`, after `f` or `r`, during an
+  `s` jump, or into the app after `i`.
+- Neru refuses a mapping of `Escape`, which always cancels and leaves. It
+  also refuses keys it never reads, such as `<Del>` and `<S-Left>`, a name
+  vim does not know, such as `<M-j>`, a `<Plug>` name vim mode does not
+  have, and two spellings of one sequence, such as `"<Space>j"` and
+  `"<space>j"`. Write `<lt>` for a literal `<`. A refused mapping refuses the
+  whole file, as any invalid option does.
+- `[vim.hotkeys]` runs first. A key bound there never reaches these tables.
+
+| Command                     | Mapped by default to | Does                                                              |
+| --------------------------- | -------------------- | ----------------------------------------------------------------- |
+| `<Plug>(jump)`              | `s`                  | Start a jump                                                      |
+| `<Plug>(read-screen)`       | `<C-l>`              | Read the screen again                                             |
+| `<Plug>(left-click)`        | `<CR>`, `gc`         | Click at the cursor. A count clicks that many times, up to three |
+| `<Plug>(right-click)`       | `gr`                 | Right click at the cursor, with a count as above                 |
+| `<Plug>(middle-click)`      | `gm`                 | Middle click at the cursor, with a count as above                |
+| `<Plug>(move-mouse)`        | `gh`                 | Move the real cursor to the vim cursor                            |
+| `<Plug>(scroll-line-down)`  | `<C-e>`              | Scroll the app down two lines                                     |
+| `<Plug>(scroll-line-up)`    | `<C-y>`              | Scroll the app up two lines                                       |
+| `<Plug>(scroll-half-down)`  | `<C-d>`              | Scroll the app down half the region read                          |
+| `<Plug>(scroll-half-up)`    | `<C-u>`              | Scroll the app up half the region read                            |
+| `<Plug>(scroll-page-down)`  | `<C-f>`              | Scroll the app down most of the region read                       |
+| `<Plug>(scroll-page-up)`    | `<C-b>`              | Scroll the app up most of the region read                         |
+| `<Plug>(scroll-left)`       | `zh`                 | Scroll the app left eight characters, or the count                |
+| `<Plug>(scroll-right)`      | `zl`                 | Scroll the app right eight characters, or the count               |
+| `<Plug>(scroll-half-left)`  | `zH`                 | Scroll the app left half the width read                           |
+| `<Plug>(scroll-half-right)` | `zL`                 | Scroll the app right half the width read                          |
+| `<Plug>(center-line)`       | `zz`                 | Scroll the app until the cursor's line is in the middle. `zz` runs vim's own `zz` first, so a count picks the line |
+| `<Plug>(next-icon)`         | `]i`                 | Move to the next icon                                             |
+| `<Plug>(prev-icon)`         | `[i`                 | Move to the previous icon                                         |
+
+Visual mode maps `<CR>` to `gs`, the drag operator.
+
+### Vim hotkeys
+
+`[vim.hotkeys]` ships empty, because every key in vim mode is vim's own. A key
+you bind there runs its action instead, and vim never sees it. Binding
+`"Escape"` means Escape no longer leaves visual mode either. A two-letter sequence such
+as `"jk"` takes its first key as the start of the sequence, so `j` on its own
+would no longer move. While vim types into the app, the keys bound here type
+as they would without vim. Otherwise the table follows
+[per-mode hotkeys](#per-mode-hotkeys).
+
+### Vim per-app config
+
+`[[vim.app_configs]]` takes `bundle_id`, `capture_scope` and
+[`hotkeys`](#per-app-hotkey-overrides), as in [grid](#grid).
+
 ## [scroll]
 
 Keyboard-driven scrolling.
@@ -1223,7 +1422,7 @@ text = "H"
 ### Per-mode
 
 Each mode has a `[mode_indicator.<mode>]` table for `scroll`, `hints`, `grid`,
-`recursive_grid`, `bisect` and `monitor_select`. Only `scroll` is shown by
+`recursive_grid`, `bisect`, `monitor_select` and `vim`. Only `scroll` is shown by
 default, and the default `text` is the mode's name in title case, such as
 `Recursive Grid`.
 
@@ -1349,19 +1548,23 @@ accel_enabled = true
 
 ### Glide
 
-A held key bound to a lone `move_mouse_relative` glides the cursor in the
-direction of its `--dx`/`--dy` instead of repeating. Speed is the binding's step
-per `interval_ms` (10px every 50ms is 200px/s) from key down to release, so
-`initial_delay_ms` does not apply. Two held keys move diagonally at the same
-speed, opposite keys cancel, and the larger step sets the speed. A short tap
-travels about one step. The glide works across monitors, and a click during it
-acts at the cursor's live position.
+A held key bound to a lone `move_mouse_relative` glides the cursor along its
+`--dx`/`--dy` instead of repeating, at the same angle its taps move. Speed is
+the length of the binding's step per `interval_ms`, so 10px every 50ms is
+200px/s, and `--dx 30 --dy 40` steps 50px. The glide runs from key down to
+release, so `initial_delay_ms` does not apply. It eases up to speed from rest
+in about 120ms, and stops where you release the key. Two held keys move
+diagonally at the same speed, opposite keys cancel, and the larger step sets
+the speed. Pressing or releasing a second key bends the path over the same
+120ms instead of turning in one move. A tap travels one step. The glide works
+across monitors, and a click during it acts at the cursor's live position.
 
 ### Acceleration
 
 With `accel_enabled = true`, the glide speed ramps linearly to
 `accel_max_multiplier` times the binding's speed over `accel_ramp_ms`. With the
-defaults a 10px binding reaches 500px/s at 250ms and 800px/s from 500ms.
+defaults a 10px binding reaches about 500px/s at 250ms and 800px/s from about
+500ms.
 
 - `accel_targets` accepts only `move_mouse_relative`. Any other entry, or an
   empty list while `accel_enabled = true`, is a config error.

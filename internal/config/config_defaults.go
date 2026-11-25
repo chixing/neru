@@ -7,6 +7,7 @@ import (
 	"github.com/y3owk1n/neru/internal/domain/action"
 	"github.com/y3owk1n/neru/internal/domain/element"
 	domainGrid "github.com/y3owk1n/neru/internal/domain/grid"
+	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 )
 
 const (
@@ -150,13 +151,6 @@ const (
 	// repeat.
 	DefaultSmoothCursorRelativeMovementDuration = 50
 
-	// MinSmoothCursorAnimationDuration is the floor for every smooth cursor
-	// animation in ms. The animator raises shorter animations to it. It is
-	// also the smallest accepted relative_movement_duration. Anything below
-	// would be silently rounded up rather than honored, so the validator
-	// rejects it.
-	MinSmoothCursorAnimationDuration = 10
-
 	// DefaultSmoothScrollSteps is the default smooth scroll steps.
 	DefaultSmoothScrollSteps = 20
 
@@ -175,12 +169,6 @@ const (
 	DefaultHeldRepeatAccelMaxMultiplier = 4.0
 	// MaxHeldRepeatAccelMultiplier bounds accel_max_multiplier.
 	MaxHeldRepeatAccelMultiplier = 100
-
-	// DefaultMaxDepth is the default max depth for accessibility tree traversal.
-	DefaultMaxDepth = 50
-
-	// DefaultChildrenCapacity is the default children capacity.
-	DefaultChildrenCapacity = 8
 
 	// DefaultDirPerms is the default directory permissions.
 	DefaultDirPerms = 0o750
@@ -276,6 +264,9 @@ const (
 	// DefaultStickyModifiersYOffset is the default Y offset for the sticky modifiers indicator.
 	DefaultStickyModifiersYOffset = 20
 
+	// DefaultVimFontSize is the default font size of vim mode's status bar.
+	DefaultVimFontSize = 13
+
 	// DefaultMonitorSelectFontSize is the default font size for monitor select labels.
 	DefaultMonitorSelectFontSize = 96
 	// DefaultMonitorSelectSubtitleFontSize is the default font size for monitor select subtitles.
@@ -300,6 +291,7 @@ func newDefaultConfig() *Config {
 		Grid:            defaultGrid(),
 		RecursiveGrid:   defaultRecursiveGrid(),
 		Bisect:          defaultBisect(),
+		Vim:             defaultVim(),
 		VirtualPointer:  defaultVirtualPointer(),
 		MouseAction:     defaultMouseAction(),
 		ModeIndicator:   defaultModeIndicator(),
@@ -359,9 +351,9 @@ func defaultGeneral() GeneralConfig {
 // and Ctrl elsewhere, where Super usually belongs to the desktop.
 func defaultPrimaryModifier() PrimaryModifierConfig {
 	return PrimaryModifierConfig{
-		Darwin:  modifierDisplayCmd,
-		Linux:   modifierDisplayCtrl,
-		Windows: modifierDisplayCtrl,
+		Darwin:  keyvocab.ModifierDisplayCmd,
+		Linux:   keyvocab.ModifierDisplayCtrl,
+		Windows: keyvocab.ModifierDisplayCtrl,
 	}
 }
 
@@ -389,12 +381,13 @@ func defaultHotkeys() HotkeysConfig {
 
 func defaultHints() HintsConfig {
 	return HintsConfig{
-		Enabled:        true,
-		Strategy:       domain.StrategyAXTree,
-		CaptureScope:   domain.CaptureScopeWindow,
-		HintCharacters: "asdfghjkl",
-		LabelDirection: domain.LabelDirectionNormal,
-		MaxDepth:       DefaultMaxDepth,
+		Enabled:          true,
+		Strategy:         domain.StrategyAXTree,
+		CaptureScope:     domain.CaptureScopeWindow,
+		HintCharacters:   "asdfghjkl",
+		LabelDirection:   domain.LabelDirectionNormal,
+		LabelAlternation: domain.LabelAlternationNone,
+		MaxDepth:         element.DefaultMaxDepth,
 		Hotkeys: map[string]StringOrStringArray{
 			KeyDisplayEscape:    {CmdIdle},
 			"/":                 {"action search_hints"},
@@ -507,6 +500,10 @@ func defaultHints() HintsConfig {
 		VisibleCheckEnabled:  false,
 
 		AppConfigs: []AppConfig{},
+
+		// No entries, so every selection runs the session's --action, whatever
+		// modifiers are held.
+		SelectWith: map[string]StringOrStringArray{},
 	}
 }
 
@@ -748,6 +745,7 @@ func defaultModeIndicator() ModeIndicatorConfig {
 		RecursiveGrid: defaultModeIndicatorMode(indicatorHidden, "Recursive Grid"),
 		Bisect:        defaultModeIndicatorMode(indicatorHidden, "Bisect"),
 		MonitorSelect: defaultModeIndicatorMode(indicatorHidden, "Monitor Select"),
+		Vim:           defaultModeIndicatorMode(indicatorHidden, "Vim"),
 		UI: ModeIndicatorUI{
 			FontSize:         DefaultScrollFontSize,
 			FontFamily:       "",
@@ -781,6 +779,34 @@ func defaultStickyModifiers() StickyModifiersConfig {
 			IndicatorXOffset: DefaultStickyModifiersXOffset,
 			IndicatorYOffset: DefaultStickyModifiersYOffset,
 		},
+	}
+}
+
+func defaultVim() VimConfig {
+	return VimConfig{
+		Enabled:      true,
+		CaptureScope: domain.CaptureScopeWindow,
+		UI: VimUI{
+			FontSize:              DefaultVimFontSize,
+			FontFamily:            "",
+			CursorColor:           Color{},
+			SelectionColor:        Color{},
+			MatchColor:            Color{},
+			ContainerColor:        Color{},
+			StatusBackgroundColor: Color{},
+			StatusTextColor:       Color{},
+		},
+		// AppConfigs ships empty, because per-app overrides are the user's.
+		AppConfigs: []AppConfig{},
+		// Keymaps ship empty. Vim mode's own mappings are in
+		// screentext.DefaultKeymap, and a mapping here replaces one there.
+		Keymaps: VimKeymaps{
+			Normal: map[string]string{},
+			Visual: map[string]string{},
+		},
+		// Hotkeys ships empty, because every key in vim mode is vim's until
+		// the user binds it to something else.
+		Hotkeys: map[string]StringOrStringArray{},
 	}
 }
 

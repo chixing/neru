@@ -9,6 +9,7 @@ import (
 
 	configpkg "github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/domain"
+	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 )
 
 // passthroughHintRefreshDelay is the delay before refreshing hints after a
@@ -42,6 +43,7 @@ func (h *handlerState) syncModifierPassthrough(mode domain.Mode) {
 	keymap := configpkg.Keymap{}
 	globalHotkeys := configpkg.Keymap{}
 	blacklist := []string(nil)
+	selectWithChords := []string(nil)
 
 	if enabled {
 		keymap, globalHotkeys = h.settledKeymaps()
@@ -54,13 +56,20 @@ func (h *handlerState) syncModifierPassthrough(mode domain.Mode) {
 		// the tap would hand the user's own hotkey to the application in front of
 		// them and the fallback would never see the key at all.
 		for _, key := range append(keymap.Keys(), globalHotkeys.Keys()...) {
-			blacklist = append(blacklist, configpkg.CanonicalHotkeyForPlatform(key))
+			blacklist = append(blacklist, keyvocab.CanonicalHotkeyForPlatform(key))
+		}
+
+		// A hint character held with a select_with modifier set is label
+		// input, so it is held back for the same reason.
+		selectWithChords = append(h.selectWithChords(), h.vimChords()...)
+		for _, chord := range selectWithChords {
+			blacklist = append(blacklist, keyvocab.CanonicalHotkeyForPlatform(chord))
 		}
 	}
 
 	h.setModifierPassthrough(enabled, blacklist)
 
-	h.setInterceptedModifierKeys(modeModifierKeys(keymap, globalHotkeys))
+	h.setInterceptedModifierKeys(modeModifierKeys(keymap, globalHotkeys, selectWithChords...))
 }
 
 // passthroughEnabledFor reports whether the event tap should hand unbound
@@ -145,21 +154,23 @@ const initialCapacity = 16
 // passing them through to the focused application.
 //
 // It takes both tables in force while a mode is open (the mode's own, and the
-// global chords it falls back to), because the tap asks a single question about
-// a chord, so the two reach it as one list. A chord both tables bind is one
-// entry, which is also the answer either way.
-func modeModifierKeys(mode, global configpkg.Keymap) []string {
+// global chords it falls back to), plus any chord the mode reads as input
+// without binding it, such as a hint character held with a select_with
+// modifier set, because the tap asks a single question about a chord, so they
+// reach it as one list. A chord named twice is one entry, which is also the
+// answer either way.
+func modeModifierKeys(mode, global configpkg.Keymap, input ...string) []string {
 	keys := make([]string, 0, initialCapacity)
 	seen := make(map[string]struct{}, initialCapacity)
 
-	for _, keymap := range []configpkg.Keymap{mode, global} {
-		for _, key := range keymap.Keys() {
+	for _, chords := range [][]string{mode.Keys(), global.Keys(), input} {
+		for _, key := range chords {
 			trimmed := strings.TrimSpace(key)
-			if trimmed == "" || !configpkg.HasPassthroughModifier(trimmed) {
+			if trimmed == "" || !keyvocab.HasPassthroughModifier(trimmed) {
 				continue
 			}
 
-			normalized := configpkg.CanonicalHotkeyForPlatform(trimmed)
+			normalized := keyvocab.CanonicalHotkeyForPlatform(trimmed)
 			if _, exists := seen[normalized]; exists {
 				continue
 			}

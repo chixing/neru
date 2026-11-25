@@ -93,7 +93,6 @@ type MockOverlayPort struct {
 	appliedConfigs  []*config.Config
 	styleRefreshes  int
 	screenShareHide bool
-	keyboardCapture bool
 	destroys        int
 
 	// State tracking for tests
@@ -406,6 +405,11 @@ func (m *MockOverlayPort) HideHintSearch() {
 	}
 }
 
+// VimStatusBar implements ports.OverlayPort. It reports no bar.
+func (m *MockOverlayPort) VimStatusBar(image.Rectangle) image.Rectangle {
+	return image.Rectangle{}
+}
+
 // HintSearchBounds implements ports.OverlayPort.
 func (m *MockOverlayPort) HintSearchBounds(screen image.Rectangle) image.Rectangle {
 	if m.HintSearchBoundsFunc != nil {
@@ -488,22 +492,6 @@ func (m *MockOverlayPort) HiddenInScreenShare() bool {
 	defer m.styleMu.Unlock()
 
 	return m.screenShareHide
-}
-
-// SetKeyboardCaptureEnabled implements ports.OverlayPort.
-func (m *MockOverlayPort) SetKeyboardCaptureEnabled(enabled bool) {
-	m.styleMu.Lock()
-	defer m.styleMu.Unlock()
-
-	m.keyboardCapture = enabled
-}
-
-// KeyboardCaptureEnabled returns the last keyboard-capture state asked for.
-func (m *MockOverlayPort) KeyboardCaptureEnabled() bool {
-	m.styleMu.Lock()
-	defer m.styleMu.Unlock()
-
-	return m.keyboardCapture
 }
 
 // Destroy implements ports.OverlayPort.

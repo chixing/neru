@@ -1,5 +1,52 @@
 # Changelog
 
+## [1.63.0](https://github.com/y3owk1n/neru/compare/v1.62.0...v1.63.0) (2026-11-15)
+
+
+### Features
+
+* **cli:** add describe, schema and agent-guide ([#1983](https://github.com/y3owk1n/neru/issues/1983)) ([8113987](https://github.com/y3owk1n/neru/commit/81139875b3358470e827e101956e43b705b629d1))
+* **hints:** alternate hands in multi-key hint labels ([#1944](https://github.com/y3owk1n/neru/issues/1944)) ([e108948](https://github.com/y3owk1n/neru/commit/e108948aa933ef83b47037e8bd84484bbd72fb43))
+* **vim:** add vim mode ([#1921](https://github.com/y3owk1n/neru/issues/1921)) ([0870c99](https://github.com/y3owk1n/neru/commit/0870c99efaefc77aa74d8d728ee5b2df05e41b63))
+
+
+### Bug Fixes
+
+* glide held `move_mouse_relative` keys at the angle of their step ([#1948](https://github.com/y3owk1n/neru/issues/1948)) ([782797c](https://github.com/y3owk1n/neru/commit/782797c853a33e55697e449cff9511eb5dccd8bf))
+* **linux:** draw hints and grids across the whole X11 desktop after it grows ([#1966](https://github.com/y3owk1n/neru/issues/1966)) ([4cb4ac6](https://github.com/y3owk1n/neru/commit/4cb4ac6ad02f181dc5b5e6798fff2c9058198f8a))
+* **linux:** keep modifiers on clicks and scrolls on GNOME ([#1965](https://github.com/y3owk1n/neru/issues/1965)) ([59c1029](https://github.com/y3owk1n/neru/commit/59c1029a2277b68773c20b30f3a503bf4767dac3))
+* **linux:** keep the first scroll after launch on Wayland ([#1956](https://github.com/y3owk1n/neru/issues/1956)) ([dd9ac4e](https://github.com/y3owk1n/neru/commit/dd9ac4e5cd0a95cb42634aa17ce0e1ed4f4b3672))
+* **linux:** keep the overlay alive on a Wayland seat with no keyboard ([#1959](https://github.com/y3owk1n/neru/issues/1959)) ([09b7609](https://github.com/y3owk1n/neru/commit/09b7609d8bee5ccc641041b36cd8a10de11f7d79))
+* **linux:** keep Wayland scrolls going the way they are sent under natural scrolling ([#1957](https://github.com/y3owk1n/neru/issues/1957)) ([0e4bddd](https://github.com/y3owk1n/neru/commit/0e4bddd44786862eb1cfcb2896460aa016bc1f32))
+* **linux:** place niri window origins inside the tile border ([#1951](https://github.com/y3owk1n/neru/issues/1951)) ([d50d679](https://github.com/y3owk1n/neru/commit/d50d679ec2b7c6e5cdd2bc50c634a272d0d80d00))
+* **linux:** read the keyboard layout on a Wayland seat that starts with no keyboard ([#1960](https://github.com/y3owk1n/neru/issues/1960)) ([5fd1c58](https://github.com/y3owk1n/neru/commit/5fd1c58646b321f953b6392c62737580f72d087a))
+* **linux:** stop KDE dropping clicks made at the cursor ([#1963](https://github.com/y3owk1n/neru/issues/1963)) ([19d3cf1](https://github.com/y3owk1n/neru/commit/19d3cf120f5266ae1040b0f13bc353b10ddb865b))
+* **linux:** stop Wayland overlays from losing keyboard input ([#1940](https://github.com/y3owk1n/neru/issues/1940)) ([c9a5e85](https://github.com/y3owk1n/neru/commit/c9a5e8589d2d78b179bd999adde74385651dc123))
+* **nix:** stop the x86_64 Linux package segfaulting on current nixpkgs ([#1935](https://github.com/y3owk1n/neru/issues/1935)) ([86a0ddc](https://github.com/y3owk1n/neru/commit/86a0ddc6ad742bad2dea4ae37f0788bc0415ca82))
+* **systray:** remove tooltip from the tray icon ([#1937](https://github.com/y3owk1n/neru/issues/1937)) ([078eb54](https://github.com/y3owk1n/neru/commit/078eb54f1e6258267eecc0acb286fb26d5af11b5))
+
+
+### Improvements
+
+* ease held-key glides in from rest and curve them on turns ([#1949](https://github.com/y3owk1n/neru/issues/1949)) ([d947135](https://github.com/y3owk1n/neru/commit/d9471358fad798e8547fde6ce16a66e2d7bfdabe))
+
+## [1.62.0](https://github.com/y3owk1n/neru/compare/v1.61.0...v1.62.0) (2026-11-08)
+
+
+### Features
+
+* **grid:** add --no-subgrid flag to select a cell without the subgrid ([#1927](https://github.com/y3owk1n/neru/issues/1927)) ([c044540](https://github.com/y3owk1n/neru/commit/c044540a93287d9aee78be1be9419516d2a56c9d))
+* **hints:** copy a hint's text to the clipboard with copy_text ([#1917](https://github.com/y3owk1n/neru/issues/1917)) ([cb101a8](https://github.com/y3owk1n/neru/commit/cb101a80802a6a548236e30e55bf674062160256))
+* **hints:** pick a hint's action by the modifiers held on its last key ([#1915](https://github.com/y3owk1n/neru/issues/1915)) ([b1405e2](https://github.com/y3owk1n/neru/commit/b1405e2f3dbe9b048a4ddb772023876517485320))
+
+
+### Bug Fixes
+
+* **hints,darwin:** make copy text via vision more accurate ([#1918](https://github.com/y3owk1n/neru/issues/1918)) ([31acf29](https://github.com/y3owk1n/neru/commit/31acf29e1c2407602750e572e4342181ef8c5f04))
+* **hints:** show hints for a window that runs past the screen edge ([#1928](https://github.com/y3owk1n/neru/issues/1928)) ([a64a277](https://github.com/y3owk1n/neru/commit/a64a2774477352eb32a7a296dfc217c8da3c25c9))
+* **linux:** let X11 global hotkeys use symbol keys ([#1920](https://github.com/y3owk1n/neru/issues/1920)) ([2871d96](https://github.com/y3owk1n/neru/commit/2871d96cd37c6b3fe632d8f50ba292bba8576566))
+* **snap:** ask for screen recording before a capture-strategy snap ([#1926](https://github.com/y3owk1n/neru/issues/1926)) ([6a50136](https://github.com/y3owk1n/neru/commit/6a50136c18f75924273c54c81960d1280c62fe76))
+
 ## [1.61.0](https://github.com/y3owk1n/neru/compare/v1.60.0...v1.61.0) (2026-11-02)
 
 

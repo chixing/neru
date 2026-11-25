@@ -16,6 +16,7 @@ import (
 
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/derrors"
+	"github.com/y3owk1n/neru/internal/domain/motion"
 	"github.com/y3owk1n/neru/internal/domain/parity"
 )
 
@@ -81,6 +82,7 @@ func isBuiltInGlobalModeAction(actions []string) (string, bool) {
 		config.ModeNameGrid,
 		config.ModeNameRecursiveGrid,
 		config.ModeNameBisect,
+		config.ModeNameVim,
 		config.ModeNameScroll:
 		return parts[0], true
 	default:
@@ -106,6 +108,7 @@ func removeLauncherBindingsForDisabledModes(cfg *config.Config) {
 		config.ModeNameGrid:          cfg.Grid.Enabled,
 		config.ModeNameRecursiveGrid: cfg.RecursiveGrid.Enabled,
 		config.ModeNameBisect:        cfg.Bisect.Enabled,
+		config.ModeNameVim:           cfg.Vim.Enabled,
 	}
 
 	for key, actions := range cfg.Hotkeys.Bindings {
@@ -415,6 +418,21 @@ func (s *Service) Get() *config.Config {
 	return s.config
 }
 
+// Animation returns the smooth cursor and scroll settings of the current
+// configuration, and false when none is loaded. The method value is the
+// motion.AnimationSource the platform adapters read on each move.
+func (s *Service) Animation() (motion.Animation, bool) {
+	cfg := s.Get()
+	if cfg == nil {
+		return motion.Animation{}, false
+	}
+
+	return motion.Animation{
+		Cursor: motion.SmoothCursor(cfg.SmoothCursor),
+		Scroll: motion.SmoothScroll(cfg.SmoothScroll),
+	}, true
+}
+
 // Path returns the configuration file path.
 func (s *Service) Path() string {
 	s.mu.RLock()
@@ -500,11 +518,6 @@ func (s *Service) Watch(ctx context.Context) <-chan *config.Config {
 	return channel
 }
 
-// Validate validates the given configuration.
-func (s *Service) Validate(cfg *config.Config) error {
-	return cfg.Validate()
-}
-
 // Update updates the configuration (for testing/internal use).
 //
 // written is the configuration cfg was derived from, kept for the next field
@@ -512,7 +525,7 @@ func (s *Service) Validate(cfg *config.Config) error {
 // previous written one would have that next change deriving from values nobody
 // wrote. A caller with no separate written form passes cfg for both.
 func (s *Service) Update(cfg, written *config.Config) error {
-	validateErr := s.Validate(cfg)
+	validateErr := cfg.Validate()
 	if validateErr != nil {
 		return validateErr
 	}

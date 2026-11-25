@@ -9,48 +9,10 @@ import (
 
 	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/domain"
+	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 	"github.com/y3owk1n/neru/internal/domain/state"
 	portmocks "github.com/y3owk1n/neru/internal/ports/mocks"
 )
-
-func TestModeModifierKeys_HintsIncludesModifierHotkeys(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Hints.Hotkeys = map[string]config.StringOrStringArray{
-		"Cmd+L": {stepLeftClick},
-		"Alt+K": {"action move_mouse_relative --dx=0 --dy=-10"},
-		"k":     {"action scroll_up"},
-	}
-
-	got := modeModifierKeys(cfg.ResolveKeymap(config.ModeNameHints, ""), config.Keymap{})
-	want := []string{
-		config.CanonicalHotkeyForPlatform("Alt+K"),
-		config.CanonicalHotkeyForPlatform("Cmd+L"),
-	}
-
-	if !slices.Equal(got, want) {
-		t.Fatalf("modeModifierKeys(ModeHints) = %v, want %v", got, want)
-	}
-}
-
-func TestModeModifierKeys_ScrollIncludesOnlyModifierHotkeys(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Scroll.Hotkeys = map[string]config.StringOrStringArray{
-		"k":        {"action scroll_up"},
-		"Cmd+Up":   {"action go_top"},
-		"Cmd+Down": {"action go_bottom"},
-		"gg":       {"action go_top"},
-	}
-
-	got := modeModifierKeys(cfg.ResolveKeymap(config.ModeNameScroll, ""), config.Keymap{})
-	want := []string{
-		config.CanonicalHotkeyForPlatform("Cmd+Down"),
-		config.CanonicalHotkeyForPlatform("Cmd+Up"),
-	}
-
-	if !slices.Equal(got, want) {
-		t.Fatalf("modeModifierKeys(ModeScroll) = %v, want %v", got, want)
-	}
-}
 
 func TestHandlePassthroughLocked_IgnoresStaleSession(t *testing.T) {
 	cfg := config.DefaultConfig()
@@ -73,6 +35,10 @@ func TestHandlePassthroughLocked_IgnoresStaleSession(t *testing.T) {
 	}
 }
 
+// TestPassthroughCallbackFor_CapturesModeSession keeps the mode the same and
+// moves only the session, so the callback must answer to the session it was
+// built in. TestSimulation_StalePassthroughCallback changes the mode as well
+// and passes on the mode check alone.
 func TestPassthroughCallbackFor_CapturesModeSession(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.General.PassthroughUnboundedKeys = true
@@ -94,11 +60,10 @@ func TestPassthroughCallbackFor_CapturesModeSession(t *testing.T) {
 
 	handler.modeSession = 2
 
-	appState.SetMode(domain.ModeGrid)
-
 	callback()
 
 	if handler.refreshHintsTimer != nil {
+		handler.refreshHintsTimer.Stop()
 		t.Fatal("expected captured passthrough callback to ignore a later mode session")
 	}
 }
@@ -248,7 +213,7 @@ func TestRefreshPassthroughForFocusedAppChange_RetargetsTheEventTap(t *testing.T
 
 	const unboundChord = "Cmd+Ctrl+J"
 
-	canonical := config.CanonicalHotkeyForPlatform
+	canonical := keyvocab.CanonicalHotkeyForPlatform
 
 	for _, mode := range passthroughModes {
 		t.Run(mode.name, func(t *testing.T) {
@@ -400,7 +365,7 @@ func TestRefreshPassthroughForFocusedAppChange_IsSafeWhileKeysAreHandled(t *test
 		sharedKey = "j"
 	)
 
-	canonical := config.CanonicalHotkeyForPlatform
+	canonical := keyvocab.CanonicalHotkeyForPlatform
 
 	cfg := perAppPassthroughConfig()
 	cfg.Grid.Hotkeys = map[string]config.StringOrStringArray{
@@ -454,7 +419,7 @@ func TestSyncModifierPassthrough_ConsumesTheGlobalChordsAModeFallsBackTo(t *test
 
 	const globalChord = "Super+;"
 
-	canonical := config.CanonicalHotkeyForPlatform
+	canonical := keyvocab.CanonicalHotkeyForPlatform
 
 	cfg := &config.Config{
 		General: config.GeneralConfig{PassthroughUnboundedKeys: true},
@@ -469,6 +434,10 @@ func TestSyncModifierPassthrough_ConsumesTheGlobalChordsAModeFallsBackTo(t *test
 		RecursiveGrid: config.RecursiveGridConfig{
 			Hotkeys: map[string]config.StringOrStringArray{
 				passthroughFirstChord: {stepLeftClick},
+				// A bare key and a sequence are the mode's own input, never
+				// a chord to intercept.
+				"k":  {"action scroll_up"},
+				"gg": {"action go_top"},
 			},
 		},
 	}
@@ -491,5 +460,42 @@ func TestSyncModifierPassthrough_ConsumesTheGlobalChordsAModeFallsBackTo(t *test
 
 	if got := tap.InterceptedModifierKeys(); !slices.Equal(got, want) {
 		t.Errorf("intercepted modifier keys = %v, want %v", got, want)
+	}
+}
+
+// TestSyncModifierPassthrough_ConsumesTheSelectWithChords pins that a hint
+// character held with a select_with modifier set reaches the label. Passed
+// through, the chord would go to the focused application instead. A Shift-only
+// set is never passed through, so it needs no entry.
+func TestSyncModifierPassthrough_ConsumesTheSelectWithChords(t *testing.T) {
+	t.Parallel()
+
+	canonical := keyvocab.CanonicalHotkeyForPlatform
+
+	cfg := &config.Config{
+		General: config.GeneralConfig{PassthroughUnboundedKeys: true},
+		Hints: config.HintsConfig{
+			HintCharacters: "as",
+			SelectWith: map[string]config.StringOrStringArray{
+				"ctrl":  {stepLeftClick},
+				"shift": {stepLeftClick},
+			},
+		},
+	}
+
+	_, tap := newPassthroughHandler(t, cfg, "", (*Handler).SetModeHints)
+
+	want := []string{canonical("ctrl+a"), canonical("ctrl+s")}
+	slices.Sort(want)
+
+	if got := tap.InterceptedModifierKeys(); !slices.Equal(got, want) {
+		t.Errorf("intercepted modifier keys = %v, want %v", got, want)
+	}
+
+	_, blacklist := tap.ModifierPassthrough()
+	for _, chord := range want {
+		if !slices.Contains(blacklist, chord) {
+			t.Errorf("blacklist is %v, want %q among them", blacklist, chord)
+		}
 	}
 }

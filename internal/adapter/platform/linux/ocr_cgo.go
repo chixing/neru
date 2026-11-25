@@ -3,12 +3,9 @@
 package linux
 
 /*
-// Only tesseract, not tesseract plus lept, because ocr.c includes
-// <tesseract/capi.h>, which forward-declares `struct Pix` on the C path and
-// needs no leptonica header, and every symbol the bridge calls is a Tess* one.
-// libtesseract.so links leptonica itself, so the runtime dependency is there
-// either way. Requiring lept.pc as well would only add a build that fails on a
-// machine where the library is present and its pkg-config file is not.
+// Only tesseract, not lept. ocr.c includes <tesseract/capi.h>, which needs no
+// leptonica header, and libtesseract.so links leptonica itself. Requiring
+// lept.pc would only fail builds where the library exists without its .pc file.
 #cgo linux pkg-config: tesseract
 #include <stdlib.h>
 #include "ocr.h"
@@ -18,15 +15,14 @@ import "C"
 import (
 	"image"
 	"runtime"
+	"sync"
 	"time"
 	"unsafe"
 )
 
-// A Go test file cannot use cgo, so the NERU_OCR_* codes are mirrored as Go
-// constants in ocr_common.go and the error vocabulary is written against those.
-// These constant expressions keep the two halves honest. Each converts a
-// difference to uint in both directions, so a value that drifts stops compiling
-// here rather than silently mapping the wrong failure to the wrong sentence.
+// Test files cannot use cgo, so ocr_common.go mirrors the NERU_OCR_* codes as Go
+// constants. Each line converts the difference to uint both ways, so a drifted
+// value stops compiling rather than mapping a failure to the wrong sentence.
 const (
 	_ = uint(C.NERU_OCR_OK-ocrStatusOK) + uint(ocrStatusOK-C.NERU_OCR_OK)
 	_ = uint(C.NERU_OCR_ERR_INIT-ocrStatusInit) + uint(ocrStatusInit-C.NERU_OCR_ERR_INIT)
@@ -40,13 +36,23 @@ const (
 	) + uint(
 		ocrStatusTimeout-C.NERU_OCR_ERR_TIMEOUT,
 	)
+	_ = uint(
+		C.NERU_OCR_ERR_CANCELED-ocrStatusCanceled,
+	) + uint(
+		ocrStatusCanceled-C.NERU_OCR_ERR_CANCELED,
+	)
 )
 
 // ocrConfig builds the native config for one call. The returned free function
 // releases the two C strings it owns and must run on every path.
 func ocrConfig(datapath string, params OCRParams) (C.NeruOCRConfig, func()) {
+	language, engine := ocrLanguage, C.int(0)
+	if params.Language != "" && params.Language != ocrLanguage {
+		language, engine = params.Language, 1
+	}
+
 	cDatapath := C.CString(datapath)
-	cLanguage := C.CString(ocrLanguage)
+	cLanguage := C.CString(language)
 
 	var wordLevel C.int
 	if params.WordLevel {
@@ -58,6 +64,7 @@ func ocrConfig(datapath string, params OCRParams) (C.NeruOCRConfig, func()) {
 		language:  cLanguage,
 		wordLevel: wordLevel,
 		timeoutMS: C.int(params.TimeoutMS),
+		engine:    engine,
 	}
 
 	return config, func() {
@@ -66,12 +73,10 @@ func ocrConfig(datapath string, params OCRParams) (C.NeruOCRConfig, func()) {
 	}
 }
 
-// OCRHealth reports whether text recognition can run on this machine.
-//
-// It resolves the language data and then initializes the engine, so a caller
-// learns about a missing tessdata directory and about an unreadable one, and
-// the first real recognition finds a warm engine rather than paying the model
-// load itself.
+// OCRHealth reports whether text recognition can run on this machine. It
+// resolves the language data and initializes the engine, so a missing or
+// unreadable tessdata surfaces here and the first recognition finds a warm
+// engine.
 func OCRHealth() error {
 	datapath, err := tessdataDir()
 	if err != nil {
@@ -88,20 +93,14 @@ func OCRHealth() error {
 	return nil
 }
 
-// RecognizeText reads the text in img and returns one entry per word or per
-// line, positioned in img's own coordinate space.
+// RecognizeText reads the text in img and returns one entry per word or line,
+// in img's own coordinates. img must be RGBA8888, as CaptureScreenRegion
+// returns. The pixels cross into C for this call only, because tesseract copies
+// them and the engine is cleared before the call returns.
 //
-// img must be RGBA8888, which is what CaptureScreenRegion returns. The pixels
-// cross into C for the duration of this call only. Tesseract copies them into
-// its own buffer before recognition starts, and the engine is cleared before
-// the call returns, so nothing native holds the frame afterwards.
-//
-// The second result describes the work rather than the frame. It is a duration,
-// so a caller can log how long a recognition took and, when one fails, whether it
-// ran to the budget or gave up at once. It is filled on both paths.
-//
-// Nothing derived from the recognized text is logged here or by the caller. An
-// OCR result is a transcript of the user's screen.
+// OCRStats is filled on both paths, so a caller can log how long recognition
+// took and whether a failure ran to the budget. Never log anything derived from
+// the recognized text, which is a transcript of the user's screen.
 func RecognizeText(img *image.RGBA, params OCRParams) ([]OCRWord, OCRStats, error) {
 	var stats OCRStats
 
@@ -110,16 +109,7 @@ func RecognizeText(img *image.RGBA, params OCRParams) ([]OCRWord, OCRStats, erro
 		return nil, stats, err
 	}
 
-	if img == nil || img.Rect.Dx() <= 0 || img.Rect.Dy() <= 0 {
-		return nil, stats, ocrError(ocrStatusImage)
-	}
-
-	// The buffer has to hold every row the geometry claims. C reads it by
-	// stride, so a Pix shorter than the geometry describes, such as a hand-built
-	// image or a sub-image sliced wrong, is an out-of-bounds read inside tesseract
-	// rather than a Go panic. Checked here because this is the last place the
-	// Go type system can see it.
-	if len(img.Pix) < (img.Rect.Dy()-1)*img.Stride+img.Rect.Dx()*bytesPerCapturedPixel {
+	if !readableImage(img) {
 		return nil, stats, ocrError(ocrStatusImage)
 	}
 
@@ -172,4 +162,123 @@ func RecognizeText(img *image.RGBA, params OCRParams) ([]OCRWord, OCRStats, erro
 	}
 
 	return words, stats, nil
+}
+
+// RecognizeLines reads the text in img as RecognizeText does, and returns one
+// entry per character with its line and word, for a caller that lays the text
+// out as it stands on screen. Never log anything derived from the result.
+func RecognizeLines(img *image.RGBA, params OCRParams) ([]OCRSymbol, OCRStats, error) {
+	var stats OCRStats
+
+	datapath, err := tessdataDir()
+	if err != nil {
+		return nil, stats, err
+	}
+
+	if !readableImage(img) {
+		return nil, stats, ocrError(ocrStatusImage)
+	}
+
+	config, free := ocrConfig(datapath, params)
+	defer free()
+
+	stopWatching := watchForCancel(&config, params.Done)
+	defer stopWatching()
+
+	var lines C.NeruOCRLines
+
+	status := C.neru_ocr_recognize_lines(
+		(*C.uchar)(unsafe.Pointer(&img.Pix[0])),
+		C.int(img.Rect.Dx()),
+		C.int(img.Rect.Dy()),
+		C.int(img.Stride),
+		&config,
+		&lines,
+	)
+
+	runtime.KeepAlive(img)
+
+	stats.Recognition = time.Duration(lines.elapsedMS) * time.Millisecond
+
+	if status != C.NERU_OCR_OK {
+		return nil, stats, ocrError(ocrStatus(status))
+	}
+
+	defer C.neru_ocr_lines_free(&lines)
+
+	count := int(lines.count)
+	if count == 0 || lines.symbols == nil {
+		return nil, stats, nil
+	}
+
+	symbols := make([]OCRSymbol, 0, count)
+
+	for _, symbol := range unsafe.Slice(lines.symbols, count) {
+		if symbol.text == nil {
+			continue
+		}
+
+		symbols = append(symbols, OCRSymbol{
+			Text: C.GoString(symbol.text),
+			Bounds: image.Rect(
+				int(symbol.x),
+				int(symbol.y),
+				int(symbol.x+symbol.width),
+				int(symbol.y+symbol.height),
+			),
+			Line: int(symbol.line),
+			Word: int(symbol.word),
+		})
+	}
+
+	return symbols, stats, nil
+}
+
+// watchForCancel gives config a cancel flag in C memory and sets it once done
+// closes, so a recognition stops early. The returned function stops watching
+// and frees the flag, after the watcher has let go of it. A nil done watches
+// nothing.
+func watchForCancel(config *C.NeruOCRConfig, done <-chan struct{}) func() {
+	if done == nil {
+		return func() {}
+	}
+
+	flag := (*C.int)(C.calloc(1, C.size_t(unsafe.Sizeof(C.int(0)))))
+	config.cancel = flag
+
+	stop := make(chan struct{})
+
+	var watcher sync.WaitGroup
+
+	watcher.Go(func() {
+		select {
+		case <-done:
+			C.neru_ocr_cancel(flag)
+		case <-stop:
+		}
+	})
+
+	return func() {
+		close(stop)
+		watcher.Wait()
+		C.free(unsafe.Pointer(flag))
+	}
+}
+
+// readableImage reports whether img has pixels for its whole geometry. C reads
+// the buffer by stride, so a Pix shorter than the geometry claims is an
+// out-of-bounds read inside tesseract rather than a Go panic. This is the last
+// place Go can catch it.
+func readableImage(img *image.RGBA) bool {
+	return img != nil && img.Rect.Dx() > 0 && img.Rect.Dy() > 0 &&
+		len(img.Pix) >= (img.Rect.Dy()-1)*img.Stride+img.Rect.Dx()*bytesPerCapturedPixel
+}
+
+// LinesReadable reports why RecognizeLines cannot run on this machine, or nil
+// when it can: the tesseract language data has to be installed. It reads no
+// pixels and starts no engine, so a caller can ask before it captures.
+func LinesReadable() error {
+	_, err := tessdataDir()
+
+	return err
 }

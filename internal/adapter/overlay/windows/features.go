@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/y3owk1n/neru/internal/adapter/overlay/manager"
 	"github.com/y3owk1n/neru/internal/adapter/overlay/render/badge"
 	hintscomponent "github.com/y3owk1n/neru/internal/adapter/overlay/render/hints"
 	"github.com/y3owk1n/neru/internal/adapter/overlay/render/motion"
@@ -31,10 +32,10 @@ const (
 // window paints in queue order, so overlapping hints have correct Z-ordering.
 // Later hints are fully on top of earlier ones, matching macOS behavior.
 //
-// offset is the resolved `hints.ui.placement`. The caller reads the vocabulary
-// and refuses a placement this backend cannot draw before anything is painted
-// (Manager.DrawHintsWithStyle), so there is no configured string here and no
-// unrecognized case to answer.
+// offset is the resolved `hints.ui.placement`. The caller resolves it through
+// badge.ResolveHintOffset and refuses a placement that has no offset before
+// anything is painted (Manager.DrawHintsWithStyle), so there is no configured
+// string here and no unrecognized case to answer.
 func (o *winOverlay) DrawHints(
 	hintsSlice []*hintscomponent.Hint,
 	style hintscomponent.StyleMode,
@@ -167,6 +168,64 @@ func (o *winOverlay) DrawHints(
 	}
 
 	o.flushOverlay("hints")
+}
+
+// DrawVim paints vim mode's surface from manager.LayoutVim, replacing what
+// the window showed. The scene arrives in the window's own pixels. Font sizes
+// and stroke widths are points, scaled by the monitor's DPI factor as the
+// hints are.
+func (o *winOverlay) DrawVim(scene manager.VimScene, style manager.VimStyle) {
+	if o == nil {
+		return
+	}
+
+	o.ensureWindowForDraw()
+
+	if o.window == nil {
+		return
+	}
+
+	// Vim owns the surface. Drop what Show() would otherwise redraw.
+	o.forgetTransition()
+	o.cachedGrid = nil
+	o.currentSubgrid = nil
+	o.lastHints = nil
+	o.suppressDraw = false
+
+	o.Clear()
+
+	scale := o.scale()
+	style = manager.ScaleVimStyle(style, scale)
+
+	for _, vimOp := range manager.LayoutVim(scene, style, badge.TextWidth) {
+		lineWidth := vimOp.LineWidth * scale
+
+		switch vimOp.Kind {
+		case manager.VimOpRect:
+			if vimOp.Fill != 0 {
+				o.window.FillRect(vimOp.Bounds, vimOp.Fill)
+			}
+
+			if vimOp.Border != 0 && lineWidth > 0 {
+				o.window.StrokeRect(vimOp.Bounds, vimOp.Border, lineWidth)
+			}
+		case manager.VimOpRoundedRect:
+			radius := vimOp.Radius * scale
+			if vimOp.Fill != 0 {
+				o.window.FillRoundedRect(vimOp.Bounds, radius, vimOp.Fill)
+			}
+
+			if vimOp.Border != 0 && lineWidth > 0 {
+				o.window.StrokeRoundedRect(vimOp.Bounds, radius, vimOp.Border, lineWidth)
+			}
+		case manager.VimOpText:
+			o.drawTextCentered(
+				vimOp.Text, vimOp.Bounds, vimOp.Family, vimOp.FontSize, vimOp.Fill, vimOp.Bold,
+			)
+		}
+	}
+
+	o.flushOverlay("vim")
 }
 
 // drawHintArrow draws the connector arrow that ties an offset hint badge back

@@ -12,7 +12,6 @@ import (
 
 	"github.com/y3owk1n/neru/internal/adapter/eventtap/tap"
 	winplatform "github.com/y3owk1n/neru/internal/adapter/platform/windows"
-	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 )
 
@@ -283,16 +282,6 @@ func (et *EventTap) DisableWithContext(_ context.Context) error {
 	return nil
 }
 
-// IsUinputScrollAvailable returns false on Windows.
-func IsUinputScrollAvailable() bool {
-	return false
-}
-
-// IsWaylandEvdevKeyboardActive returns false on Windows (no evdev / Wayland).
-func IsWaylandEvdevKeyboardActive() bool {
-	return false
-}
-
 // notePostedModifier records a modifier this tap holds down (or released) on
 // the handler's behalf.
 func (et *EventTap) notePostedModifier(modifier string, isDown bool) {
@@ -364,7 +353,7 @@ func (et *EventTap) physicalChord(chord string) string {
 // global hotkey, compared in the normalized form both sides are matched in so a
 // binding written "Primary+G" answers for the "Ctrl+G" the hook reads.
 func (et *EventTap) isRegisteredHotkey(key string) bool {
-	normalized := config.NormalizeKeyForComparison(key)
+	normalized := keyvocab.NormalizeKeyForComparison(key)
 	if normalized == "" {
 		return false
 	}
@@ -373,7 +362,7 @@ func (et *EventTap) isRegisteredHotkey(key string) bool {
 	defer et.mu.RUnlock()
 
 	for _, hotkey := range et.hotkeys {
-		if config.NormalizeKeyForComparison(hotkey) == normalized {
+		if keyvocab.NormalizeKeyForComparison(hotkey) == normalized {
 			return true
 		}
 	}
@@ -410,7 +399,7 @@ func (et *EventTap) handleKey(key string, isUp bool) bool {
 	// application's or Neru's, never both. Handing the event on and dispatching
 	// it too would run a mode binding and type into the window behind the
 	// overlay at once.
-	if config.HasPassthroughModifier(normalized) {
+	if keyvocab.HasPassthroughModifier(normalized) {
 		// A chord RegisterHotKey owns is handed back. That mechanism keeps
 		// firing while a mode is active and this hook runs ahead of it, so
 		// passing the key on without dispatching leaves exactly one of the two

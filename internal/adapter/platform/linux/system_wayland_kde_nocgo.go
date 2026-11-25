@@ -33,7 +33,7 @@ func libeiButton(button int, pressed bool) error {
 	)
 }
 
-func libeiScroll(axis, delta int) error {
+func libeiScrollContinuous(axis int, delta float64) error {
 	_, _ = axis, delta
 
 	return derrors.New(
@@ -42,8 +42,8 @@ func libeiScroll(axis, delta int) error {
 	)
 }
 
-func libeiScrollContinuous(axis int, delta float64) error {
-	_, _ = axis, delta
+func libeiScrollDiscrete(axis, value120 int) error {
+	_, _ = axis, value120
 
 	return derrors.New(
 		derrors.CodeNotSupported,
@@ -59,6 +59,12 @@ func libeiKey(keycode int, pressed bool) error {
 		"libei backend requires CGO-enabled Linux builds",
 	)
 }
+
+func libeiModifiersRisen() (uint32, bool) {
+	return 0, false
+}
+
+func libeiAwaitModifiersRisen(_, _ uint32) {}
 
 func libeiHasKeyboard() (bool, bool) {
 	return false, false

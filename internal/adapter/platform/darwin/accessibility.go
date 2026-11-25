@@ -19,12 +19,6 @@ func CheckAccessibilityPermissions() bool {
 	return C.NeruCheckAccessibilityPermissions() != 0
 }
 
-// RequestAccessibilityPermissions asks macOS to start the accessibility
-// permission flow and returns whether permission is granted afterward.
-func RequestAccessibilityPermissions() bool {
-	return C.NeruRequestAccessibilityPermissions() != 0
-}
-
 // FocusedApplicationPID returns the PID of the currently focused application.
 func FocusedApplicationPID() (int, error) {
 	ref := C.NeruGetFocusedApplication()
@@ -90,29 +84,6 @@ func ApplicationBundleIDByPID(pid int) (string, error) {
 	defer C.NeruFreeString(cBundleID)
 
 	return C.GoString(cBundleID), nil
-}
-
-// HasClickAction checks if the accessibility element has a click action.
-// Uses default assumptions for pre-fetched attributes (not hidden, visible, enabled).
-func HasClickAction(element unsafe.Pointer) bool {
-	if element == nil {
-		return false
-	}
-
-	clickable := C.NeruHasClickAction(
-		element,
-		true,  // skipVisCheck: no pre-computed center available in this simplified wrapper
-		false, // preHidden
-		true,  // preVisible
-		true,  // preEnabled
-		true,  // hasEnabledAttr
-		nil,   // preRole
-		false, // preIsWidget
-		0,     // centerX
-		0,     // centerY
-	) != 0
-
-	return clickable
 }
 
 // SetApplicationAttribute sets an attribute on an application by its PID.

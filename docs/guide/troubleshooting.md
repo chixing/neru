@@ -144,6 +144,7 @@ and add yours:
 additional_menubar_hints_targets = [
     "com.apple.TextInputMenuAgent",
     "com.apple.controlcenter",
+    "com.apple.MenuBarAgent",
     "com.apple.systemuiserver",
     "com.y3owk1n.neru",
     "com.example.MenuBarApp",   # your app
@@ -200,6 +201,11 @@ take up to a second. If hotkeys still fail,
 Neru works with input methods such as Pinyin and Wubi. Check the method is
 installed and active in your OS, and on macOS that Neru has
 [Accessibility permission](#neru-does-nothing-on-macos).
+
+Vim mode and hint search on Linux and Windows read keys before the input
+method does. Type a word's romanization, such as `nihao` for 你好. The fork's
+[native hint-search field on macOS](using-neru.md#personal-fork-hint-search)
+also accepts input methods.
 
 ## Performance
 

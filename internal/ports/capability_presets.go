@@ -23,6 +23,9 @@ func DarwinCapabilities() PlatformCapabilities {
 		Scroll: supportedCapability(
 			"scroll injection via Quartz scroll-wheel events, both axes",
 		),
+		MouseButtons: supportedCapability(
+			"clicks, presses and releases via Quartz mouse events",
+		),
 		Accessibility: supportedCapability(
 			"macOS accessibility integration available via AXUIElement",
 		),
@@ -38,14 +41,12 @@ func DarwinCapabilities() PlatformCapabilities {
 		DarkModeDetection: supportedCapability(
 			"system dark mode detection available via Cocoa appearance APIs",
 		),
-		TextInput: supportedCapability(
-			"native hint-search field available via a text view in a key panel",
-		),
 		Vision: supportedCapability(
 			"OCR element detection available via the Vision framework and ScreenCaptureKit",
 		),
-		KeyFeed: supportedCapability("key injection available via CGEventPost"),
-		Systray: supportedCapability("tray icon available via NSStatusItem"),
+		KeyFeed:   supportedCapability("key injection available via CGEventPost"),
+		Systray:   supportedCapability("tray icon available via NSStatusItem"),
+		Clipboard: supportedCapability("clipboard writes available via pbcopy"),
 	}
 }
 
@@ -63,20 +64,23 @@ func LinuxCapabilities() PlatformCapabilities {
 		Cursor: supportedCapability(
 			"cursor movement/tracking available via XTest, Wayland virtual-pointer, or libei (KDE/COSMIC)",
 		),
-		// Live-probed by the Linux SystemAdapter on Wayland, which downgrades
+		// Live-probed by the Linux SystemAdapter on Hyprland, which downgrades
 		// this to a stub when /dev/uinput is not writable. The virtual-pointer
-		// fallback still scrolls most clients, but not Chromium or Electron on
-		// Hyprland. See linux.SystemAdapter.scrollCapability.
+		// fallback there misses Chromium and Electron. See
+		// linux.SystemAdapter.scrollCapability.
 		Scroll: supportedCapability(
-			"scroll injection via XTest (X11) or a uinput wheel device when " +
-				"/dev/uinput is writable (Wayland), falling back to the wlroots " +
-				"virtual pointer or libei (KDE/COSMIC)",
+			"scroll injection via XTest (X11), the wlroots virtual pointer, or " +
+				"libei (KDE/GNOME/COSMIC). On Hyprland a uinput wheel device " +
+				"when /dev/uinput is writable",
+		),
+		MouseButtons: supportedCapability(
+			"clicks, presses and releases via XTest (X11), the wlroots virtual " +
+				"pointer, or libei (KDE/GNOME/COSMIC)",
 		),
 		Accessibility: supportedCapability(
-			"clickable-element discovery via AT-SPI (D-Bus) tree walk; " +
-				"click/scroll injection via XTest (X11) or virtual-pointer/libei " +
-				"(Wayland wlroots/KDE/COSMIC). Coverage depends on the app's AT-SPI " +
-				"support; hints.strategy = vision is the OCR fallback where it is thin",
+			"clickable-element discovery via AT-SPI (D-Bus) tree walk. Coverage " +
+				"depends on the app's AT-SPI support; hints.strategy = vision is the " +
+				"OCR fallback where it is thin",
 		),
 		Overlay: supportedCapability(
 			"native overlays available via X11 windows or Wayland layer-shell + Cairo",
@@ -118,15 +122,6 @@ func LinuxCapabilities() PlatformCapabilities {
 		DarkModeDetection: supportedCapability(
 			"dark mode detection via freedesktop appearance portal (Settings.Read), with kdeglobals fallback",
 		),
-		// The field is a layer-shell surface, so it exists only where the
-		// compositor offers one. Elsewhere the characters come from the event
-		// tap and an input method never sees them.
-		TextInput: supportedCapability(
-			"native hint-search field on X11, taking input-method and dead-key " +
-				"text through XIM, and on Wayland compositors with a layer shell, " +
-				"taking it through text-input-v3 and xkb compose; on GNOME the " +
-				"query is read from the event tap's key stream",
-		),
 		// Both halves are implemented on every backend: capture through
 		// wlr-screencopy, XGetImage or the portal's ScreenCast session,
 		// recognition through tesseract. The detail names the three things that
@@ -141,15 +136,24 @@ func LinuxCapabilities() PlatformCapabilities {
 				"(wlr-screencopy on wlroots, XGetImage on X11, the xdg-desktop-portal " +
 				"ScreenCast session on KDE and COSMIC, which asks for screen-sharing consent " +
 				"once), with button shapes from the contour detector over the same " +
-				"frame; text needs a cgo build and the tesseract eng language data installed",
+				"frame; text needs a cgo build and the tesseract eng language data installed, " +
+				"which vim mode also reads a character at a time, with a second read in the " +
+				"languages of other scripts the locale names when their data is installed",
 		),
 		KeyFeed: supportedCapability(
-			"key injection via a uinput virtual keyboard when /dev/uinput is " +
-				"writable (works on X11, wlroots, KWin, and cosmic-comp), falling back to " +
-				"zwp_virtual_keyboard_v1 on wlroots compositors and cosmic-comp",
+			"key injection via XTest on X11, and on Wayland a uinput virtual keyboard " +
+				"when /dev/uinput is writable (wlroots, KWin, and cosmic-comp), falling back to " +
+				"zwp_virtual_keyboard_v1 on wlroots compositors and cosmic-comp; refused while a " +
+				"mode holds the keyboard through the overlay, where the key would come back to Neru",
 		),
 		Systray: supportedCapability(
 			"tray icon available via the D-Bus StatusNotifierItem + dbusmenu protocols",
+		),
+		// The copier is a separate program the user installs, looked up on each
+		// copy, so this static preset names it as what may be missing.
+		Clipboard: supportedCapability(
+			"clipboard writes via wl-copy on Wayland, or xclip or xsel on X11, " +
+				"one of which has to be installed",
 		),
 	}
 }
@@ -169,6 +173,9 @@ func WindowsCapabilities() PlatformCapabilities {
 		),
 		Scroll: supportedCapability(
 			"scroll injection via SendInput mouse-wheel events on both axes",
+		),
+		MouseButtons: supportedCapability(
+			"clicks, presses and releases via SendInput mouse events",
 		),
 		Accessibility: supportedCapability(
 			"clickable-element discovery available via UI Automation (initial coverage)",
@@ -199,20 +206,18 @@ func WindowsCapabilities() PlatformCapabilities {
 			"dark mode detection available via the Windows personalization registry " +
 				"(Themes\\Personalize AppsUseLightTheme)",
 		),
-		TextInput: supportedCapability(
-			"native hint-search field via an EDIT control in a tool window, taking " +
-				"input-method text through IMM and dead keys through TranslateMessage; " +
-				"when Windows does not give it the foreground, hint search reads the " +
-				"event tap's key stream",
-		),
 		Vision: supportedCapability(
 			"vision element detection via Windows.Media.Ocr over a BitBlt screen " +
 				"capture, with button shapes from the contour detector over the same " +
-				"frame; text needs an OCR language pack for one of the account's languages",
+				"frame; text needs an OCR language pack for one of the account's languages, " +
+				"and vim mode splits each word it reads into characters by their ink",
 		),
 		KeyFeed: supportedCapability("key injection available via SendInput"),
 		Systray: supportedCapability(
 			"tray icon available via the Win32 notification area (Shell_NotifyIcon)",
+		),
+		Clipboard: supportedCapability(
+			"clipboard writes available via the Win32 clipboard (SetClipboardData)",
 		),
 	}
 }

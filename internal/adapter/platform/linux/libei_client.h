@@ -1,6 +1,8 @@
 #ifndef LIBEI_CLIENT_H
 #define LIBEI_CLIENT_H
 
+#include <stdint.h>
+
 // libei input-injection client for Wayland compositors that do not implement
 // zwlr_virtual_pointer_v1 (notably KWin/KDE Plasma). Input is delivered through
 // the org.freedesktop.portal.RemoteDesktop portal, where liboeffis runs the
@@ -43,15 +45,24 @@ int neru_ei_move_abs(NeruEiClient *c, int x, int y);
 // evdev code (e.g. 0x110 for BTN_LEFT). Returns 1 on success, 0 otherwise.
 int neru_ei_button(NeruEiClient *c, int button, int pressed);
 
-// Emit a scroll event. axis: 0 = vertical, 1 = horizontal. delta is the scroll
-// distance in logical pixels (positive = down/right), and is a double because
-// ei_device_scroll_delta is pixel-precise. A fraction of a wheel notch is a
-// legal delta, which is what an animated scroll sends. Returns 1 on success.
+// Emit a scroll event. axis: 0 = vertical, 1 = horizontal. delta is in logical
+// pixels (positive = down/right). A fraction of a notch is legal, which an
+// animated scroll sends. Returns 1 on success.
 int neru_ei_scroll(NeruEiClient *c, int axis, double delta);
+
+// Emit a wheel-click scroll. axis: 0 = vertical, 1 = horizontal. value120 is
+// in 120ths of a click (positive = down/right). Returns 1 on success.
+int neru_ei_scroll_discrete(NeruEiClient *c, int axis, int value120);
 
 // Press or release a keyboard key (evdev keycode). Returns 1 on success, 0 when
 // no keyboard device is available on the granted session.
 int neru_ei_key(NeruEiClient *c, int keycode, int pressed);
+
+// How many modifier bits the compositor's reports have turned on so far, read
+// without blocking. Mutter can deliver a pointer event sent right after a
+// modifier press before the modifier itself, and its report is the only sign
+// the modifier has taken effect.
+uint32_t neru_ei_modifiers_risen(NeruEiClient *c);
 
 // Whether the granted session exposes a keyboard device.
 int neru_ei_has_keyboard(NeruEiClient *c);

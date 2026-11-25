@@ -272,36 +272,40 @@ test-unit:
 test-foundation:
     @echo "Running cross-platform foundation tests..."
     go test ./internal/config ./internal/config/loader \
-        ./internal/app/components ./internal/app/components/scroll \
+        ./internal/app/components \
         ./internal/app/heldmotion ./internal/app/heldrepeat \
         ./internal/app/ipcctrl \
         ./internal/app/keybinding \
+        ./internal/app/modes \
         ./internal/app/sequence \
         ./internal/app/services ./internal/app/services/indicator \
         ./internal/app/services/modeindicator \
         ./internal/app/services/stickyindicator \
         ./internal/app/services/virtualpointer \
-        ./internal/architecture ./internal/cli/cliutil \
+        ./internal/architecture ./internal/buildinfo ./internal/cli/cliutil \
         ./internal/domain ./internal/domain/action \
         ./internal/domain/element ./internal/domain/event \
         ./internal/domain/grid \
         ./internal/domain/hint ./internal/domain/keyvocab \
         ./internal/domain/modecmd ./internal/domain/motion \
         ./internal/domain/parity \
-        ./internal/domain/recursivegrid \
+        ./internal/domain/recursivegrid ./internal/domain/screentext \
         ./internal/domain/bisect \
         ./internal/domain/state ./internal/derrors \
         ./internal/flagref ./internal/supportref ./internal/configschema \
+        ./internal/describe ./internal/hookref \
         ./internal/schematest \
         ./client \
         ./internal/adapter/logger \
         ./internal/adapter/overlay/render/badge \
         ./internal/adapter/overlay/render/motion \
         ./internal/adapter/platform/compositorcli \
+        ./internal/adapter/platform/cursoranim \
         ./internal/adapter/platform/fontcache \
         ./internal/adapter/platform/fontgeneric \
         ./internal/adapter/platform/modifierstate \
         ./internal/adapter/platform/mousestate \
+        ./internal/adapter/platform/scrollanim \
         ./internal/adapter/systray/icon \
         ./internal/adapter/vision/contour \
         ./internal/adapter/vision/frame \
@@ -473,6 +477,14 @@ genman OUTPUT_DIR="build/man":
 genflagref:
     @echo "Generating the mode-flag reference..."
     go run ./cmd/genflagref docs/reference/cli.md
+
+# Rewrite the hooks and hook-variable tables from the event catalog. Run after
+# adding an event or changing what one carries. The architecture guardrail
+# fails while the page is out of date.
+[doc('Rewrite the hooks tables in docs/reference/configuration.md.')]
+genhookref:
+    @echo "Generating the hooks reference..."
+    go run ./cmd/genhookref docs/reference/configuration.md
 
 # Rewrite the published schemas: the one editors read for config.toml, from
 # the config structs, and the IPC one, from the wire types. Run after changing
@@ -655,7 +667,7 @@ test-linux:
     set -euo pipefail
     echo "Building the Linux CI-equivalent image (cached after first run)..."
     docker build -q -t neru-linux-ci - >/dev/null <<'DOCKERFILE'
-    FROM golang:1.26
+    FROM golang:1.27
     RUN apt-get update -qq && apt-get install -y -qq \
         libcairo2-dev libwayland-dev libx11-dev libxtst-dev libxrandr-dev \
         libxrender-dev libxext-dev libxfixes-dev libxkbcommon-dev \
@@ -675,7 +687,7 @@ test-linux-nocgo:
     @echo "Running the Linux test suite in a container (CGO off)..."
     docker run --rm -v "$PWD":/src -w /src \
         -e CGO_ENABLED=0 -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod \
-        golang:1.26 go test -count=1 -timeout 600s ./...
+        golang:1.27 go test -count=1 -timeout 600s ./...
     @echo "✓ Linux no-cgo test suite passed"
 
 # Compile every package *and its test binary* for Windows.
@@ -705,7 +717,7 @@ test-windows-compile:
 # linux- or windows-tagged source is invisible locally and first appears as a
 # red CI job. Reproducing it needs the Linux toolchain (CGO on, native dev
 # headers), so this runs in the same container image the Linux CI job uses, with
-# the golangci-lint version pinned in .github/workflows/ci.yml.
+# the golangci-lint version that oku.lock pins.
 #
 # Requires a running Docker daemon.
 [doc('Lint the Linux and Windows builds in a Docker container.')]
@@ -714,7 +726,7 @@ lint-cross:
     set -euo pipefail
     echo "Building the Linux lint image (cached after first run)..."
     docker build -q -t neru-linux-ci - >/dev/null <<'BASE'
-    FROM golang:1.26
+    FROM golang:1.27
     RUN apt-get update -qq && apt-get install -y -qq \
         libcairo2-dev libwayland-dev libx11-dev libxtst-dev libxrandr-dev \
         libxrender-dev libxext-dev libxfixes-dev libxkbcommon-dev \
@@ -724,7 +736,7 @@ lint-cross:
     BASE
     docker build -q -t neru-linux-lint - >/dev/null <<'LINT'
     FROM neru-linux-ci
-    RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+    RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
     LINT
     echo "Linting for linux/amd64 (CGO on)..."
     docker run --rm -v "$PWD":/src -w /src \
@@ -753,13 +765,13 @@ check-cross: vet-cross test-windows-compile
 # build-tagged. A vulnerable Windows-only dependency is invisible from a macOS
 # run, so CI runs this natively on all three platforms.
 #
-# The tool is fetched at @latest rather than pinned, because its value is knowing about
-# vulnerabilities published after the pin would have been written, and the
-# vulnerability database is fetched at run time regardless.
+# Pinning the tool makes a run reproducible. It still reports vulnerabilities
+# published after the pin, because it fetches the vulnerability database at run
+# time.
 [doc('Scan the dependencies for known vulnerabilities with govulncheck.')]
 vuln:
     @echo "Scanning for known vulnerabilities..."
-    go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+    go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
     @echo "✓ No known vulnerabilities"
 
 # Run unit tests with coverage and print the total.
@@ -972,7 +984,6 @@ fetch-protocols:
     curl -fsSL "https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable/wlr-foreign-toplevel-management-unstable-v1.xml" -o {{ PROTOCOL_DIR }}/wlr-foreign-toplevel-management-unstable-v1.xml
     curl -fsSL "https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable/wlr-screencopy-unstable-v1.xml" -o {{ PROTOCOL_DIR }}/wlr-screencopy-unstable-v1.xml
     curl -fsSL "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/raw/master/stable/viewporter/viewporter.xml" -o {{ PROTOCOL_DIR }}/viewporter.xml
-    curl -fsSL "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/raw/main/unstable/text-input/text-input-unstable-v3.xml" -o {{ PROTOCOL_DIR }}/text-input-unstable-v3.xml
     curl -fsSL "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/raw/master/staging/fractional-scale/fractional-scale-v1.xml" -o {{ PROTOCOL_DIR }}/fractional-scale-v1.xml
     curl -fsSL "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/raw/main/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml" -o {{ PROTOCOL_DIR }}/ext-foreign-toplevel-list-v1.xml
     curl -fsSL "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/raw/main/staging/ext-workspace/ext-workspace-v1.xml" -o {{ PROTOCOL_DIR }}/ext-workspace-v1.xml
@@ -1021,10 +1032,6 @@ generate-protocols:
     # viewporter (stable), maps an over-rendered buffer down to logical size for fractional scaling
     wayland-scanner client-header < {{ PROTOCOL_DIR }}/viewporter.xml > {{ WLR_PROTOCOL_DIR }}/viewporter.h
     wayland-scanner private-code < {{ PROTOCOL_DIR }}/viewporter.xml > {{ WLR_PROTOCOL_DIR }}/viewporter.c
-
-    # text-input-v3 (unstable), for input-method text in the hint-search field
-    wayland-scanner client-header < {{ PROTOCOL_DIR }}/text-input-unstable-v3.xml > {{ WLR_PROTOCOL_DIR }}/text-input-v3.h
-    wayland-scanner private-code < {{ PROTOCOL_DIR }}/text-input-unstable-v3.xml > {{ WLR_PROTOCOL_DIR }}/text-input-v3.c
 
     # fractional-scale (staging), for the compositor's preferred per-surface fractional scale
     wayland-scanner client-header < {{ PROTOCOL_DIR }}/fractional-scale-v1.xml > {{ WLR_PROTOCOL_DIR }}/fractional-scale-v1.h

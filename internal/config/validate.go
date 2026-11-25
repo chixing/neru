@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/y3owk1n/neru/internal/derrors"
+	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 )
 
 // Validate validates the configuration, reporting only what stops it loading.
@@ -101,6 +102,11 @@ func (c *Config) ValidateWithWarnings(warnings *Warnings, written WrittenConfig)
 		return err
 	}
 
+	err = c.ValidateVim()
+	if err != nil {
+		return err
+	}
+
 	err = c.ValidateVirtualPointer()
 	if err != nil {
 		return err
@@ -149,6 +155,13 @@ func (c *Config) ValidateWithWarnings(warnings *Warnings, written WrittenConfig)
 	}
 
 	err = c.ValidateHooks(warnings)
+	if err != nil {
+		return err
+	}
+
+	// After the hotkey tables, which it reads to find a chord a binding
+	// would answer before a hint label could.
+	err = c.ValidateSelectWith()
 	if err != nil {
 		return err
 	}
@@ -265,7 +278,7 @@ func (c *Config) ValidateGeneral(warnings *Warnings) error {
 			return err
 		}
 
-		if !HasPassthroughModifier(key) {
+		if !keyvocab.HasPassthroughModifier(key) {
 			return derrors.Newf(
 				derrors.CodeInvalidConfig,
 				"%s must include Cmd, Ctrl, Alt, or Option: %s",
@@ -327,6 +340,7 @@ func (c *Config) ValidateModeIndicator() error {
 		{c.ModeIndicator.Grid, ModeNameGrid},
 		{c.ModeIndicator.RecursiveGrid, ModeNameRecursiveGrid},
 		{c.ModeIndicator.Bisect, ModeNameBisect},
+		{c.ModeIndicator.Vim, ModeNameVim},
 	}
 
 	for _, mode := range modes {
@@ -345,10 +359,12 @@ func (c *Config) ValidateModeIndicator() error {
 
 // ValidateModes validates that at least one mode is enabled.
 func (c *Config) ValidateModes() error {
-	if !c.Hints.Enabled && !c.Grid.Enabled && !c.RecursiveGrid.Enabled && !c.Bisect.Enabled {
+	if !c.Hints.Enabled && !c.Grid.Enabled && !c.RecursiveGrid.Enabled && !c.Bisect.Enabled &&
+		!c.Vim.Enabled {
 		return derrors.New(
 			derrors.CodeInvalidConfig,
-			"at least one mode must be enabled: hints.enabled, grid.enabled, recursive_grid.enabled, or bisect.enabled",
+			"at least one mode must be enabled: hints.enabled, grid.enabled, recursive_grid.enabled, "+
+				"bisect.enabled, or vim.enabled",
 		)
 	}
 

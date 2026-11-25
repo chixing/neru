@@ -73,32 +73,72 @@ func testContext(t *testing.T) context.Context {
 }
 
 // TestClient_Status_DecodesTheReply also pins the request a client sends: the
-// protocol it speaks, and no version, which the daemon would refuse unless it
-// matched the daemon's own build.
+// action, the protocol it speaks, and no version, which the daemon would
+// refuse unless it matched the daemon's own build.
 func TestClient_Status_DecodesTheReply(t *testing.T) {
-	isolate(t)
+	tests := []struct {
+		action string
+		reply  any
+		call   func(t *testing.T, neru *client.Client)
+	}{
+		{
+			action: "status",
+			reply:  ipc.StatusData{Enabled: true, Mode: modeHints},
+			call: func(t *testing.T, neru *client.Client) {
+				t.Helper()
 
-	requests := make(chan ipc.Command, 1)
+				status, err := neru.Status(testContext(t))
+				if err != nil {
+					t.Fatalf("Status() error = %v", err)
+				}
 
-	serve(t, func(_ context.Context, cmd ipc.Command) ipc.Response {
-		requests <- cmd
+				if !status.Enabled || status.Mode != modeHints {
+					t.Errorf("Status() = %+v, want enabled in hints", status)
+				}
+			},
+		},
+		{
+			action: "describe",
+			reply: ipc.DescribeData{
+				Protocol: client.ProtocolVersion,
+				Actions:  []ipc.DescribeAction{{Name: "left_click", Here: true}},
+			},
+			call: func(t *testing.T, neru *client.Client) {
+				t.Helper()
 
-		return ipc.Response{Success: true, Data: ipc.StatusData{Enabled: true, Mode: modeHints}}
-	}, nil)
+				described, err := neru.Describe(testContext(t))
+				if err != nil {
+					t.Fatalf("Describe() error = %v", err)
+				}
 
-	status, err := client.New().Status(testContext(t))
-	if err != nil {
-		t.Fatalf("Status() error = %v", err)
+				if len(described.Actions) != 1 || described.Actions[0].Name != "left_click" {
+					t.Errorf("Describe() = %+v, want left_click", described)
+				}
+			},
+		},
 	}
 
-	if !status.Enabled || status.Mode != modeHints {
-		t.Errorf("Status() = %+v, want enabled in hints", status)
-	}
+	for _, testCase := range tests {
+		t.Run(testCase.action, func(t *testing.T) {
+			isolate(t)
 
-	got := <-requests
-	if got.Action != "status" || got.Protocol != client.ProtocolVersion || got.Version != "" {
-		t.Errorf("request = %+v, want status at protocol %d with no version",
-			got, client.ProtocolVersion)
+			requests := make(chan ipc.Command, 1)
+
+			serve(t, func(_ context.Context, cmd ipc.Command) ipc.Response {
+				requests <- cmd
+
+				return ipc.Response{Success: true, Data: testCase.reply}
+			}, nil)
+
+			testCase.call(t, client.New())
+
+			got := <-requests
+			if got.Action != testCase.action || got.Protocol != client.ProtocolVersion ||
+				got.Version != "" {
+				t.Errorf("request = %+v, want %s at protocol %d with no version",
+					got, testCase.action, client.ProtocolVersion)
+			}
+		})
 	}
 }
 
@@ -248,6 +288,17 @@ func TestClient_Send_WithNoDaemon(t *testing.T) {
 	_, err := client.New().Send(testContext(t), "ping")
 	if !errors.Is(err, client.ErrNoDaemon) {
 		t.Fatalf("Send() error = %v, want ErrNoDaemon", err)
+	}
+}
+
+// TestClientProtocolVersion_MatchesTheDaemons pins the client to the protocol
+// the daemon in the same release speaks. A daemon accepts a request on a lower
+// protocol, so if the daemon's version rose and the client's did not, every
+// other test would still pass and the client would keep sending the old one.
+func TestClientProtocolVersion_MatchesTheDaemons(t *testing.T) {
+	if client.ProtocolVersion != ipc.ProtocolVersion {
+		t.Errorf("client.ProtocolVersion = %d, want ipc.ProtocolVersion %d",
+			client.ProtocolVersion, ipc.ProtocolVersion)
 	}
 }
 

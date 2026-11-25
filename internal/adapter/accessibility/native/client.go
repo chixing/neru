@@ -8,21 +8,19 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/y3owk1n/neru/internal/adapter/accessibility/ax"
-	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/derrors"
-	"github.com/y3owk1n/neru/internal/domain/action"
 )
 
 // Client implements ax.Client using the infrastructure layer.
 type Client struct {
 	logger         *zap.Logger
-	configProvider config.Provider
+	settingsSource ax.SettingsSource
 }
 
 // New creates the native accessibility client for the host platform.
 func New(
 	logger *zap.Logger,
-	configProvider config.Provider,
+	settingsSource ax.SettingsSource,
 ) *Client {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -30,7 +28,7 @@ func New(
 
 	return &Client{
 		logger:         logger.Named("accessibility.client"),
-		configProvider: configProvider,
+		settingsSource: settingsSource,
 	}
 }
 
@@ -42,21 +40,6 @@ func (c *Client) FrontmostWindow(_ context.Context) (ax.Window, error) {
 	}
 
 	return &InfraWindow{element: window}, nil
-}
-
-// AllWindows returns all windows of the focused application.
-func (c *Client) AllWindows(_ context.Context) ([]ax.Window, error) {
-	windows, err := AllWindows()
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]ax.Window, len(windows))
-	for i, w := range windows {
-		result[i] = &InfraWindow{element: w}
-	}
-
-	return result, nil
 }
 
 // FrontmostAndPopoverWindows returns the frontmost window plus popovers.
@@ -113,7 +96,7 @@ func (c *Client) ClickableNodes(
 
 	clickableNodes := tree.FindClickableElements(
 		allowedRoles,
-		c.configProvider,
+		c.settingsSource,
 		ignoreClickableCheck,
 	)
 
@@ -127,7 +110,7 @@ func (c *Client) ClickableNodes(
 		clickableNodesResult[i] = &InfraNode{
 			node:           node,
 			clickable:      true,
-			configProvider: c.configProvider,
+			settingsSource: c.settingsSource,
 		}
 	}
 
@@ -153,7 +136,7 @@ func (c *Client) MenuBarClickableElements(
 	nodes, nodesErr := MenuBarClickableElements(
 		ctx,
 		c.logger,
-		c.configProvider,
+		c.settingsSource,
 		maxDepth,
 	)
 	if nodesErr != nil {
@@ -169,7 +152,7 @@ func (c *Client) MenuBarClickableElements(
 		nodesResult[index] = &InfraNode{
 			node:           node,
 			clickable:      true,
-			configProvider: c.configProvider,
+			settingsSource: c.settingsSource,
 		}
 	}
 
@@ -182,7 +165,7 @@ func (c *Client) MissionControlClickableNodes(
 	ctx context.Context,
 	maxDepth int,
 ) ([]ax.Node, error) {
-	nodes, nodesErr := MissionControlClickableElements(ctx, c.logger, c.configProvider, maxDepth)
+	nodes, nodesErr := MissionControlClickableElements(ctx, c.logger, c.settingsSource, maxDepth)
 	if nodesErr != nil {
 		if derrors.IsNotSupported(nodesErr) {
 			return nil, nodesErr
@@ -200,7 +183,7 @@ func (c *Client) MissionControlClickableNodes(
 		nodesResult[index] = &InfraNode{
 			node:           node,
 			clickable:      true,
-			configProvider: c.configProvider,
+			settingsSource: c.settingsSource,
 		}
 	}
 
@@ -220,7 +203,7 @@ func (c *Client) ClickableElementsFromBundleID(
 		bundleID,
 		roles,
 		c.logger,
-		c.configProvider,
+		c.settingsSource,
 		maxDepth,
 	)
 	if nodesErr != nil {
@@ -236,138 +219,11 @@ func (c *Client) ClickableElementsFromBundleID(
 		nodesResult[index] = &InfraNode{
 			node:           node,
 			clickable:      true,
-			configProvider: c.configProvider,
+			settingsSource: c.settingsSource,
 		}
 	}
 
 	return nodesResult, nil
-}
-
-// ActiveScreenBounds returns the bounds of the active screen.
-func (c *Client) ActiveScreenBounds() image.Rectangle {
-	return platformActiveScreenBounds()
-}
-
-// PerformAction performs the specified action at the given point.
-func (c *Client) PerformAction(
-	actionType action.Type,
-	point image.Point,
-	restoreCursor bool,
-	modifiers action.Modifiers,
-) error {
-	var performActionErr error
-
-	switch actionType {
-	case action.TypeLeftClick:
-		// A left click while the left button is held ends that drag at the
-		// click point, as left_click --state up would. A full click there would
-		// press over the held button and leave it recorded as held.
-		if IsMouseButtonDown(action.ButtonLeft) {
-			performActionErr = MouseUpAtPoint(point, action.ButtonLeft, modifiers)
-
-			ensureMouseUp()
-
-			break
-		}
-
-		ensureMouseUp()
-
-		performActionErr = LeftClickAtPoint(point, restoreCursor, modifiers)
-	case action.TypeRightClick:
-		ensureMouseUp()
-
-		performActionErr = RightClickAtPoint(point, restoreCursor, modifiers)
-	case action.TypeMiddleClick:
-		ensureMouseUp()
-
-		performActionErr = MiddleClickAtPoint(point, restoreCursor, modifiers)
-	case action.TypeLeftMouseDown, action.TypeLeftMouseUp,
-		action.TypeRightMouseDown, action.TypeRightMouseUp,
-		action.TypeMiddleMouseDown, action.TypeMiddleMouseUp,
-		action.TypeLeftMouseToggle, action.TypeRightMouseToggle, action.TypeMiddleMouseToggle:
-		performActionErr = performMouseButtonAction(actionType, point, modifiers)
-	case action.TypeMoveMouse, action.TypeMoveMouseRelative:
-		MoveMouseToPoint(point, false)
-
-		return nil
-	case action.TypeScroll:
-		return derrors.Newf(
-			derrors.CodeInvalidInput,
-			"scroll actions should use Scroll method: %s",
-			actionType,
-		)
-	default:
-		return derrors.Newf(derrors.CodeInvalidInput, "unsupported action type: %s", actionType)
-	}
-
-	if performActionErr != nil {
-		return derrors.Wrap(performActionErr, derrors.CodeActionFailed, "failed to perform action")
-	}
-
-	return nil
-}
-
-// performMouseButtonAction presses or releases the button addressed by
-// actionType. Toggle actions resolve against the button state recorded by the
-// platform adapter. Held buttons are released and free buttons are pressed.
-func performMouseButtonAction(
-	actionType action.Type,
-	point image.Point,
-	modifiers action.Modifiers,
-) error {
-	button, phase, ok := actionType.MouseButtonPhase()
-	if !ok {
-		return derrors.Newf(
-			derrors.CodeInvalidInput,
-			"not a mouse button action: %s",
-			actionType,
-		)
-	}
-
-	if phase == action.PhaseToggle {
-		if IsMouseButtonDown(button) {
-			phase = action.PhaseUp
-		} else {
-			phase = action.PhaseDown
-		}
-	}
-
-	if phase == action.PhaseUp {
-		return MouseUpAtPoint(point, button, modifiers)
-	}
-
-	return MouseDownAtPoint(point, button, modifiers)
-}
-
-// Scroll performs a scroll action, presenting modifiers as held while it is
-// emitted.
-func (c *Client) Scroll(deltaX, deltaY int, modifiers action.Modifiers) error {
-	ensureMouseUp()
-
-	scrollErr := ScrollAtCursor(deltaX, deltaY, modifiers)
-	if scrollErr != nil {
-		// A backend refusing a modifier it cannot present says so with
-		// CodeNotSupported, and derrors matches only the outermost code, so
-		// wrapping here would turn "this platform cannot do that" into a
-		// generic failure before any caller could tell them apart.
-		if derrors.IsNotSupported(scrollErr) {
-			return scrollErr
-		}
-
-		return derrors.Wrap(scrollErr, derrors.CodeActionFailed, "failed to scroll")
-	}
-
-	return nil
-}
-
-// MoveMouse moves the mouse to the specified point.
-func (c *Client) MoveMouse(p image.Point, bypassSmooth bool) {
-	MoveMouseToPoint(p, bypassSmooth)
-}
-
-// CursorPosition returns the current cursor position.
-func (c *Client) CursorPosition() image.Point {
-	return CurrentCursorPosition()
 }
 
 // CheckPermissions checks if accessibility permissions are granted.
@@ -429,10 +285,10 @@ func (c *Client) buildClickableOpts(
 	maxDepth int,
 ) (TreeOptions, map[string]struct{}, bool) {
 	opts := DefaultTreeOptions(c.logger)
-	opts.SetConfigProvider(c.configProvider)
+	opts.SetSettingsSource(c.settingsSource)
 
-	if cfg := currentConfig(c.configProvider); cfg != nil {
-		depth := cfg.Hints.MaxDepth
+	if cfg := currentSettings(c.settingsSource); cfg != nil {
+		depth := cfg.HintsMaxDepth()
 		if maxDepth > 0 {
 			depth = maxDepth
 		}
@@ -454,7 +310,7 @@ func (c *Client) buildClickableOpts(
 	opts.SetRoles(allowedRoles)
 
 	ignoreClickableCheck := false
-	if cfg := currentConfig(c.configProvider); cfg != nil {
+	if cfg := currentSettings(c.settingsSource); cfg != nil {
 		ignoreClickableCheck = cfg.ShouldIgnoreClickableCheckForApp(element.BundleIdentifier())
 	}
 
@@ -527,7 +383,7 @@ func (a *InfraApp) Info() (*ax.AppInfo, error) {
 type InfraNode struct {
 	node           *TreeNode
 	clickable      bool
-	configProvider config.Provider
+	settingsSource ax.SettingsSource
 }
 
 // ID returns the node ID.
@@ -630,7 +486,7 @@ func (n *InfraNode) IsClickable() bool {
 		return false
 	}
 
-	return n.node.Element().IsClickable(n.node.Info(), nil, n.configProvider, false)
+	return n.node.Element().IsClickable(n.node.Info(), nil, n.settingsSource, false)
 }
 
 // Release releases the underlying AXUIElementRef held by this node.

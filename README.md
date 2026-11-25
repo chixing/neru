@@ -21,7 +21,7 @@ Hints, grids and vim keys for your whole desktop. Free, open source, one binary,
 
 ---
 
-https://github.com/user-attachments/assets/f4c86753-0109-47c9-a94e-775af2546a17
+https://github.com/user-attachments/assets/322e2666-d961-46a9-bd7c-39e42fda8819
 
 Neru does what Vimium does in the browser, for every app, window, menu bar and dock item on your screen. Press a hotkey, type the label on the element you want, and the cursor jumps there and clicks.
 
@@ -59,21 +59,27 @@ Run `neru launch`, grant the permissions `neru doctor` asks for, then press
 <table>
 <tr>
 <td align="center" width="50%">
-<img src="https://github.com/user-attachments/assets/d82e14fa-0ac4-4081-9a0a-f99243d1da5b" alt="Recursive Grid Mode" /><br/>
-<sub><b>Recursive Grid</b></sub>
+<img src="https://github.com/user-attachments/assets/4327c027-d3c8-4915-a740-a0c9c46b386d" alt="Hints Mode" /><br/>
+<sub><b>Hints</b></sub>
 </td>
 <td align="center" width="50%">
-<img src="https://github.com/user-attachments/assets/a19ef869-6400-4b5f-b3c6-92af69c2a76b" alt="Hints Mode" /><br/>
-<sub><b>Hints</b></sub>
+<img src="https://github.com/user-attachments/assets/3b8a4ccb-f102-4971-902e-c4097d14afe5" alt="Vim Mode" /><br/>
+<sub><b>Vim</b></sub>
 </td>
 </tr>
 <tr>
 <td align="center" width="50%">
-<img src="https://github.com/user-attachments/assets/913e9d15-7f42-470d-b5cf-7a55065789fe" alt="Bisect Mode" /><br/>
-<sub><b>Bisect</b></sub>
+<img src="https://github.com/user-attachments/assets/f72b43fb-9745-4c17-a80d-15ca4077a5a2" alt="Recursive Grid Mode" /><br/>
+<sub><b>Recursive Grid</b></sub>
 </td>
 <td align="center" width="50%">
-<img src="https://github.com/user-attachments/assets/392fcfa1-9779-464c-8bac-a05a6afc73c3" alt="Grid Mode" /><br/>
+<img src="https://github.com/user-attachments/assets/6b18396a-9bb8-4d1b-a8f8-270c19c0f727" alt="Bisect Mode" /><br/>
+<sub><b>Bisect</b></sub>
+</td>
+</tr>
+<tr>
+<td align="center" colspan="2">
+<img src="https://github.com/user-attachments/assets/b0759650-a3fa-43f3-9123-237124afe870" alt="Grid Mode" width="50%" /><br/>
 <sub><b>Grid</b></sub>
 </td>
 </tr>
@@ -86,6 +92,7 @@ Run `neru launch`, grant the permissions `neru doctor` asks for, then press
 | **Hints**             | `Primary+Shift+Space` | Labels every target via accessibility tree, OCR or a pixel scan | Native apps, Electron, browsers, Figma      |
 | **Grid**              | `Primary+Shift+G`     | Type a row and column label to jump to a cell                   | Coarse jumps across big monitors            |
 | **Scroll**            | `Primary+Shift+S`     | `j`/`k`, `u`/`d`, `gg`/`G`, `h`/`l` in any scroll view          | Reading without lifting your hands          |
+| **Vim**               | unbound               | Reads the screen's text and moves a cursor over it with vim keys | Selecting, copying and editing any app's text |
 | **Monitor Select**    | disabled, unbound     | Labels each display, type one to jump                           | Multi-monitor setups                        |
 | **Your own**          | unbound               | A name, an indicator and a key table you declare in config      | Window management layers, app-specific keys |
 

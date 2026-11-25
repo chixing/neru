@@ -67,6 +67,10 @@ const (
 	// FlagTargets supplies the targets hints mode labels, in place of a scan.
 	FlagTargets Flag = "targets"
 
+	// FlagNoSubgrid completes a grid selection as soon as a cell label is
+	// typed, without the subgrid.
+	FlagNoSubgrid Flag = "no-subgrid"
+
 	// FlagZoomToDepth auto-zooms recursive grid to a depth.
 	FlagZoomToDepth Flag = "zoom-to-depth"
 
@@ -130,6 +134,7 @@ const (
 	usageLabelDirection      = "Label order: normal (shorter labels first) or reverse (spread across the alphabet)"
 	usageSplitWord           = "Hint each word of detected text separately. Needs the vision strategy"
 	usageTargets             = "Label these targets instead of scanning, as JSON in the shape 'neru query hints --json' prints. Refuses the flags that decide what a scan collects, and --repeat"
+	usageNoSubgrid           = "Select a cell's center as soon as its label is typed, without opening the subgrid"
 	usageZoomToDepth         = "Open recursive grid already zoomed to this depth at the cursor"
 )
 
@@ -143,7 +148,8 @@ const usageCycleToggle = "With --toggle, running the command on the last value l
 // is offered is the one the rules accept rather than a list kept alongside it.
 var usageAction = "Action to run on the selection: " +
 	action.ModeActionNamesString() +
-	". move_mouse only leaves the cursor there. Chain with commas, as in left_click,left_click"
+	". move_mouse only leaves the cursor there. Chain with commas, as in left_click,left_click. " +
+	"In hints, copy_text copies the hint's text instead, and takes no chain"
 
 // String returns the bare name.
 func (f Flag) String() string { return string(f) }
@@ -356,8 +362,11 @@ func matchesForm(arg, form string) bool {
 // The modes each group of flags belongs to.
 var (
 	// selectionModes make a selection the user then acts on, so they take the
-	// flags that describe what happens to it.
-	selectionModes = []domain.Mode{domain.ModeHints, domain.ModeGrid, domain.ModeRecursiveGrid}
+	// flags that describe what happens to it. Vim clicks with keys of its own
+	// and stays open after, so it takes none of them.
+	selectionModes = []domain.Mode{
+		domain.ModeHints, domain.ModeGrid, domain.ModeRecursiveGrid,
+	}
 
 	// enterableModes are the modes a user enters. Every mode except idle,
 	// which is the departure rather than an arrival.
@@ -369,6 +378,7 @@ var (
 		domain.ModeScroll,
 		domain.ModeMonitorSelect,
 		domain.ModeCustom,
+		domain.ModeVim,
 	}
 
 	// hintsOnly are the flags that describe element detection, which only
@@ -383,17 +393,21 @@ var (
 		domain.ModeGrid,
 		domain.ModeRecursiveGrid,
 		domain.ModeBisect,
+		domain.ModeVim,
 	}
 
-	// scopedModes are the modes that read a capture scope: hints, whose
-	// capture strategies scan it, and the region modes, whose region starts
-	// as it.
+	// scopedModes are the modes that read a capture scope: hints and vim,
+	// whose capture scans it, and the region modes, whose region starts as it.
 	scopedModes = []domain.Mode{
 		domain.ModeHints,
 		domain.ModeGrid,
 		domain.ModeRecursiveGrid,
 		domain.ModeBisect,
+		domain.ModeVim,
 	}
+
+	// gridOnly is the one flag about the subgrid.
+	gridOnly = []domain.Mode{domain.ModeGrid}
 
 	// recursiveGridOnly is the one flag about zooming.
 	recursiveGridOnly = []domain.Mode{domain.ModeRecursiveGrid}
@@ -603,6 +617,12 @@ var descriptors = []Descriptor{
 		func(activation *Activation) { activation.SplitWord = enabled() },
 		func(activation Activation) []string {
 			return renderPresence(FlagSplitWord, activation.SplitWord)
+		},
+	),
+	presenceFlag(FlagNoSubgrid, "", usageNoSubgrid, gridOnly,
+		func(activation *Activation) { activation.NoSubgrid = enabled() },
+		func(activation Activation) []string {
+			return renderPresence(FlagNoSubgrid, activation.NoSubgrid)
 		},
 	),
 	valueFlag(FlagZoomToDepth, "", usageZoomToDepth, msgZoomToDepthValue, recursiveGridOnly,

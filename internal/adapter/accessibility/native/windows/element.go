@@ -8,9 +8,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/y3owk1n/neru/internal/adapter/accessibility/ax"
 	winplatform "github.com/y3owk1n/neru/internal/adapter/platform/windows"
-	"github.com/y3owk1n/neru/internal/config"
-	"github.com/y3owk1n/neru/internal/domain/action"
 	"github.com/y3owk1n/neru/internal/domain/element"
 )
 
@@ -68,7 +67,7 @@ func (e *Element) MenuBar() *Element { return nil }
 func (e *Element) IsClickable(
 	info *ElementInfo,
 	_ map[string]struct{},
-	_ config.Provider,
+	_ ax.SettingsSource,
 	_ bool,
 ) bool {
 	if info != nil {
@@ -165,9 +164,6 @@ func CheckAccessibilityPermissions() bool {
 	return true
 }
 
-// SystemWideElement returns the system-wide element (stub).
-func SystemWideElement() *Element { return nil }
-
 // FocusedApplication returns the focused application via Win32 foreground window APIs.
 func FocusedApplication() *Element {
 	bundleID, pid, err := winplatform.FocusedApplicationIdentity()
@@ -181,25 +177,8 @@ func FocusedApplication() *Element {
 	}
 }
 
-// ApplicationByPID returns an application by PID (stub).
-func ApplicationByPID(pid int) *Element { return nil }
-
 // ApplicationByBundleID returns an application by bundle ID (stub).
 func ApplicationByBundleID(bundleID string) *Element { return nil }
-
-// ElementAtPosition returns the element at a position (stub).
-func ElementAtPosition(x, y int) *Element { return nil }
-
-// AllWindows returns the windows of the focused application. Windows
-// enumeration is limited to the foreground top-level window for now.
-func AllWindows() ([]*Element, error) {
-	window := FrontmostWindow()
-	if window == nil {
-		return []*Element{}, nil
-	}
-
-	return []*Element{window}, nil
-}
 
 // FrontmostAndPopoverWindows returns the foreground window. Popover tracking is
 // not modeled on Windows. UI Automation enumerates popups under the same root.
@@ -234,96 +213,5 @@ func FrontmostWindow() *Element {
 	}
 }
 
-// IsMouseButtonDown returns whether the given mouse button is held down.
-func IsMouseButtonDown(button action.MouseButton) bool {
-	return winplatform.IsMouseButtonDown(button)
-}
-
-// EnsureMouseUp releases every mouse button Neru is currently holding down.
-func EnsureMouseUp() {
-	for _, button := range winplatform.HeldMouseButtons() {
-		_ = MouseUp(button)
-	}
-}
-
-// MoveMouseToPoint moves the mouse.
-func MoveMouseToPoint(point image.Point, _ bool) {
-	_ = winplatform.MoveMouseTo(point)
-}
-
-// LeftClickAtPoint clicks the mouse.
-func LeftClickAtPoint(
-	point image.Point,
-	_ bool,
-	modifiers action.Modifiers,
-) error {
-	return winplatform.ClickAt(point, action.ButtonLeft, modifiers)
-}
-
-// RightClickAtPoint clicks the mouse.
-func RightClickAtPoint(
-	point image.Point,
-	_ bool,
-	modifiers action.Modifiers,
-) error {
-	return winplatform.ClickAt(point, action.ButtonRight, modifiers)
-}
-
-// MiddleClickAtPoint clicks the mouse.
-func MiddleClickAtPoint(
-	point image.Point,
-	_ bool,
-	modifiers action.Modifiers,
-) error {
-	return winplatform.ClickAt(point, action.ButtonMiddle, modifiers)
-}
-
-// MouseDownAtPoint presses and holds the given mouse button at the point.
-func MouseDownAtPoint(
-	point image.Point,
-	button action.MouseButton,
-	modifiers action.Modifiers,
-) error {
-	return winplatform.MouseDown(point, button, modifiers)
-}
-
-// MouseUpAtPoint releases the given mouse button at the point.
-func MouseUpAtPoint(
-	point image.Point,
-	button action.MouseButton,
-	modifiers action.Modifiers,
-) error {
-	return winplatform.MouseUp(point, button, modifiers)
-}
-
-// MouseUp releases the given mouse button at the cursor.
-func MouseUp(button action.MouseButton) error {
-	pos, err := winplatform.CurrentCursorPosition()
-	if err != nil {
-		return err
-	}
-
-	return MouseUpAtPoint(pos, button, 0)
-}
-
-// ScrollAtCursor scrolls the mouse on both axes, with modifiers presented as
-// held.
-func ScrollAtCursor(deltaX int, deltaY int, modifiers action.Modifiers) error {
-	return winplatform.ScrollWheel(deltaX, deltaY, modifiers)
-}
-
-// CurrentCursorPosition returns the cursor position.
-func CurrentCursorPosition() image.Point {
-	pos, err := winplatform.CurrentCursorPosition()
-	if err != nil {
-		return image.Point{}
-	}
-
-	return pos
-}
-
 // IsMissionControlActive returns whether Mission Control is active (stub).
 func IsMissionControlActive() bool { return false }
-
-// DetectBundleType returns "" on Windows (stub).
-func DetectBundleType(_ string) string { return "" }

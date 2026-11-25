@@ -286,11 +286,6 @@ func ParseType(actionString string) (Type, error) {
 	}
 }
 
-// IsClick returns true if the action is a click type.
-func (t Type) IsClick() bool {
-	return t == TypeLeftClick || t == TypeRightClick || t == TypeMiddleClick
-}
-
 // IsMouseButton returns true if the action involves a mouse button.
 func (t Type) IsMouseButton() bool {
 	_, _, ok := t.MouseButtonPhase()
@@ -303,11 +298,6 @@ func (t Type) IsMouseButton() bool {
 // does nothing else.
 func (t Type) IsModeAction() bool {
 	return t.IsMouseButton() || t == TypeMoveMouse
-}
-
-// IsMoveMouse returns true if the action moves the mouse cursor.
-func (t Type) IsMoveMouse() bool {
-	return t == TypeMoveMouse || t == TypeMoveMouseRelative
 }
 
 // Name is a named action that can be performed by the application.
@@ -403,6 +393,10 @@ const (
 	NameSearchHints Name = "search_hints"
 	// NameRefreshHints rescans hints mode with the flags the session holds.
 	NameRefreshHints Name = "refresh_hints"
+	// NameSessionAction runs the open hints session's --action at the cursor.
+	NameSessionAction Name = "session_action"
+	// NameCopyText copies the text of the selected hint to the clipboard.
+	NameCopyText Name = "copy_text"
 	// NameSnap moves the cursor onto the nearest element hints would label.
 	NameSnap Name = "snap"
 
@@ -552,6 +546,16 @@ func IsRefreshHintsAction(name string) bool {
 	return Name(name) == NameRefreshHints
 }
 
+// IsSessionActionAction reports whether the given action is session_action.
+func IsSessionActionAction(name string) bool {
+	return Name(name) == NameSessionAction
+}
+
+// IsCopyTextAction reports whether the given action is copy_text.
+func IsCopyTextAction(name string) bool {
+	return Name(name) == NameCopyText
+}
+
 // IsSnapAction reports whether the given action is snap.
 func IsSnapAction(name string) bool {
 	return Name(name) == NameSnap
@@ -589,7 +593,7 @@ func IsKnownName(name Name) bool {
 		NameWaitForModeExit, NameSaveCursorPos, NameRestoreCursorPos,
 		NameScrollUp, NameScrollDown, NameScrollLeft, NameScrollRight,
 		NameGoTop, NameGoBottom, NamePageUp, NamePageDown,
-		NameMoveMonitor, NameFeed, NameSleep, NameCycleHint, NameSearchHints, NameRefreshHints, NameSnap,
+		NameMoveMonitor, NameFeed, NameSleep, NameCycleHint, NameSearchHints, NameRefreshHints, NameSessionAction, NameCopyText, NameSnap,
 		NameHideCursor, NameShowCursor:
 		return true
 	default:
@@ -618,7 +622,7 @@ func IsScrollSubAction(name string) bool {
 		NameMoveMouse, NameMoveMouseRelative, NameScroll,
 		NameReset, NameBackspace, NameMoveCell, NameBisect,
 		NameWaitForModeExit, NameSaveCursorPos, NameRestoreCursorPos,
-		NameMoveMonitor, NameFeed, NameSleep, NameCycleHint, NameSearchHints, NameRefreshHints, NameSnap,
+		NameMoveMonitor, NameFeed, NameSleep, NameCycleHint, NameSearchHints, NameRefreshHints, NameSessionAction, NameCopyText, NameSnap,
 		NameHideCursor, NameShowCursor:
 		return false
 	default:
@@ -641,44 +645,6 @@ func IsHeldRepeatAction(name Name) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-// ToName converts a Type to its corresponding Name.
-func (t Type) ToName() Name {
-	switch t {
-	case TypeLeftClick:
-		return NameLeftClick
-	case TypeRightClick:
-		return NameRightClick
-	case TypeMiddleClick:
-		return NameMiddleClick
-	case TypeLeftMouseDown:
-		return NameLeftMouseDown
-	case TypeLeftMouseUp:
-		return NameLeftMouseUp
-	case TypeRightMouseDown:
-		return NameRightMouseDown
-	case TypeRightMouseUp:
-		return NameRightMouseUp
-	case TypeMiddleMouseDown:
-		return NameMiddleMouseDown
-	case TypeMiddleMouseUp:
-		return NameMiddleMouseUp
-	case TypeLeftMouseToggle:
-		return NameLeftMouseToggle
-	case TypeRightMouseToggle:
-		return NameRightMouseToggle
-	case TypeMiddleMouseToggle:
-		return NameMiddleMouseToggle
-	case TypeMoveMouse:
-		return NameMoveMouse
-	case TypeMoveMouseRelative:
-		return NameMoveMouseRelative
-	case TypeScroll:
-		return NameScroll
-	default:
-		return ""
 	}
 }
 
@@ -733,6 +699,8 @@ func (n Name) ToType() (Type, error) {
 		NameCycleHint,
 		NameSearchHints,
 		NameRefreshHints,
+		NameSessionAction,
+		NameCopyText,
 		NameSnap,
 		NameHideCursor,
 		NameShowCursor:

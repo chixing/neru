@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/y3owk1n/neru/internal/adapter/platform/cursoranim"
 	wintray "github.com/y3owk1n/neru/internal/adapter/systray/windows"
 	"github.com/y3owk1n/neru/internal/domain/geometry"
 	"github.com/y3owk1n/neru/internal/ports"
@@ -19,13 +20,13 @@ import (
 
 // SystemAdapter implements ports.SystemPort for Windows.
 type SystemAdapter struct {
-	cursorAnimator *smoothCursorAnimator
+	cursorAnimator *cursoranim.Animator
 }
 
 // NewSystemAdapter creates a new SystemAdapter.
 func NewSystemAdapter() *SystemAdapter {
 	adapter := &SystemAdapter{}
-	adapter.cursorAnimator = newSmoothCursorAnimator(
+	adapter.cursorAnimator = cursoranim.New(
 		adapter.currentCursorPosition,
 		// dragStepTo, not warpCursor. An animated move with a button held is
 		// a drag, and its steps have to carry the motion that makes one.
@@ -216,22 +217,22 @@ func (s *SystemAdapter) MoveCursorToPoint(
 		return err
 	}
 
-	cfg := currentWindowsConfig()
-	if cfg != nil && cfg.SmoothCursor.MoveMouseEnabled && !bypassSmooth {
-		s.cursorAnimator.animateTo(
+	anim, ok := currentAnimation()
+	if ok && anim.Cursor.MoveMouseEnabled && !bypassSmooth {
+		s.cursorAnimator.AnimateTo(
 			point,
-			cfg.SmoothCursor.Steps,
-			cfg.SmoothCursor.MaxDuration,
-			cfg.SmoothCursor.DurationPerPixel,
+			anim.Cursor.Steps,
+			anim.Cursor.MaxDuration,
+			anim.Cursor.DurationPerPixel,
 		)
 
 		return nil
 	}
 
-	// Stop before warping. stop() drains the animator's injection mutex, so on
+	// Stop before warping. Stop drains the animator's injection mutex, so on
 	// return no animation step is in flight and none will start, and this warp
 	// lands last instead of racing a stale step back to an intermediate point.
-	s.cursorAnimator.stop()
+	s.cursorAnimator.Stop()
 
 	return moveCursorTo(point)
 }
@@ -245,7 +246,7 @@ func (s *SystemAdapter) MoveCursorInstantly(ctx context.Context, point image.Poi
 		return err
 	}
 
-	s.cursorAnimator.stop()
+	s.cursorAnimator.Stop()
 
 	return moveCursorTo(point)
 }
@@ -261,8 +262,8 @@ func (s *SystemAdapter) MoveCursorBy(
 	ctx context.Context,
 	delta image.Point,
 ) (bool, error) {
-	cfg := currentWindowsConfig()
-	if cfg == nil || !cfg.SmoothCursor.MoveMouseEnabled {
+	anim, ok := currentAnimation()
+	if !ok || !anim.Cursor.MoveMouseEnabled {
 		return false, nil
 	}
 
@@ -270,7 +271,7 @@ func (s *SystemAdapter) MoveCursorBy(
 	// the caller's fallback, which clamps at the service layer.
 	bounds, err := s.ScreenBounds(ctx)
 	if err == nil {
-		s.cursorAnimator.animateRelativeBy(
+		s.cursorAnimator.AnimateRelativeBy(
 			delta,
 			func(point image.Point) image.Point {
 				return image.Point{
@@ -278,8 +279,8 @@ func (s *SystemAdapter) MoveCursorBy(
 					Y: geometry.ClampInt(point.Y, bounds.Min.Y, max(bounds.Max.Y-1, bounds.Min.Y)),
 				}
 			},
-			cfg.SmoothCursor.Steps,
-			cfg.SmoothCursor.RelativeMovementDuration,
+			anim.Cursor.Steps,
+			anim.Cursor.RelativeMovementDuration,
 		)
 
 		return true, nil
@@ -292,7 +293,7 @@ func (s *SystemAdapter) MoveCursorBy(
 // or ctx is canceled. It returns immediately when no animation is active, the
 // common case on the direct (non-smooth) move path.
 func (s *SystemAdapter) WaitForCursorIdle(ctx context.Context) error {
-	return s.cursorAnimator.wait(ctx)
+	return s.cursorAnimator.Wait(ctx)
 }
 
 // SettleCursor finishes any in-flight cursor animation immediately. The
@@ -301,7 +302,7 @@ func (s *SystemAdapter) WaitForCursorIdle(ctx context.Context) error {
 // point from the cursor, so an action firing mid-animation acts at the point
 // the user aimed for without paying the animation's remaining duration.
 func (s *SystemAdapter) SettleCursor(ctx context.Context) error {
-	s.cursorAnimator.settle()
+	s.cursorAnimator.Settle()
 
 	return nil
 }

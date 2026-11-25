@@ -4,6 +4,7 @@ import (
 	"context"
 	"image"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -74,6 +75,10 @@ type Handler struct {
 	// ordering is snapMu -> h.mu. Snap takes h.mu only for its own short
 	// holds, and nothing holding h.mu takes snapMu.
 	snapMu sync.Mutex
+
+	// snapPermissionOpen is true while a snap's screen-capture permission
+	// dialog is open. A held snap's repeats check it and open no second one.
+	snapPermissionOpen atomic.Bool
 }
 
 // handlerState carries every field of the mode handler and every method that
@@ -122,6 +127,8 @@ type handlerState struct {
 	// before SetHints, whose synchronous update callback performs the window
 	// transition (`hints.go`, `monitor.go`, `handler_refresh.go`).
 	hintsFrameOnScreen bool
+	// vim is the open vim session, or nil.
+	vim *vimSession
 	// Services
 	hintService            *services.HintService
 	gridService            *services.GridService
@@ -173,16 +180,39 @@ type handlerState struct {
 	// have been settled at all. Two zero keymaps are a legitimate answer (a mode
 	// that binds nothing, with no global chords), so neither can double as "not
 	// settled yet".
-	keymap           configpkg.Keymap
-	globalHotkeys    configpkg.Keymap
-	keymapSettledFor keymapInputs
-	keymapSettled    bool
+	keymap        configpkg.Keymap
+	globalHotkeys configpkg.Keymap
+	// selectWith is hints' select_with entries in force. It settles with the
+	// keymaps, from the same inputs, and is empty outside hints.
+	selectWith configpkg.SelectWith
+	// selectWithInFlight says a select_with selection is running its steps,
+	// and selectWithSession is the mode session it was made in. Label keys are
+	// dropped while both hold for the current session.
+	selectWithInFlight bool
+	selectWithSession  uint64
+	// hintSelected says a hint has been selected since a mode last opened, and
+	// selectedHintText is its text, for copy_text.
+	hintSelected     bool
+	selectedHintText string
+	// selectedHintBounds is the hint's box, selectedHintRereadable says it
+	// was found by reading the screen and nothing the selection ran before
+	// copying can have changed what is there, and selectedHintSession is the
+	// mode session it was selected in. Together they say whether copy_text
+	// can read the hint again.
+	selectedHintBounds     image.Rectangle
+	selectedHintRereadable bool
+	selectedHintSession    uint64
+	keymapSettledFor       keymapInputs
+	keymapSettled          bool
 
 	// eventTap is nil until the app's phase 8 calls SetEventTap. Every use
 	// goes through the nil-guarded helpers in eventtap.go.
 	eventTap              ports.EventTapPort
 	refreshHotkeys        func()
 	executeActionSequence func(source string, steps []string, env []string)
+	clipboard             ports.ClipboardPort
+	vision                ports.VisionPort
+	keyFeed               ports.KeyFeedPort
 	shutdown              func()
 	refreshHintsTimer     *time.Timer
 	modeSession           uint64
@@ -296,6 +326,12 @@ type HandlerDeps struct {
 
 	TextInput ports.TextInputPort
 	System    ports.SystemPort
+	// Clipboard takes the text a copy_text session copies.
+	Clipboard ports.ClipboardPort
+	// Vision reads the screen's text for vim mode.
+	Vision ports.VisionPort
+	// KeyFeed types into the focused app for vim mode.
+	KeyFeed ports.KeyFeedPort
 
 	// Motion is the handler's namespace in the held-key glide controller.
 	Motion *heldmotion.Group
@@ -353,6 +389,9 @@ func NewHandler(deps HandlerDeps) *Handler {
 		screenBounds:           screenBounds,
 		refreshHotkeys:         deps.RefreshHotkeys,
 		executeActionSequence:  deps.ExecuteActionSequence,
+		clipboard:              deps.Clipboard,
+		vision:                 deps.Vision,
+		keyFeed:                deps.KeyFeed,
 		shutdown:               deps.Shutdown,
 		textInput:              deps.TextInput,
 		motion:                 deps.Motion,
@@ -386,6 +425,7 @@ func newModes(state *handlerState) map[domain.Mode]Mode {
 		domain.ModeBisect:        NewBisectMode(state),
 		domain.ModeMonitorSelect: NewMonitorSelectMode(state),
 		domain.ModeCustom:        NewCustomMode(state),
+		domain.ModeVim:           NewVimMode(state),
 	}
 }
 

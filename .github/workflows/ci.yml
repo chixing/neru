@@ -118,13 +118,15 @@ jobs:
                     liboeffis-dev \
                     libtesseract-dev \
                     tesseract-ocr-eng \
+                    tesseract-ocr-chi-sim \
+                    tesseract-ocr-rus \
                     libpipewire-0.3-dev
 
             # oku installs go, golangci-lint, just, clang-format and clang-tidy
             # at the versions oku.lock pins, on every OS. The action installs
             # the oku release of its own tag.
             - name: Setup the toolchain
-              uses: y3owk1n/oku@v0.18.3
+              uses: y3owk1n/oku@v0.18.5
               env:
                   GITHUB_TOKEN: ${{ github.token }}
 

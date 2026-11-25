@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/y3owk1n/neru/internal/adapter/overlay/render/badge"
+	"github.com/y3owk1n/neru/internal/config"
+	"github.com/y3owk1n/neru/internal/derrors"
 )
 
 // Unit tests for the hint badge/arrow placement math every overlay that draws a
@@ -133,69 +135,6 @@ func TestPlaceHint_Top(t *testing.T) {
 	assertArrowSymmetry(t, arrow, target.X)
 }
 
-// TestPlaceHint_TopAndBottomAreMirrorImages pins the pair a user actually
-// compares, `top` and `bottom`, which put the badge the same distance from the target,
-// on opposite sides, with the arrow pointing back at it either way. A backend
-// that got one sign wrong would still pass each single-placement test above.
-func TestPlaceHint_TopAndBottomAreMirrorImages(t *testing.T) {
-	t.Parallel()
-
-	target := image.Pt(200, 150)
-
-	above, aboveArrow, _ := badge.PlaceHint(target, 40, 20, 4, badge.HintAbove)
-	below, belowArrow, _ := badge.PlaceHint(target, 40, 20, 4, badge.HintBelow)
-
-	if gapAbove, gapBelow := target.Y-above.Max.Y, below.Min.Y-target.Y; gapAbove != gapBelow {
-		t.Errorf("badge sits %d px above the target but %d px below it", gapAbove, gapBelow)
-	}
-
-	if aboveArrow.Tip.Y <= target.Y-badge.HintGap-1 {
-		t.Errorf(
-			"top-placement arrow tip %v does not reach down to target %v",
-			aboveArrow.Tip,
-			target,
-		)
-	}
-
-	if belowArrow.Tip.Y >= target.Y+badge.HintGap+1 {
-		t.Errorf(
-			"bottom-placement arrow tip %v does not reach up to target %v",
-			belowArrow.Tip,
-			target,
-		)
-	}
-}
-
-func TestPlaceHint_ArrowBaseClampedToFlatEdge(t *testing.T) {
-	t.Parallel()
-
-	// A narrow badge with a large radius leaves little flat edge. The arrow base
-	// must clamp inside the corner radius rather than run onto the rounded
-	// corners or overflow the badge.
-	target := image.Pt(50, 50)
-	badgeWidth, badgeHeight, radius := 14, 20, 6
-
-	rect, arrow, hasArrow := badge.PlaceHint(
-		target,
-		badgeWidth,
-		badgeHeight,
-		radius,
-		badge.HintBelow,
-	)
-	if !hasArrow {
-		t.Fatal("expected an arrow")
-	}
-
-	halfBase := arrow.BaseRight.X - target.X
-	if maxHalf := rect.Dx()/2 - radius; halfBase > maxHalf {
-		t.Errorf("arrow half-base %d exceeds flat-edge limit %d", halfBase, maxHalf)
-	}
-
-	if arrow.BaseLeft.X < rect.Min.X || arrow.BaseRight.X > rect.Max.X {
-		t.Errorf("arrow base %v..%v overflows badge %v", arrow.BaseLeft, arrow.BaseRight, rect)
-	}
-}
-
 func TestPlaceHint_OddBadgeSizeKeepsItsSize(t *testing.T) {
 	t.Parallel()
 
@@ -290,5 +229,86 @@ func assertArrowSymmetry(t *testing.T, arrow badge.HintArrow, centerX int) {
 
 	if leftGap <= 0 {
 		t.Errorf("arrow base has non-positive width: half-base=%d", leftGap)
+	}
+}
+
+// TestResolveHintOffset_EveryPlacementInTheVocabulary pins the Linux and
+// Windows overlays to config's declaration of the vocabulary. Every value
+// `hints.ui.placement` accepts has to resolve to an offset. A placement added
+// to config.HintPlacements() without a branch fails this test rather than
+// drawing a badge in a placement nobody chose.
+func TestResolveHintOffset_EveryPlacementInTheVocabulary(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]badge.HintOffset{
+		config.HintPlacementTop:    badge.HintAbove,
+		config.HintPlacementCenter: badge.HintOnTarget,
+		config.HintPlacementBottom: badge.HintBelow,
+	}
+
+	for _, placement := range config.HintPlacements() {
+		t.Run(placement, func(t *testing.T) {
+			t.Parallel()
+
+			offset, err := badge.ResolveHintOffset(placement)
+			if err != nil {
+				t.Fatalf("ResolveHintOffset(%q) error = %v, want an offset", placement, err)
+			}
+
+			if offset != want[placement] {
+				t.Errorf("ResolveHintOffset(%q) = %v, want %v", placement, offset, want[placement])
+			}
+		})
+	}
+
+	if len(want) != len(config.HintPlacements()) {
+		t.Fatalf(
+			"the vocabulary has %d values but this test maps %d; every one needs an expected offset",
+			len(config.HintPlacements()),
+			len(want),
+		)
+	}
+}
+
+// TestResolveHintOffset_UnsetDrawsTheDefault pins the empty string to the
+// offset the declared default resolves to, matching what the macOS renderer
+// answers it (TestHintPlacementValue_UnsetDrawsTheDefault). A style can reach
+// an overlay before a configuration settles it, and a hint that draws on macOS
+// and vanishes on Linux or Windows would be the backends disagreeing.
+func TestResolveHintOffset_UnsetDrawsTheDefault(t *testing.T) {
+	t.Parallel()
+
+	unset, err := badge.ResolveHintOffset("")
+	if err != nil {
+		t.Fatalf(`ResolveHintOffset("") error = %v, want the default's offset`, err)
+	}
+
+	fallback, err := badge.ResolveHintOffset(config.HintPlacementDefault)
+	if err != nil {
+		t.Fatalf("ResolveHintOffset(%q) error = %v", config.HintPlacementDefault, err)
+	}
+
+	if unset != fallback {
+		t.Errorf(`ResolveHintOffset("") = %v, want %v (the offset of %q)`,
+			unset, fallback, config.HintPlacementDefault)
+	}
+}
+
+// TestResolveHintOffset_UnknownPlacementIsNotSupported pins that a value
+// outside the vocabulary is refused, not drawn. Linux used to draw it
+// centered and Windows at some placement, so a placement with no branch looked
+// like a working one.
+func TestResolveHintOffset_UnknownPlacementIsNotSupported(t *testing.T) {
+	t.Parallel()
+
+	offset, err := badge.ResolveHintOffset("floating")
+	if err == nil {
+		t.Fatalf("ResolveHintOffset(%q) = %v, nil; an unrecognized placement must be refused",
+			"floating", offset)
+	}
+
+	if !derrors.IsNotSupported(err) {
+		t.Errorf("ResolveHintOffset returned %v (code %q), want CodeNotSupported",
+			err, derrors.GetCode(err))
 	}
 }

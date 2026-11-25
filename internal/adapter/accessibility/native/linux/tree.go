@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/y3owk1n/neru/internal/config"
+	"github.com/y3owk1n/neru/internal/adapter/accessibility/ax"
 )
 
 // TreeNode is a node in the accessibility element hierarchy (Linux stub).
@@ -29,7 +29,7 @@ func (n *TreeNode) Parent() *TreeNode { return nil }
 // FindClickableElements is a Linux stub.
 func (n *TreeNode) FindClickableElements(
 	keptRoles map[string]struct{},
-	configProvider config.Provider,
+	settingsSource ax.SettingsSource,
 	ignoreClickableCheck bool,
 ) []*TreeNode {
 	return nil
@@ -47,17 +47,11 @@ type TreeOptions struct {
 // DefaultTreeOptions returns the default tree options (Linux stub).
 func DefaultTreeOptions(logger *zap.Logger) TreeOptions { return TreeOptions{} }
 
-// SetCache is a Linux stub.
-func (o *TreeOptions) SetCache(cache any) {}
-
 // SetMaxDepth is a Linux stub.
 func (o *TreeOptions) SetMaxDepth(depth int) {}
 
-// SetBundleID is a Linux stub.
-func (o *TreeOptions) SetBundleID(bundleID string) {}
-
-// SetConfigProvider is a Linux stub.
-func (o *TreeOptions) SetConfigProvider(cp config.Provider) {}
+// SetSettingsSource is a Linux stub.
+func (o *TreeOptions) SetSettingsSource(_ ax.SettingsSource) {}
 
 // SetFilterFunc is a Linux stub.
 func (o *TreeOptions) SetFilterFunc(fn func(*ElementInfo) bool) {}
@@ -72,14 +66,6 @@ func (o *TreeOptions) SetReadState(_ bool) {}
 func BuildTree(_ context.Context, _ *Element, _ TreeOptions) (*TreeNode, error) {
 	return &TreeNode{}, nil
 }
-
-// ProcessClickableNodes processes the clickable nodes in the tree (Linux stub).
-func ProcessClickableNodes(root *TreeNode, cfg config.HintsConfig) []*TreeNode {
-	return nil
-}
-
-// ReleaseTree releases the tree and its nodes to the pool (Linux stub).
-func ReleaseTree(root *TreeNode) {}
 
 // ReleaseTreeExcept releases the tree except the nodes in keep (Linux stub).
 func ReleaseTreeExcept(tree *TreeNode, keep []*TreeNode) {

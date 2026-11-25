@@ -67,6 +67,14 @@ func (s *closedSurface) textPrim(_, _ string, _, _, _ float64, _ uint32, _ bool)
 	s.touched("textPrim")
 }
 
+func (s *closedSurface) badgePrim(int, image.Point, badgeLook) badgeOutcome {
+	s.touched("badgePrim")
+
+	return badgeNotShown
+}
+
+func (s *closedSurface) hideBadgePrim(int) { s.touched("hideBadgePrim") }
+
 // movedDelegate is one of the eighteen methods the two backends used
 // to declare identically and now share, called with arguments that would draw.
 // Passing empty ones would let a delegate look guarded when it was only
@@ -88,7 +96,6 @@ func movedDelegates() []movedDelegate {
 	return []movedDelegate{
 		{"Hide", func(o *sharedOverlay) { o.Hide() }},
 		{"Clear", func(o *sharedOverlay) { o.Clear() }},
-		{"ClearRect", func(o *sharedOverlay) { o.ClearRect(image.Rect(1, 1, 20, 20)) }},
 		{"UpdateGridMatches", func(o *sharedOverlay) { o.UpdateGridMatches("ab") }},
 		{
 			"ShowSubgrid",
@@ -107,8 +114,9 @@ func movedDelegates() []movedDelegate {
 			)
 		}},
 		{"DrawBadge", func(o *sharedOverlay) {
-			o.DrawBadge(10, 10, "HINTS", overlayColors{}, overlayBadgeStyle{fontSize: 14})
+			o.DrawBadge(0, 10, 10, "HINTS", overlayColors{}, overlayBadgeStyle{fontSize: 14})
 		}},
+		{"HideBadge", func(o *sharedOverlay) { o.HideBadge(0) }},
 		{"Flush", func(o *sharedOverlay) { o.Flush() }},
 		{drawMonitorSelectName, func(o *sharedOverlay) {
 			o.DrawMonitorSelect(
@@ -208,64 +216,31 @@ func TestSharedOverlay_MovedDelegates_ReachNoSurfaceWithoutALiveHandle(t *testin
 	}
 }
 
-// The other half of the contract, and the reason manager.go nil-checks a
-// backend pointer at every dispatch site. A moved delegate reached through a
-// *nil* one panics on the promotion, before the guard above can run. That is
-// what makes those checks load-bearing rather than an interface nobody got
-// round to writing (ADR 0010), and it is the one premise this whole move rests
-// on, so it is asserted rather than assumed.
-//
-// The methods that stayed per-backend are the control. They guard their own
-// receiver and survive, which is exactly what the moved ones no longer do.
-func TestBackends_APromotedDelegateOnANilBackendPanics(t *testing.T) {
+// The methods that stayed per-backend guard their own receiver, so the manager
+// can call them on a nil backend pointer. The moved delegates cannot, since a
+// method promoted through a nil pointer panics before any guard could run,
+// which is why manager.go nil-checks a backend at every dispatch site
+// (ADR 0010).
+func TestBackends_PerBackendMethodsSurviveANilReceiver(t *testing.T) {
 	t.Parallel()
 
-	tests := map[string]struct {
-		call      func()
-		wantPanic bool
-	}{
-		"promoted Hide": {
-			call:      func() { var overlay *x11Overlay; overlay.Hide() },
-			wantPanic: true,
-		},
-		"promoted Flush": {
-			call:      func() { var overlay *wlrootsOverlay; overlay.Flush() },
-			wantPanic: true,
-		},
-		"promoted setOriginOffset": {
-			call:      func() { var overlay *x11Overlay; overlay.setOriginOffset(image.Pt(1, 1)) },
-			wantPanic: true,
-		},
-		"per-backend Show": {
-			call: func() { var overlay *x11Overlay; overlay.Show() },
-		},
-		"per-backend Destroy": {
-			call: func() { var overlay *wlrootsOverlay; overlay.Destroy() },
-		},
-		"per-backend Healthy": {
-			call: func() { var overlay *x11Overlay; _ = overlay.Healthy() },
-		},
+	tests := map[string]func(){
+		"x11 Show":        func() { var overlay *x11Overlay; overlay.Show() },
+		"wlroots Destroy": func() { var overlay *wlrootsOverlay; overlay.Destroy() },
+		"x11 Healthy":     func() { var overlay *x11Overlay; _ = overlay.Healthy() },
 	}
 
-	for name, testCase := range tests {
+	for name, call := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			panicked := false
-
-			func() {
-				defer func() { panicked = recover() != nil }()
-
-				testCase.call()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Errorf("calling %s on a nil backend panicked: %v", name, recovered)
+				}
 			}()
 
-			if panicked != testCase.wantPanic {
-				t.Errorf(
-					"calling %s on a nil backend panicked = %t, want %t; "+
-						"manager.go's nil-checked dispatch is sized to this answer",
-					name, panicked, testCase.wantPanic,
-				)
-			}
+			call()
 		})
 	}
 }

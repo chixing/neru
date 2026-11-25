@@ -4,8 +4,9 @@ Every `neru` command and flag. The same content ships as man pages
 (`man neru`). To drive Neru from scripts, see [Scripting](../guide/scripting.md).
 
 `neru launch` starts the daemon. Every other command sends one request to it
-and prints the reply, except `doctor`, `roles`, `services`, `docs`,
-`config init` and `config validate`, which run without a daemon.
+and prints the reply, except `doctor`, `roles`, `describe`, `schema`,
+`agent-guide`, `services`, `docs`, `config init` and `config validate`, which
+run without a daemon.
 
 Synopses use `<value>` for a required value, `[--flag]` for an optional flag,
 `a|b` for a choice, and `[<key>...]` for a repeatable argument. Every command
@@ -87,7 +88,7 @@ Print the daemon state and the current mode.
 
 The human form prints `Status` (`running`, or `stopped` after `neru stop`) and
 `Mode` (`idle`, `hints`, `grid`, `recursive_grid`, `bisect`, `scroll`,
-`monitor_select`, or the name of the open [declared mode](configuration.md#modes)).
+`monitor_select`, `vim`, or the name of the open [declared mode](configuration.md#modes)).
 It then prints `Config`, `Platform`, the adapter profile, and the runtime
 toggles as `yes` or `no`. `Cursor follows selection` appears only while it has
 a value. With `--json`, the object goes to stdout alone, and errors go to
@@ -359,7 +360,8 @@ replaces its earlier value unless its entry says it can be repeated.
 `--action` may be positional: `hints left_click`.
 
 - `--action` takes the mouse-button [action names](#action-names) or
-  `move_mouse`, and `--on-exit` steps form one [action sequence](#neru-run).
+  `move_mouse`, and in hints also `copy_text`. `--on-exit` steps form one
+  [action sequence](#neru-run).
   `hints --action move_mouse --on-exit scroll` opens scroll mode on the hint
   you pick.
 - `--role` takes the [`neru roles`](#neru-roles) vocabulary. `--label-direction`
@@ -386,7 +388,7 @@ replaces its earlier value unless its entry says it can be repeated.
 
 Shorthand `-a`. Takes a value. Modes: `hints` · `grid` · `recursive_grid`.
 
-Action to run on the selection: left_click, right_click, middle_click, left_mouse_down, left_mouse_up, right_mouse_down, right_mouse_up, middle_mouse_down, middle_mouse_up, left_mouse_toggle, right_mouse_toggle, middle_mouse_toggle, move_mouse. move_mouse only leaves the cursor there. Chain with commas, as in left_click,left_click.
+Action to run on the selection: left_click, right_click, middle_click, left_mouse_down, left_mouse_up, right_mouse_down, right_mouse_up, middle_mouse_down, middle_mouse_up, left_mouse_toggle, right_mouse_toggle, middle_mouse_toggle, move_mouse. move_mouse only leaves the cursor there. Chain with commas, as in left_click,left_click. In hints, copy_text copies the hint's text instead, and takes no chain.
 
 #### `--modifier`
 
@@ -408,7 +410,7 @@ Reopen the mode after the action runs. Needs --action.
 
 #### `--toggle`
 
-Shorthand `-t`. Takes no value. Modes: `hints` · `grid` · `recursive_grid` · `bisect` · `scroll` · `monitor_select` · `mode`.
+Shorthand `-t`. Takes no value. Modes: `hints` · `grid` · `recursive_grid` · `bisect` · `scroll` · `monitor_select` · `mode` · `vim`.
 
 Open the mode, or leave it if it is already open.
 
@@ -456,7 +458,7 @@ How hints find elements: axtree (accessibility tree), vision (OCR), contour (sha
 
 #### `--capture-scope`
 
-Takes a value. Modes: `hints` · `grid` · `recursive_grid` · `bisect`.
+Takes a value. Modes: `hints` · `grid` · `recursive_grid` · `bisect` · `vim`.
 
 Region to work in: window (the focused window) or screen (the whole screen). A comma-separated list cycles, moving to the next value each time the command runs while the mode is open, as in --capture-scope=window,screen. With --toggle, running the command on the last value leaves the mode instead of wrapping.
 
@@ -478,6 +480,12 @@ Takes no value. Modes: `hints`.
 
 Hint each word of detected text separately. Needs the vision strategy.
 
+#### `--no-subgrid`
+
+Takes no value. Modes: `grid`.
+
+Select a cell's center as soon as its label is typed, without opening the subgrid.
+
 #### `--zoom-to-depth`
 
 Takes a value. Modes: `recursive_grid`.
@@ -486,7 +494,7 @@ Open recursive grid already zoomed to this depth at the cursor.
 
 #### `--cursor-selection-mode`
 
-Takes a value. Modes: `hints` · `grid` · `recursive_grid` · `bisect`.
+Takes a value. Modes: `hints` · `grid` · `recursive_grid` · `bisect` · `vim`.
 
 Whether the real cursor follows the selection (follow) or stays put (hold).
 
@@ -501,7 +509,7 @@ confirm a mode opened, read `mode` from [`neru status --json`](#neru-status),
 or wait for the `mode_enter` line of `neru watch --event mode_enter`.
 
 Errors: `ERR_MODE_DISABLED` when the config sets `enabled = false` for the
-mode, which hints, grid, recursive_grid, bisect and monitor_select can do.
+mode, which hints, grid, recursive_grid, bisect, monitor_select and vim can do.
 `ERR_NOT_RUNNING` after `neru stop`. A flag the mode refuses fails too. The CLI
 refuses it before sending, and the daemon answers `ERR_INVALID_INPUT`.
 
@@ -633,6 +641,105 @@ nothing. Labels come from
 `monitor_select.characters`, default `123456789`, and `Escape` cancels. Takes
 the `monitor_select` flags in the [mode flag reference](#mode-flag-reference).
 
+### neru vim
+
+```
+neru vim [flags]
+```
+
+Read the text in the focused window, or the whole screen with
+`--capture-scope screen`, and move a cursor over it with vim's keys. Motions,
+counts, text objects, search, registers, macros and `.` work as in vim. `j`
+and `k` keep the cursor's place on screen, not its count of characters. They
+go to the character straight below or above it, in any font. A `Ctrl+V` block
+takes the characters between its corners on screen, so it shows as a
+rectangle. A gap between two words is one space, so `h` and `l` cross it in
+one step. Marks do not work, because every scroll and edit reads the screen
+again and a mark would point at other text. For the same reason a read of
+the screen ends visual mode, as when `j` past the last line scrolls the app.
+Vim mode makes each edit in the app under the cursor, by clicking the caret
+into place, selecting with Shift+Right and typing, then reads the screen
+again.
+
+Vim mode's own keys in the table below, such as `s`, `gc` and `Ctrl+D`, are
+mappings that [`[vim.keymaps]`](configuration.md#vim-keymaps) can move or
+turn off.
+
+| Keys | Does |
+| :--- | :--- |
+| `i`, `a`, `I`, `A`, `o`, `O` | Click the app's caret into place, then type into the app until `Escape` |
+| `c`, `d`, `x`, `r`, `J` and the rest | Select the text, then erase it or type over it |
+| `p`, `P` | Click into place and type the register's text, without its `□` icons. Vim mode never touches the clipboard |
+| `u`, `Ctrl+R` | The app's own undo and redo. A count repeats it, up to eight times |
+| `.` | Repeat the last change. A change typed into the app repeats with what was typed |
+| `y` + motion | Copy the text as read, without touching the app. The copied text flashes and the status bar says how much |
+| `Return`, `gc`, `gr`, `gm` | Click the character under the cursor, left with `Return` or `gc`, right with `gr` and middle with `gm`. A count clicks that many times, up to three, so `2gc` or `2` `Return` double clicks. Vim mode stays open and reads the screen again |
+| `gh`, `:movemouse` | Move the real cursor to the character under the cursor without a click, gliding when `smooth_cursor.move_mouse_enabled` is on, for a session opened with `--cursor-selection-mode hold`. Motions after it leave the real cursor where it is |
+| `gs` + motion, or `Return` in visual mode | Drag across the text so the app selects it, then leave. Works on text that cannot be edited |
+| `s` + characters + label | Type any number of characters to find, then a match's label to jump there, or `Return` for the nearest. `Backspace` takes back a character. A label is never the character after a match, so typing more of the text never jumps |
+| `]i`, `[i` | Move to the next or the previous icon, with a count to skip |
+| `Ctrl+W` + `h`, `j`, `k`, `l` | Move to the container left, below, above or right, within the block the cursor is in until that block ends |
+| `Ctrl+W` + `w`, `W` | Move to the next or the previous container |
+| `ic`, `ac` | The container's text, or with the blank line after it, as `yic` copies a card. A count takes the block around it, as `y2ic` copies the column the card is in |
+| `Ctrl+D`, `Ctrl+U`, `Ctrl+F`, `Ctrl+B`, `Ctrl+E`, `Ctrl+Y` | Scroll the app at once. The overlay stays up while the page moves and the status bar says `reading…`, and vim reads the screen again once it stops, so a run of scrolls reads only the screen it ends on. A key that acts on the text before that read lands reads the screen first, and vim mode drops it with a notice when that read finds nothing. `j` and `k` past the edge scroll too |
+| `zh`, `zl`, `zH`, `zL` | Scroll the app left or right eight characters, or the count with one, or half the width read with `zH` and `zL` |
+| `zz` | Scroll the app until the cursor's line is in the middle of the region read, or line n of the text read with a count |
+| `Ctrl+L` | Read the screen again, keeping registers, macros and the last search |
+| `:s` | Replace as in vim. While it is typed, each place it would change is highlighted and the status bar counts them. One command changes at most 64 places, and the changes on one line take one click. Across lines it waits for the screen to show each line changed before it clicks the next, and stops with what it left in the status bar when the screen does not show it within a second |
+| `:q` | Leave |
+| `:leftclick`, `:rightclick`, `:middleclick` + optional number | Click at the cursor that many times, once without one, as `:leftclick 2` |
+| `:leftdown`, `:leftup`, `:rightdown`, `:rightup`, `:middledown`, `:middleup` | Press or release the button at the cursor, so a motion between them drags. Leaving the mode releases a button still held |
+| `Tab`, `Shift+Tab` | On the `:` line, cycle forward or back through the commands that start with the name typed. The status bar lists them, and after the last the name typed comes back |
+| `Escape` | Cancel what is pending, then leave |
+
+Vim mode groups the words of a column, a sidebar or a card into a container,
+using the gaps between words, the color behind them and the borders between
+them, such as a card's edge or an input's outline. It lays each container out
+as its own block, so `j`, `k`, `w` and search stay inside the one you are
+reading, and it outlines the one the cursor is in. Containers nest, cut apart
+at the gaps that run all the way across the screen, so a card sits in a column
+and the column in the page. The block around the cursor's container is
+outlined fainter.
+
+Vim mode reads the screen twice. A fast read opens the mode at once, and an
+accurate read replaces it when it finishes. The status bar says `reading…`
+until then. The accurate read also finds icons and pictures with no text,
+such as an icon-only button, and puts a `□` where each one is, so `w`, `j` and
+`s` reach it and `Return` clicks it. A yank leaves the `□` out. The box beside
+the cursor shows the word under it as read. The counts in one command, such
+as both in `99d99j`, multiply to at most 9999, and vim mode drops a digit
+past that. One command changes at most 64 places and sends the app at most
+2000 keys, a Shift+Right for each character it selects and a key for each it
+types.
+
+The fast read knows Latin script only. The accurate read finds each line's
+script, so it reads Chinese, Japanese, Korean, Thai, Russian and the other
+languages macOS knows. It reads each line in one script. When your macOS
+languages include Chinese, Japanese or Korean, it also reads with that
+language, so a word of it in an English line is read correctly. Linux and
+Windows read fewer scripts, which [platform support](platform-support.md#notes) lists. Until the
+accurate read finishes, a line in another script shows as noise. A wide character such as 中
+takes two columns, and a character the app moves over in one step, such as
+a Thai consonant with its vowel sign, is one character to vim. Arabic and
+Hebrew are read and moved over, but laid out left to right, so an edit in
+them selects the wrong text. Japanese and Korean on one line can be read as
+one of the two. After an install or a macOS update, macOS compiles the
+accurate read's models once, which takes about a minute. Neru starts that as
+it launches when a hotkey, hook or macro opens vim mode, and otherwise at the
+first `neru vim`. It runs in a separate process, so moving around keeps
+working meanwhile, and a card says what the wait is when vim mode opens
+before it finishes.
+
+Typing into the app re-sends each key, so an input method's composition does
+not work there, and `i` over text that cannot be edited sends the keys to the
+app as shortcuts. Vim mode types every edit key by key too, so it refuses
+an edit whose text has a character no key types, such as a letter outside
+ASCII, and the status bar says why. A drag and every edit change the app's
+own selection. Vim mode also reads the window's title and toolbar as text,
+so an edit there, such as `A` on the title line, renames or types into it. Takes the `vim` flags in
+the [mode flag reference](#mode-flag-reference). The scope and appearance are
+under [`[vim]`](configuration.md#vim).
+
 ### neru mode
 
 ```
@@ -678,7 +785,7 @@ These names work as a mode `--action`, in a hotkey binding, or after
 | Toggle   | `left_mouse_toggle`, `right_mouse_toggle`, `middle_mouse_toggle`                                    |
 | Movement | `move_mouse`, `move_mouse_relative`, `move_monitor`, `snap`                                         |
 | Scroll   | `scroll` ³, `scroll_up`, `scroll_down`, `scroll_left`, `scroll_right`, `page_up`, `page_down`, `go_top`, `go_bottom` |
-| Mode     | `reset`, `backspace`, `move_cell`, `bisect`, `cycle_hint`, `refresh_hints`, `search_hints` ³, `wait_for_mode_exit` |
+| Mode     | `reset`, `backspace`, `move_cell`, `bisect`, `cycle_hint`, `refresh_hints`, `session_action`, `copy_text`, `search_hints` ³, `wait_for_mode_exit` |
 | Cursor   | `save_cursor_pos`, `restore_cursor_pos`, `hide_cursor`, `show_cursor`                               |
 | Keys     | `feed`                                                                                              |
 | Timing   | `sleep`, in [hotkey bindings only](#action-sleep-hotkey-bindings-only)                                |
@@ -690,7 +797,9 @@ on the hints flag of the same name for that one search. `scroll` takes no
 flags. For one-shot scrolling use the directional names below.
 
 A mode `--action` accepts only the click, press, release and toggle names,
-`move_mouse`, and the deprecated `mouse_down` and `mouse_up`. `move_mouse`
+`move_mouse`, and the deprecated `mouse_down` and `mouse_up`. Hints also
+accepts [`copy_text`](#neru-action-copy_text) on its own, without a chain or
+`--modifier`. `move_mouse`
 leaves the cursor on the selection and presses nothing, so a mode refuses
 `--modifier` when every action in the chain is `move_mouse`. A chain with a
 button keeps it, as in `move_mouse,left_click --modifier cmd`. A mode refuses
@@ -978,6 +1087,61 @@ the command fails.
 [hints.hotkeys]
 "Ctrl+R" = "action refresh_hints"
 ```
+
+### neru action session_action
+
+```
+neru action session_action
+```
+
+Run the action the hints session was opened with, holding its `--modifier`
+and any sticky modifiers, at the cursor. The mode stays open. Use it as a step in a
+[`[hints.select_with]`](configuration.md#select-with-modifiers) entry. The
+entry runs once the cursor is on the selected hint, so it can do what the
+session does and then something more. Hints mode only. A session
+opened without `--action` has nothing to run, so it does nothing there.
+
+```toml
+[hints.select_with]
+ctrl = ["action session_action", "idle"]
+```
+
+### neru action copy_text
+
+```
+neru action copy_text
+```
+
+Copy the text of the hint most recently selected to the clipboard. That is its
+value, such as a field's contents, else its title, such as a button's or link's
+name, else its description. For a hint found by reading the screen, with the
+`vision`, `contour` or `segment` strategy, it is the text recognized there. See
+[Platform support](platform-support.md#capability-matrix) for how each
+platform reads it.
+
+Use it as a step in a
+[`[hints.select_with]`](configuration.md#select-with-modifiers) entry or a
+binding's `--on-exit`, or as the hints mode's `--action`, which copies the hint
+you type without clicking it:
+
+```toml
+[hotkeys]
+"Primary+Shift+Y" = "hints --action copy_text"
+
+[hints.select_with]
+"ctrl+alt" = ["action copy_text", "idle"]
+```
+
+- It fails with `ERR_INVALID_INPUT` when no hint has been selected since a mode
+  last opened, and with `ERR_ACTION_FAILED` when the hint has no text. As the
+  mode's `--action`, a copy that fails closes hints as canceled and runs no
+  `--on-exit`.
+- It never copies a password field's text.
+- On Linux it needs a clipboard tool, listed in
+  [Linux setup](../guide/linux.md#runtime-libraries). Without one it fails with
+  `ERR_NOT_SUPPORTED` and names the tools.
+- To use the text in a command, copy it first and read the clipboard, as in
+  `["action copy_text", 'exec say "$(pbpaste)"']`.
 
 ### neru action wait_for_mode_exit
 
@@ -1326,6 +1490,71 @@ With `--explain --json`, the keys are:
 | `config`   | string | Path of the config file resolved, empty for the built-in defaults. |
 | `entries`  | array  | One object per `hints.clickable_roles` entry, in order. `entry` is the entry as written, and `vocabulary` its prefix, empty for a semantic name. `native` lists the native roles it adds here. `ignored` says why it adds none, and is empty when it applies. |
 | `native`   | array  | Every native role the entries select, once each. |
+
+### neru describe
+
+```
+neru describe [--json]
+```
+
+List every mode, mode flag, action, config option, event and hook variable
+this build reads, with the platforms each one does something on. It describes
+the binary, so it needs no daemon and no config. The daemon answers the same
+object to the IPC command `describe`.
+
+Without `--json` it prints the counts and each word that does nothing on this
+platform, with the reason. With `--json` it prints the whole object, which
+`describe` in the [IPC schema](ipc.md#schemas) defines.
+
+| Flag     | Type | Default | Description                    |
+| -------- | ---- | ------- | ------------------------------ |
+| `--json` | bool | `false` | Print the whole description as one JSON object. |
+
+| Key          | Type    | Description |
+| ------------ | ------- | ----------- |
+| `version`    | string  | The build's version, as `neru --version` prints it. |
+| `protocol`   | integer | The IPC protocol this build speaks. |
+| `platform`   | string  | `darwin`, `linux` or `windows`, empty on a build Neru declares nothing about. |
+| `modes`      | array   | Every built-in mode, named as `neru status` and `NERU_MODE` name it. Declared modes are in the config. |
+| `mode_flags` | array   | One object per [mode flag](#mode-flag-reference): `name`, `short`, `shape` (`presence`, `value` or `list`), the `modes` that take it, and `usage`. |
+| `actions`    | array   | One object per [action name](#action-names). `modes` lists the modes whose `--action` can run it, and is empty for an action that runs only on its own. |
+| `options`    | array   | One object per config key, as its full TOML path. Its type and default are in [`neru schema config`](#neru-schema). |
+| `events`     | array   | One object per event, as [`neru watch`](#neru-watch) names it: the `hook` that runs on it, a `description`, and the `variables` its hook sees. |
+| `variables`  | array   | One object per hook variable, with its `name` and the `value` it holds. |
+
+Every object in `mode_flags`, `actions`, `options` and `events` also carries
+`platforms`, the platforms it does something on, `here`, whether it does on
+this machine, and `note`, which says why `platforms` is short and is empty when
+it is not. `mode_flags` and `options` carry `values` too, listing each value
+that works on fewer platforms than the word itself. The text of `usage`,
+`description`, `value` and `note` may change in any release.
+
+```bash
+neru describe --json | jq -r '.actions[] | select(.here) | .name'
+```
+
+### neru schema
+
+```
+neru schema ipc|config
+```
+
+Print the [IPC schema](ipc.md#schemas) (`ipc`) or the
+[config schema](configuration.md#editor-support) (`config`) this build speaks,
+the same file the repository publishes for its version. It needs no daemon and
+fetches nothing.
+
+### neru agent-guide
+
+```
+neru agent-guide
+```
+
+Print a short guide for an AI agent or a program that drives Neru: how to learn
+what this build accepts, read its state, drive it and change its config, and
+the rules a tool built on it follows. It names this build's version, protocol
+and docs, so an agent can read it instead of docs for another release. It
+needs no daemon.
 
 ### neru services
 

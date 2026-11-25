@@ -19,12 +19,13 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/y3owk1n/neru/internal/adapter/platform/darwin"
-	"github.com/y3owk1n/neru/internal/config"
+	"github.com/y3owk1n/neru/internal/adapter/accessibility/ax"
 	"github.com/y3owk1n/neru/internal/derrors"
-	"github.com/y3owk1n/neru/internal/domain/action"
 	"github.com/y3owk1n/neru/internal/domain/element"
 )
+
+// subroleSecureTextField is the AXSubrole of a password field.
+const subroleSecureTextField = "AXSecureTextField"
 
 // Element is a UI element in the macOS accessibility hierarchy.
 //
@@ -249,29 +250,9 @@ func CheckAccessibilityPermissions() bool {
 	return result == 1
 }
 
-// SystemWideElement returns the system-wide accessibility element representing the entire screen.
-func SystemWideElement() *Element {
-	ref := C.NeruGetSystemWideElement()
-	if ref == nil {
-		return nil
-	}
-
-	return newElement(ref)
-}
-
 // FocusedApplication returns the currently focused application element.
 func FocusedApplication() *Element {
 	ref := C.NeruGetFocusedApplication()
-	if ref == nil {
-		return nil
-	}
-
-	return newElement(ref)
-}
-
-// ApplicationByPID returns an application element identified by its process ID.
-func ApplicationByPID(pid int) *Element {
-	ref := C.NeruGetApplicationByPID(C.int(pid))
 	if ref == nil {
 		return nil
 	}
@@ -285,17 +266,6 @@ func ApplicationByBundleID(bundleID string) *Element {
 	defer C.free(unsafe.Pointer(cBundle))
 
 	ref := C.NeruGetApplicationByBundleId(cBundle)
-	if ref == nil {
-		return nil
-	}
-
-	return newElement(ref)
-}
-
-// ElementAtPosition returns the UI element at the specified screen coordinates.
-func ElementAtPosition(x, y int) *Element {
-	pos := C.CGPoint{x: C.double(x), y: C.double(y)}
-	ref := C.NeruGetElementAtPosition(pos)
 	if ref == nil {
 		return nil
 	}
@@ -352,6 +322,12 @@ func (e *Element) Info() (*ElementInfo, error) {
 	}
 	if cInfo.roleDescription != nil {
 		info.roleDescription = C.GoString(cInfo.roleDescription)
+	}
+
+	// A secure text field's value is a password. Nothing Neru does needs it,
+	// so it never leaves here, through copy_text or `neru query hints`.
+	if info.subrole == subroleSecureTextField {
+		info.value = ""
 	}
 
 	return info, nil
@@ -506,30 +482,6 @@ func (e *Element) Clone() (*Element, error) {
 	return newElement(e.ref), nil
 }
 
-// AllWindows returns all windows of the focused application.
-func AllWindows() ([]*Element, error) {
-	var count C.int
-	windows := C.NeruGetAllWindows(&count)
-	if windows == nil || count == 0 {
-		if windows != nil {
-			C.free(unsafe.Pointer(windows))
-		}
-
-		return []*Element{}, nil
-	}
-	defer C.free(unsafe.Pointer(windows))
-
-	countInt := int(count)
-	windowSlice := (*[1 << 30]unsafe.Pointer)(unsafe.Pointer(windows))[:countInt:countInt]
-	result := make([]*Element, countInt)
-
-	for index := range result {
-		result[index] = newElement(windowSlice[index])
-	}
-
-	return result, nil
-}
-
 // FrontmostAndPopoverWindows returns the frontmost window plus focused-app
 // popover windows in a single native query.
 func FrontmostAndPopoverWindows() ([]*Element, error) {
@@ -628,82 +580,11 @@ func (e *Element) ScrollBounds() image.Rectangle {
 	}
 }
 
-// IsMouseButtonDown returns whether the given mouse button is held down.
-func IsMouseButtonDown(button action.MouseButton) bool {
-	return darwin.IsMouseButtonDown(button)
-}
-
-// EnsureMouseUp releases every mouse button Neru is currently holding down.
-// This should be called before any action that is incompatible with a drag operation.
-func EnsureMouseUp() {
-	darwin.EnsureMouseUp()
-}
-
-// MoveMouseToPoint moves the cursor to a specific screen point.
-// If bypassSmooth is true, smooth cursor configuration is bypassed.
-func MoveMouseToPoint(point image.Point, bypassSmooth bool) {
-	darwin.MoveMouse(point, bypassSmooth)
-}
-
-// MoveMouseToPointSmooth moves the cursor smoothly to a specific screen point.
-func MoveMouseToPointSmooth(end image.Point, steps int, eventType C.CGEventType) {
-	darwin.MoveMouseSmooth(end, steps, uint32(eventType), uint32(C.kCGMouseButtonLeft))
-}
-
-// LeftClickAtPoint performs a left mouse click at the specified point.
-func LeftClickAtPoint(point image.Point, restoreCursor bool, modifiers action.Modifiers) error {
-	return darwin.LeftClickAtPoint(point, restoreCursor, modifiers)
-}
-
-// RightClickAtPoint performs a right mouse click at the specified point.
-func RightClickAtPoint(point image.Point, restoreCursor bool, modifiers action.Modifiers) error {
-	return darwin.RightClickAtPoint(point, restoreCursor, modifiers)
-}
-
-// MiddleClickAtPoint performs a middle mouse click at the specified point.
-func MiddleClickAtPoint(point image.Point, restoreCursor bool, modifiers action.Modifiers) error {
-	return darwin.MiddleClickAtPoint(point, restoreCursor, modifiers)
-}
-
-// MouseDownAtPoint presses and holds the given mouse button at the specified point.
-func MouseDownAtPoint(
-	point image.Point,
-	button action.MouseButton,
-	modifiers action.Modifiers,
-) error {
-	return darwin.MouseDownAtPoint(point, button, modifiers)
-}
-
-// MouseUpAtPoint releases the given mouse button at the specified point.
-func MouseUpAtPoint(
-	point image.Point,
-	button action.MouseButton,
-	modifiers action.Modifiers,
-) error {
-	return darwin.MouseUpAtPoint(point, button, modifiers)
-}
-
-// MouseUp releases the given mouse button at the current cursor position.
-func MouseUp(button action.MouseButton) error {
-	return darwin.MouseUp(button)
-}
-
-// ScrollAtCursor scrolls the element at the current cursor position by the
-// specified deltas, with modifiers presented as held.
-func ScrollAtCursor(deltaX, deltaY int, modifiers action.Modifiers) error {
-	return darwin.ScrollAtCursor(deltaX, deltaY, modifiers)
-}
-
-// CurrentCursorPosition returns the current cursor position in screen coordinates.
-func CurrentCursorPosition() image.Point {
-	return darwin.CursorPosition()
-}
-
 // IsClickable checks if the element is clickable.
 func (e *Element) IsClickable(
 	info *ElementInfo,
 	allowedRoles map[string]struct{},
-	configProvider config.Provider,
+	settingsSource ax.SettingsSource,
 	ignoreClickableCheck bool,
 ) bool {
 	if e.ref == nil {
@@ -748,7 +629,7 @@ func (e *Element) IsClickable(
 
 		// Resolve visibility check from config (per-app override, then global).
 		// visible_check_enabled defaults to false, meaning skipVisCheck is true by default.
-		skipVisCheck := !resolveVisibleCheckEnabled(info.PID(), configProvider)
+		skipVisCheck := !resolveVisibleCheckEnabled(info.PID(), settingsSource)
 
 		isWidget := strings.HasPrefix(info.Identifier(), "widget-local:")
 
@@ -778,24 +659,24 @@ func (e *Element) IsClickable(
 var (
 	pidBundleCache       = map[int]string{}
 	pidVisibleCheckCache = map[int]bool{}
-	lastConfigPointer    *config.Config
+	lastSettings         ax.Settings
 	pidBundleCacheMu     sync.RWMutex
 )
 
 // resolveVisibleCheckEnabled checks the config to determine if the visibility
 // hit-test should be performed for the given PID. Returns true if the visibility
 // check should run, false to skip it.
-func resolveVisibleCheckEnabled(pid int, configProvider config.Provider) bool {
-	var cfg *config.Config
-	if configProvider != nil {
-		cfg = configProvider.Get()
+func resolveVisibleCheckEnabled(pid int, settingsSource ax.SettingsSource) bool {
+	var cfg ax.Settings
+	if settingsSource != nil {
+		cfg = settingsSource()
 	}
 
 	pidBundleCacheMu.Lock()
-	if cfg != lastConfigPointer {
+	if cfg != lastSettings {
 		pidVisibleCheckCache = make(map[int]bool)
 		pidBundleCache = make(map[int]string)
-		lastConfigPointer = cfg
+		lastSettings = cfg
 	}
 	enabled, ok := pidVisibleCheckCache[pid]
 	pidBundleCacheMu.Unlock()
@@ -829,7 +710,7 @@ func resolveVisibleCheckEnabled(pid int, configProvider config.Provider) bool {
 	res := cfg.ShouldEnableVisibleCheckForApp(bundleID)
 
 	pidBundleCacheMu.Lock()
-	if cfg == lastConfigPointer {
+	if cfg == lastSettings {
 		pidVisibleCheckCache[pid] = res
 	}
 	pidBundleCacheMu.Unlock()

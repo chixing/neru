@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"image"
 
 	"go.uber.org/zap"
 
@@ -139,6 +140,87 @@ func (h *Handler) RefreshHints() error {
 	return nil
 }
 
+// SessionAction runs the open hints session's --action, with its --modifier
+// and any sticky modifiers, at the cursor. It leaves the mode as it is, which
+// is what lets a select_with entry run the session's action and then decide
+// what follows. A session opened without --action has nothing to run.
+//
+// In a copy_text session it runs nothing. It returns the selected hint's
+// text, read the way copy_text reads it, and true. The caller writes the
+// clipboard, because that must not happen under h.mu.
+//
+// The cursor is read before the lock is taken, because on Wayland reading it
+// for an action can wait on the compositor, and h.mu serializes key handling.
+// A copy does not use it, so a failed read fails only the other actions.
+func (h *Handler) SessionAction(ctx context.Context) (string, bool, error) {
+	point, cursorErr := h.actionService.CursorPositionForAction(ctx)
+
+	hint, copyText, err := h.lockedSessionAction(point, cursorErr)
+	if err != nil || !copyText {
+		return "", false, err
+	}
+
+	text, err := h.textToCopy(ctx, hint)
+
+	return text, true, err
+}
+
+// lockedSessionAction runs sessionAction under h.mu.
+func (h *Handler) lockedSessionAction(point image.Point, cursorErr error) (hintCopy, bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.sessionAction(point, cursorErr)
+}
+
+// sessionAction is the body of SessionAction. For a copy_text session it
+// returns the selected hint, read while h.mu is still held, so the session
+// cannot change before the hint is read.
+//
+// Caller must hold h.mu.
+func (h *handlerState) sessionAction(point image.Point, cursorErr error) (hintCopy, bool, error) {
+	if h.appState.CurrentMode() != domain.ModeHints {
+		return hintCopy{}, false, derrors.New(
+			derrors.CodeInvalidInput,
+			"session_action requires hints mode",
+		)
+	}
+
+	if h.hints == nil || h.hints.Context == nil {
+		return hintCopy{}, false, derrors.New(
+			derrors.CodeActionFailed,
+			"hints component not available",
+		)
+	}
+
+	pending := h.hints.Context.PendingAction()
+	if pending == nil {
+		return hintCopy{}, false, nil
+	}
+
+	if isCopyTextAction(pending) {
+		return h.selectedHintCopy(), true, nil
+	}
+
+	if cursorErr != nil {
+		return hintCopy{}, false, derrors.Wrap(
+			cursorErr,
+			derrors.CodeActionFailed,
+			"failed to read the cursor position",
+		)
+	}
+
+	_, failed, parsed := h.performActionChain(*pending, h.hints.Context.PendingModifier(), point)
+	if !parsed || failed {
+		return hintCopy{}, false, derrors.New(
+			derrors.CodeActionFailed,
+			"the session's action failed",
+		)
+	}
+
+	return hintCopy{}, false, nil
+}
+
 // cycleHint is the body of CycleHint.
 //
 // Caller must hold h.mu.
@@ -149,6 +231,12 @@ func (h *handlerState) cycleHint(ctx context.Context, backward bool, executeActi
 
 	if h.hints == nil || h.hints.Context == nil {
 		return derrors.New(derrors.CodeActionFailed, "hints component not available")
+	}
+
+	// The hints on screen still belong to a selection whose steps are running,
+	// so moving the selection now would change what those steps act on.
+	if h.selectWithPending() {
+		return derrors.New(derrors.CodeInvalidInput, "a selection is still running")
 	}
 
 	manager := h.hints.Context.Manager()
@@ -204,7 +292,15 @@ func (h *handlerState) cycleHint(ctx context.Context, backward bool, executeActi
 		)
 	}
 
+	h.rememberSelectedHint(selectedHint.Element())
+
 	pendingAction := h.hints.Context.PendingAction()
+
+	if executeAction && isCopyTextAction(pendingAction) {
+		h.copyTextSelection(center)
+
+		return nil
+	}
 
 	pendingModifier := h.hints.Context.PendingModifier()
 	if pendingAction != nil && executeAction {

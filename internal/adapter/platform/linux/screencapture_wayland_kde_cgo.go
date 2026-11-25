@@ -16,25 +16,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// pipewireCaptureNode reads one frame off the PipeWire node the granted
-// ScreenCast session named for a monitor, and returns the requested rectangle
-// of it.
+// pipewireCaptureNode reads one frame off the ScreenCast node for a monitor and
+// returns the requested rectangle of it. crop is in the monitor's local logical
+// coordinates and logicalWidth/logicalHeight are its logical size, so the
+// native side can scale to physical pixels once it sees the frame's size.
 //
-// crop is in the monitor's local logical coordinates, and logicalWidth /
-// logicalHeight are that monitor's logical size. Together they turn the
-// rectangle into physical pixels on a scaled output, which is the only place
-// the frame's own dimensions are known.
-//
-// remoteFD's ownership passes to the native side, which closes it on every
-// path. There is exactly one frame per descriptor. The connection is opened for
-// this capture and torn down with it, so KWin is never left pushing frames of
-// the user's screen at a daemon that is not reading them. When the hider cannot
-// take the overlay off the screen, or ctx ends while the overlay is off, the
-// native side never runs and this function closes the descriptor.
-//
-// The frame budget is what is left of ctx when the read starts, after the
-// overlay is off, so the wait for a frame cannot outlive the activation that
-// asked for it.
+// The native side takes ownership of remoteFD and closes it on every path. One
+// descriptor carries one frame, so KWin never streams the user's screen at a
+// daemon that is not reading. If the hider fails or ctx ends before the
+// handover, this function closes it instead. The frame budget is what is left
+// of ctx once the overlay is off, and the overlay comes off, over region in
+// global pixels, only when hideOverlay is set.
 func pipewireCaptureNode(
 	ctx context.Context,
 	remoteFD int,
@@ -42,12 +34,14 @@ func pipewireCaptureNode(
 	crop image.Rectangle,
 	logicalWidth int,
 	logicalHeight int,
+	hideOverlay bool,
+	region image.Rectangle,
 ) (*image.RGBA, error) {
 	handedOver := false
 
 	// A new consumer gets a frame the compositor renders as it connects, so
 	// connecting with the overlay already off is what leaves it out.
-	img, err := withOwnWindowsHidden(func() (*image.RGBA, error) {
+	img, err := withOwnWindowsHidden(hideOverlay, region, func() (*image.RGBA, error) {
 		err := captureCanceled(ctx)
 		if err != nil {
 			return nil, err

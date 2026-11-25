@@ -2,6 +2,7 @@ package overlay_test
 
 import (
 	"context"
+	"errors"
 	"image"
 	"slices"
 	"testing"
@@ -51,42 +52,45 @@ func (m *stubManager) OverlayCapabilities() ports.FeatureCapability {
 	}
 }
 
-func TestAdapterHealth_ReturnsNilForHeadlessOverlayManager(t *testing.T) {
-	adapter := overlay.NewAdapter(
-		&headlessManager{},
-		testStyles{},
-		zap.NewNop(),
-	)
+// TestAdapterHealth_FollowsTheBackendsCapability pins what neru doctor and
+// neru info read. A headless backend counts as healthy, the same as a
+// supported one, and a stub backend reports CodeNotSupported.
+func TestAdapterHealth_FollowsTheBackendsCapability(t *testing.T) {
+	t.Parallel()
 
-	err := adapter.Health(context.Background())
-	if err != nil {
-		t.Fatalf("Health() error = %v, want nil", err)
+	tests := []struct {
+		name             string
+		manager          overlay.ManagerInterface
+		wantNotSupported bool
+	}{
+		{name: "headless", manager: &headlessManager{}},
+		{name: "supported", manager: &supportedManager{}},
+		{name: "stub", manager: &stubManager{}, wantNotSupported: true},
 	}
-}
 
-func TestAdapterHealth_ReturnsNilForSupportedOverlayManager(t *testing.T) {
-	adapter := overlay.NewAdapter(
-		&supportedManager{},
-		testStyles{},
-		zap.NewNop(),
-	)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	err := adapter.Health(context.Background())
-	if err != nil {
-		t.Fatalf("Health() error = %v, want nil", err)
-	}
-}
+			err := overlay.NewAdapter(test.manager, testStyles{}, zap.NewNop()).
+				Health(context.Background())
 
-func TestAdapterHealth_ReturnsNotSupportedForStubOverlayManager(t *testing.T) {
-	adapter := overlay.NewAdapter(
-		&stubManager{},
-		testStyles{},
-		zap.NewNop(),
-	)
+			if test.wantNotSupported {
+				if !derrors.IsNotSupported(err) {
+					t.Errorf(
+						"Health() = %v (code %q), want CodeNotSupported",
+						err,
+						derrors.GetCode(err),
+					)
+				}
 
-	err := adapter.Health(context.Background())
-	if err == nil {
-		t.Fatal("Health() error = nil, want not supported error")
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Health() = %v, want nil", err)
+			}
+		})
 	}
 }
 
@@ -674,17 +678,6 @@ func TestAdapterGridUpdates_ReachTheOverlayWithoutAFrame(t *testing.T) {
 	if manager.gridDraws != 0 || manager.resizes != 0 || manager.visible {
 		t.Error("a grid update paid for a draw or the window sequence")
 	}
-
-	cells := gridFrame(t, "").Grid.Cells()
-	if len(cells) == 0 {
-		t.Fatal("fixture grid has no cells")
-	}
-
-	adapter.ShowGridSubgrid(cells[0], ports.GridPointer{})
-
-	if manager.subgridCell != cells[0] {
-		t.Error("the subgrid's cell never reached the overlay")
-	}
 }
 
 // TestAdapterShowGridSubgrid_CarriesThePointerIntoTheSameCall is what #1492
@@ -733,37 +726,12 @@ func TestAdapterShowGridSubgrid_CarriesThePointerIntoTheSameCall(t *testing.T) {
 	}
 }
 
-// TestAdapterUpdateGridPointer_CarriesTheWholeResolvedAppearance pins what a
-// backend that paints the glyph itself needs and used to be denied. The char
-// and the font family travel with the size and the fill, so a backend with no
-// render component holding the pointer's configuration can still draw the
-// pointer the user configured rather than a hardcoded fallback.
-func TestAdapterUpdateGridPointer_CarriesTheWholeResolvedAppearance(t *testing.T) {
-	t.Parallel()
-
-	manager := newScreenManager()
-	adapter := overlay.NewAdapter(manager, pointerStyles{}, zap.NewNop())
-
-	adapter.UpdateGridPointer(
-		domain.ModeGrid,
-		ports.GridPointer{Visible: true, Position: image.Pt(12, 34)},
-	)
-
-	want := overlay.PointerAppearance{
-		FillColor:  pointerFill,
-		FontFamily: pointerFontFamily,
-		Char:       pointerChar,
-		FontSize:   pointerSize,
-	}
-	if manager.pointer.appearance != want {
-		t.Errorf("pointer appearance = %+v, want the resolved style %+v",
-			manager.pointer.appearance, want)
-	}
-}
-
 // TestAdapterUpdateGridPointer_PlacesThePointerOnTheNamedSurface pins that the
 // caller says which grid surface the pointer belongs to and where it sits, and
-// nothing else. Its appearance is the Style the overlay already resolved.
+// nothing else. Its appearance is the Style the overlay already resolved, all
+// of it. The char and the font family travel with the size and the fill, so a
+// backend with no render component holding the pointer's configuration can
+// still draw the pointer the user configured rather than a hardcoded fallback.
 func TestAdapterUpdateGridPointer_PlacesThePointerOnTheNamedSurface(t *testing.T) {
 	t.Parallel()
 
@@ -783,12 +751,15 @@ func TestAdapterUpdateGridPointer_PlacesThePointerOnTheNamedSurface(t *testing.T
 		t.Errorf("pointer drawn at %v, want (12,34)", manager.pointer.point)
 	}
 
-	if manager.pointer.appearance.FontSize != pointerSize ||
-		manager.pointer.appearance.FillColor != pointerFill {
-		t.Errorf("pointer drawn with size %d and fill %q, want the resolved style's %d and %q",
-			manager.pointer.appearance.FontSize,
-			manager.pointer.appearance.FillColor,
-			pointerSize, pointerFill)
+	want := overlay.PointerAppearance{
+		FillColor:  pointerFill,
+		FontFamily: pointerFontFamily,
+		Char:       pointerChar,
+		FontSize:   pointerSize,
+	}
+	if manager.pointer.appearance != want {
+		t.Errorf("pointer appearance = %+v, want the resolved style %+v",
+			manager.pointer.appearance, want)
 	}
 
 	adapter.UpdateGridPointer(domain.ModeRecursiveGrid, ports.GridPointer{})
@@ -907,7 +878,7 @@ func TestAdapterClearFrame_DropsWhatTheGridUpdatesLeft(t *testing.T) {
 }
 
 // TestAdapterFrame_ReportsACanceledContext keeps a canceled activation from
-// drawing over whatever replaced it.
+// drawing over whatever replaced it, and reports the cancellation as such.
 func TestAdapterFrame_ReportsACanceledContext(t *testing.T) {
 	t.Parallel()
 
@@ -920,18 +891,18 @@ func TestAdapterFrame_ReportsACanceledContext(t *testing.T) {
 	frame := hintsFrame(t, image.Rect(0, 0, 1920, 1080), "ab", image.Pt(10, 10))
 
 	showErr := adapter.ShowFrame(ctx, frame)
-	if showErr == nil {
-		t.Error("ShowFrame() error = nil for a canceled context")
+	if !errors.Is(showErr, context.Canceled) {
+		t.Errorf("ShowFrame() error = %v, want %v", showErr, context.Canceled)
 	}
 
 	redrawErr := adapter.RedrawFrame(ctx, frame)
-	if redrawErr == nil {
-		t.Error("RedrawFrame() error = nil for a canceled context")
+	if !errors.Is(redrawErr, context.Canceled) {
+		t.Errorf("RedrawFrame() error = %v, want %v", redrawErr, context.Canceled)
 	}
 
 	clearErr := adapter.ClearFrame(ctx)
-	if clearErr == nil {
-		t.Error("ClearFrame() error = nil for a canceled context")
+	if !errors.Is(clearErr, context.Canceled) {
+		t.Errorf("ClearFrame() error = %v, want %v", clearErr, context.Canceled)
 	}
 
 	if manager.visible {
@@ -974,14 +945,24 @@ func wantSearchInputBounds() map[string]image.Rectangle {
 	}
 }
 
-// TestAdapterHintSearchBounds_PlacesTheInputFromConfiguration pins where the
+// drawnSearchBounds is the rectangle the last search input draw covered.
+func drawnSearchBounds(manager *screenManager, height int) image.Rectangle {
+	position := manager.searchFrame.Position()
+
+	return image.Rectangle{
+		Min: position,
+		Max: position.Add(image.Pt(manager.searchFrame.Width(), height)),
+	}
+}
+
+// TestAdapterDrawHintSearch_PlacesTheInputFromConfiguration pins where the
 // search input lands for each accepted anchor. The maths moved out of the mode
 // layer with #1210. A caller says which screen, and the overlay says where on
-// it, because the IME field has to be put over the same rectangle.
+// it.
 //
 // It walks config.SearchInputPositions() rather than a list of its own, so an
 // anchor the validator accepts and the overlay does not place fails here.
-func TestAdapterHintSearchBounds_PlacesTheInputFromConfiguration(t *testing.T) {
+func TestAdapterDrawHintSearch_PlacesTheInputFromConfiguration(t *testing.T) {
 	t.Parallel()
 
 	screen := image.Rect(0, 0, 1000, 800)
@@ -1016,19 +997,29 @@ func TestAdapterHintSearchBounds_PlacesTheInputFromConfiguration(t *testing.T) {
 			styles := searchStyles{layout: layout}
 			styles.layout.Position = position
 
-			adapter := overlay.NewAdapter(newScreenManager(), styles, zap.NewNop())
+			manager := newScreenManager()
+			adapter := overlay.NewAdapter(manager, styles, zap.NewNop())
+
+			err := adapter.DrawHintSearch(ports.HintSearch{Screen: screen})
+			if err != nil {
+				t.Fatalf("DrawHintSearch() error = %v", err)
+			}
+
+			if got := drawnSearchBounds(manager, layout.Height); got != want {
+				t.Errorf("search input drawn over %v, want %v", got, want)
+			}
 
 			if got := adapter.HintSearchBounds(screen); got != want {
-				t.Errorf("HintSearchBounds() = %v, want %v", got, want)
+				t.Errorf("native search input sits over %v, want %v", got, want)
 			}
 		})
 	}
 }
 
-// TestAdapterHintSearchBounds_KeepsTheInputOnScreen pins the clamp. An offset
+// TestAdapterDrawHintSearch_KeepsTheInputOnScreen pins the clamp. An offset
 // larger than the display cannot push the input off it, because a search box
 // the user cannot see is a search they cannot cancel.
-func TestAdapterHintSearchBounds_KeepsTheInputOnScreen(t *testing.T) {
+func TestAdapterDrawHintSearch_KeepsTheInputOnScreen(t *testing.T) {
 	t.Parallel()
 
 	styles := searchStyles{layout: overlay.SearchInputLayout{
@@ -1039,13 +1030,19 @@ func TestAdapterHintSearchBounds_KeepsTheInputOnScreen(t *testing.T) {
 		YOffset:  5000,
 	}}
 
-	adapter := overlay.NewAdapter(newScreenManager(), styles, zap.NewNop())
+	manager := newScreenManager()
+	adapter := overlay.NewAdapter(manager, styles, zap.NewNop())
 
-	screen := image.Rect(0, 0, 1000, 800)
+	err := adapter.DrawHintSearch(
+		ports.HintSearch{Screen: image.Rect(0, 0, 1000, 800)},
+	)
+	if err != nil {
+		t.Fatalf("DrawHintSearch() error = %v", err)
+	}
 
-	got := adapter.HintSearchBounds(screen)
+	got := drawnSearchBounds(manager, styles.layout.Height)
 	if want := image.Rect(800, 760, 1000, 800); got != want {
-		t.Errorf("HintSearchBounds() = %v, want %v", got, want)
+		t.Errorf("search input drawn over %v, want %v", got, want)
 	}
 }
 
@@ -1083,14 +1080,6 @@ func TestAdapterDrawHintSearch_PutsTheQueryAndCountWhereTheStyleSaid(t *testing.
 		t.Errorf("result count drawn = %d, want 3", manager.searchResults)
 	}
 
-	if got := manager.searchFrame.Position(); got != image.Pt(10, 20) {
-		t.Errorf("search input drawn at %v, want %v", got, image.Pt(10, 20))
-	}
-
-	if got := manager.searchFrame.Width(); got != 200 {
-		t.Errorf("search input width = %d, want 200", got)
-	}
-
 	adapter.HideHintSearch()
 
 	if manager.searchHides != 1 {
@@ -1120,32 +1109,40 @@ func anchoredSearchStyles(position string) searchStyles {
 // Top-left used to be where an unrecognized anchor landed, which made an anchor
 // nobody implemented indistinguishable from `top_left`, silent everywhere and
 // wrong on screen.
+//
+// The empty string is refused with the rest rather than settled to a default,
+// and deliberately so. Unlike `hints.ui.placement`, an unset
+// `hints.search_input_ui.position` is not settled anywhere. The validator
+// refuses it (config/search_input_position.go), so the only Style that
+// carries one is a Style nothing ever resolved.
 func TestAdapterDrawHintSearch_UnknownAnchorIsRefusedNotDrawn(t *testing.T) {
 	t.Parallel()
 
 	screen := image.Rect(0, 0, 1000, 800)
 
-	manager := newScreenManager()
-	adapter := overlay.NewAdapter(manager, anchoredSearchStyles(unknownSearchAnchor), zap.NewNop())
+	for _, anchor := range []string{unknownSearchAnchor, ""} {
+		manager := newScreenManager()
+		adapter := overlay.NewAdapter(manager, anchoredSearchStyles(anchor), zap.NewNop())
 
-	err := adapter.DrawHintSearch(ports.HintSearch{
-		Screen:      screen,
-		Query:       "abc",
-		ResultCount: 3,
-	})
-	if !derrors.IsNotSupported(err) {
-		t.Errorf(
-			"DrawHintSearch() with an unrecognized anchor = %v (code %q), want CodeNotSupported",
-			err, derrors.GetCode(err),
-		)
-	}
+		err := adapter.DrawHintSearch(ports.HintSearch{
+			Screen:      screen,
+			Query:       "abc",
+			ResultCount: 3,
+		})
+		if !derrors.IsNotSupported(err) {
+			t.Errorf(
+				"DrawHintSearch() with anchor %q = %v (code %q), want CodeNotSupported",
+				anchor, err, derrors.GetCode(err),
+			)
+		}
 
-	if manager.searchDraws != 0 {
-		t.Errorf(
-			"search input drawn %d times for an unrecognized anchor, want 0: "+
-				"it would have been drawn in the top-left corner",
-			manager.searchDraws,
-		)
+		if manager.searchDraws != 0 {
+			t.Errorf(
+				"search input drawn %d times for anchor %q, want 0: "+
+					"it would have been drawn in the top-left corner",
+				manager.searchDraws, anchor,
+			)
+		}
 	}
 
 	// The vocabulary's own anchors still draw. A guard that refused everything
@@ -1162,59 +1159,6 @@ func TestAdapterDrawHintSearch_UnknownAnchorIsRefusedNotDrawn(t *testing.T) {
 		if drawn.searchDraws != 1 {
 			t.Errorf("search input drawn %d times for %q, want 1", drawn.searchDraws, position)
 		}
-	}
-}
-
-// TestAdapterHintSearchBounds_UnknownAnchorHasNoBounds pins how the bounds half
-// degrades. It answers a rectangle and cannot report, so an anchor the
-// placement refuses answers the empty one. That is the same nothing a handler with no
-// overlay at all already returns, and honest, because the draw refused too and
-// there is no box on screen for the IME field to be put over.
-func TestAdapterHintSearchBounds_UnknownAnchorHasNoBounds(t *testing.T) {
-	t.Parallel()
-
-	adapter := overlay.NewAdapter(
-		newScreenManager(),
-		anchoredSearchStyles(unknownSearchAnchor),
-		zap.NewNop(),
-	)
-
-	if got := adapter.HintSearchBounds(image.Rect(0, 0, 1000, 800)); !got.Empty() {
-		t.Errorf(
-			"HintSearchBounds() with an unrecognized anchor = %v, want the empty rectangle",
-			got,
-		)
-	}
-}
-
-// TestAdapterSearchInput_UnsetAnchorIsRefusedWithTheRest pins the empty string
-// as unrecognized rather than as a default, and deliberately so. Unlike
-// `hints.ui.placement`, an unset `hints.search_input_ui.position` is not settled
-// anywhere. The validator refuses it (config/search_input_position.go), so the
-// only Style that carries one is a Style nothing ever resolved, whose width and
-// height are zero too, and which would draw a box of no size wherever it landed.
-func TestAdapterSearchInput_UnsetAnchorIsRefusedWithTheRest(t *testing.T) {
-	t.Parallel()
-
-	manager := newScreenManager()
-	adapter := overlay.NewAdapter(manager, searchStyles{}, zap.NewNop())
-
-	screen := image.Rect(0, 0, 1000, 800)
-
-	err := adapter.DrawHintSearch(ports.HintSearch{Screen: screen})
-	if !derrors.IsNotSupported(err) {
-		t.Errorf(
-			"DrawHintSearch() with an unset anchor = %v (code %q), want CodeNotSupported",
-			err, derrors.GetCode(err),
-		)
-	}
-
-	if manager.searchDraws != 0 {
-		t.Errorf("search input drawn %d times for an unset anchor, want 0", manager.searchDraws)
-	}
-
-	if got := adapter.HintSearchBounds(screen); !got.Empty() {
-		t.Errorf("HintSearchBounds() with an unset anchor = %v, want the empty rectangle", got)
 	}
 }
 
@@ -1331,6 +1275,24 @@ func TestAdapterShowFrame_ReportsAMonitorPickerTheBackendCannotDraw(t *testing.T
 	}
 }
 
+// TestAdapterShowFrame_ReportsAVimSurfaceTheBackendCannotDraw pins the same
+// pattern for vim mode. A backend that cannot draw the surface refuses it, so
+// the mode refuses rather than holding the keyboard over nothing.
+func TestAdapterShowFrame_ReportsAVimSurfaceTheBackendCannotDraw(t *testing.T) {
+	t.Parallel()
+
+	adapter := overlay.NewAdapter(newScreenManager(), testStyles{}, zap.NewNop())
+
+	showErr := adapter.ShowFrame(context.Background(), ports.VimFrame{
+		Screen: image.Rect(0, 0, 100, 100),
+		Region: image.Rect(0, 0, 100, 100),
+		Cursor: image.Rect(10, 10, 20, 20),
+	})
+	if !derrors.IsNotSupported(showErr) {
+		t.Fatalf("ShowFrame() error = %v, want CodeNotSupported", showErr)
+	}
+}
+
 // TestAdapterClearFrame_TakesTheMonitorPanelsDown covers the failure the
 // Indicator work exists to prevent, one surface further. The panels are not on
 // the shared surface, so clearing that surface is not enough to take them off
@@ -1400,5 +1362,45 @@ func TestAdapterShowFrame_ScrollTakesTheSurfaceOverWithoutDrawing(t *testing.T) 
 
 	if manager.gridDraws != 0 || len(manager.drawn) != 0 {
 		t.Error("scroll drew content of its own on the shared surface")
+	}
+}
+
+// scaledVimManager draws the vim surface's fonts scaled by a DPI factor, as
+// the Windows backend does.
+type scaledVimManager struct {
+	headlessManager
+
+	scale float64
+}
+
+func (m *scaledVimManager) VimScale(image.Rectangle) float64 { return m.scale }
+
+// vimFontStyles resolves a vim status bar font of 13 points.
+type vimFontStyles struct{ testStyles }
+
+func (vimFontStyles) Style() overlay.Style {
+	return overlay.Style{Vim: overlay.VimStyle{FontSize: 13}}
+}
+
+// TestAdapter_VimStatusBar_ScalesWithTheBackendsFont pins that the strip vim
+// leaves for its status bar is as tall as the bar a backend draws with
+// scaled fonts. Unscaled, the strip at 200% was shorter than the bar, so vim
+// moved over text hidden behind it.
+func TestAdapter_VimStatusBar_ScalesWithTheBackendsFont(t *testing.T) {
+	t.Parallel()
+
+	region := image.Rect(0, 0, 1000, 800)
+
+	plain := overlay.NewAdapter(&headlessManager{}, vimFontStyles{}, zap.NewNop()).
+		VimStatusBar(region)
+	doubled := overlay.NewAdapter(&scaledVimManager{scale: 2}, vimFontStyles{}, zap.NewNop()).
+		VimStatusBar(region)
+
+	if doubled.Dy() <= plain.Dy() || doubled.Max != region.Max {
+		t.Fatalf(
+			"status bar at 2x = %v, at 1x = %v, want a taller strip at the bottom",
+			doubled,
+			plain,
+		)
 	}
 }

@@ -74,7 +74,7 @@ func (a *App) SetConfigField(ctx context.Context, key, value string) error {
 		ConfigPath: a.ConfigPath,
 	}
 
-	a.applyAppSpecificConfigUpdates(loadResult)
+	a.applyClickableRoles(loadResult.Config)
 	a.reconfigureAfterUpdate(loadResult)
 
 	// Persist the change to the override file so it survives restarts.
@@ -116,7 +116,7 @@ func (a *App) ReloadConfig(ctx context.Context, configPath string) error {
 		return err
 	}
 
-	a.applyAppSpecificConfigUpdates(loadResult)
+	a.applyClickableRoles(loadResult.Config)
 	a.reconfigureAfterUpdate(loadResult)
 
 	// On Linux, verify the hotkey listener started correctly after reload.
@@ -136,14 +136,14 @@ func (a *App) prepareForConfigUpdate() {
 	a.hotkeys.Unregister()
 }
 
-// applyAppSpecificConfigUpdates pushes the reloaded clickable roles to the
-// accessibility adapter when hints are enabled.
-func (a *App) applyAppSpecificConfigUpdates(loadResult *config.LoadResult) {
-	if loadResult.Config.Hints.Enabled && a.accessibility != nil {
-		roles := loadResult.Config.Hints.ResolvedClickableRoles()
+// applyClickableRoles pushes cfg's clickable roles to the accessibility
+// adapter when hints are enabled. Startup and every reload call it.
+func (a *App) applyClickableRoles(cfg *config.Config) {
+	if cfg.Hints.Enabled && a.accessibility != nil {
+		roles := cfg.Hints.ResolvedClickableRoles()
 
-		a.logger.Debug("Updating clickable roles",
-			zap.Int("configured", len(loadResult.Config.Hints.ClickableRoles)),
+		a.logger.Debug("Applying clickable roles",
+			zap.Int("configured", len(cfg.Hints.ClickableRoles)),
 			zap.Int("resolved", len(roles)))
 		a.accessibility.UpdateClickableRoles(roles)
 	}
@@ -163,6 +163,21 @@ func (a *App) reconfigureAfterUpdate(loadResult *config.LoadResult) {
 	// This runs after the hotkeys, as it does at startup (Run), because what
 	// it arms can run an action sequence.
 	a.applyMissionControlDetection(loadResult.Config)
+
+	a.prepareVimRead(loadResult.Config)
+}
+
+// prepareVimRead has the vision port prepare accurate reads when cfg can open
+// vim mode, so on macOS the compile after an install or an update happens at
+// launch rather than in the first session. With a configuration that never
+// opens it, the first `neru vim` or copy_text starts the preparation, and
+// copy_text reads fast until it is done.
+func (a *App) prepareVimRead(cfg *config.Config) {
+	if a.vision == nil || !cfg.Vim.Enabled || !cfg.BindsMode(config.ModeNameVim) {
+		return
+	}
+
+	a.vision.PrepareAccurateRead()
 }
 
 // applyMissionControlDetection arms or disarms Mission Control detection for
@@ -210,8 +225,8 @@ func (a *App) updateServiceConfigs(cfg *config.Config) {
 	if a.hintService != nil {
 		a.hintService.UpdateConfig(cfg.Hints)
 
-		newGen, genErr := domainHint.NewAlphabetGenerator(
-			cfg.Hints.HintCharacters,
+		newGen, genErr := newHintGenerator(
+			cfg,
 			domainHint.LabelDirectionFromString(cfg.Hints.LabelDirectionForApp("")),
 		)
 		if genErr != nil {

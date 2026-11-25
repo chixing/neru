@@ -30,6 +30,9 @@ const (
 	// name says which. One value serves every declared mode, so the switches
 	// that name a mode gain one arm rather than one per declaration.
 	ModeCustom
+	// ModeVim moves a cursor over the text read off the screen with vim's
+	// motions, search and operators.
+	ModeVim
 )
 
 // IPC Commands.
@@ -73,6 +76,10 @@ const (
 	// window. It draws nothing and enters no mode. `neru query hints` is its
 	// CLI spelling.
 	CommandQueryHints = "query-hints"
+
+	// CommandDescribe reports every word Neru reads, with the platforms each
+	// works on. `neru describe --json` is its CLI spelling.
+	CommandDescribe = "describe"
 )
 
 // Mode-related constants.
@@ -138,6 +145,17 @@ const (
 	// LabelDirectionNormal uses the original prefix-avoidance algorithm that
 	// prefers shorter labels. This is the default.
 	LabelDirectionNormal = "normal"
+)
+
+// Hint label hand alternation, the values hints.label_alternation accepts.
+const (
+	// LabelAlternationNone puts no constraint on consecutive label keys. This
+	// is the default.
+	LabelAlternationNone = "none"
+
+	// LabelAlternationHalves alternates label keys between the first and the
+	// second half of hints.hint_characters.
+	LabelAlternationHalves = "halves"
 )
 
 // How the real cursor behaves while a selection is being made, the values

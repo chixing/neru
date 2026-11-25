@@ -14,6 +14,8 @@ import (
 	"context"
 	"image"
 	"math"
+	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -143,6 +145,10 @@ func (a *Adapter) DetectElements(
 
 	return elements, nil
 }
+
+// AccurateReadDiffers is true. The accurate read is Vision's accurate
+// recognizer, which spells small text right where the fast one misreads it.
+func (a *Adapter) AccurateReadDiffers() bool { return true }
 
 // CaptureExcludesOwnWindows is true on macOS, where every capture asks
 // ScreenCaptureKit to leave Neru's application out (vision_darwin.m).
@@ -295,6 +301,17 @@ func (a *Adapter) DetectSegments(
 	}
 
 	return targetElements(frame, rects, element.SourceSegment), nil
+}
+
+// DetectSegmentsAsRead captures afresh, as DetectSegments does. The read keeps
+// a frame at twice the size the detector was tuned on, and a macOS capture
+// leaves the overlay out, so reusing the frame would save nothing.
+func (a *Adapter) DetectSegmentsAsRead(
+	ctx context.Context,
+	region image.Rectangle,
+	cfg config.HintsSegmentConfig,
+) ([]*element.Element, error) {
+	return a.DetectSegments(ctx, region, cfg)
 }
 
 // captureDetectionFrame captures screenBounds for a pixel detector.
@@ -486,4 +503,329 @@ func recognizeFrameWords(frame detectionFrame, timeoutMS int) []contour.Word {
 		})
 	}
 	return words
+}
+
+// readTextScale is how many pixels per point ReadText captures at, before
+// NeruReadText scales a line to the heights it reads at. Of one, two and three,
+// three misread the fewest lines of the OCR fixtures.
+const readTextScale = 3
+
+// readTextPadding widens a hint's box before ReadText captures it, since an
+// OCR word box sits tight on the glyphs and the recognizer misses clipped
+// edges.
+const readTextPadding = 4
+
+// readTextMu lets one read run at a time. A second one gives up at once rather
+// than queue.
+var readTextMu sync.Mutex
+
+// ReadText reads rect with the accurate recognizer in the lines helper once
+// PrepareAccurateRead is done, since the fast one reads Latin script alone and
+// turns Chinese, Japanese or Korean into Latin noise. Until then, when the
+// helper fails, and when it finds no text, as it can on a mostly empty box, it
+// captures rect at readTextScale and reads it fast. The fast recognizer cannot
+// be canceled, so a read that outlives ctx keeps running on its own and its
+// result is dropped. Holding readTextMu means that costs at most one read in
+// flight.
+func (a *Adapter) ReadText(ctx context.Context, rect image.Rectangle) (string, error) {
+	if rect.Empty() {
+		return "", derrors.New(derrors.CodeInvalidInput, "text reading needs a region with an area")
+	}
+
+	timeout, err := captureTimeoutMS(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	if a.accurateReadReady() {
+		started := time.Now()
+
+		lines, err := a.readLinesInHelper(ctx, rect.Inset(-readTextPadding), timeout)
+		if text := joinLines(lines); err == nil && text != "" {
+			a.logger.Debug("Read text accurately", zap.Duration("duration", time.Since(started)))
+
+			return text, nil
+		}
+
+		if ctx.Err() != nil {
+			return "", derrors.Wrap(
+				ctx.Err(),
+				derrors.CodeContextCanceled,
+				"text reading timed out",
+			)
+		}
+
+		if err != nil {
+			a.logger.Debug("Accurate text read failed, reading fast", zap.Error(err))
+		}
+
+		timeout, err = captureTimeoutMS(ctx)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if !readTextMu.TryLock() {
+		return "", derrors.New(derrors.CodeActionFailed, "a text read is already running")
+	}
+
+	type result struct {
+		text string
+		err  error
+	}
+
+	done := make(chan result, 1)
+
+	go func() {
+		defer readTextMu.Unlock()
+
+		text, err := readTextNow(rect.Inset(-readTextPadding), timeout)
+		done <- result{text: text, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		return got.text, got.err
+	case <-ctx.Done():
+		return "", derrors.Wrap(ctx.Err(), derrors.CodeContextCanceled, "text reading timed out")
+	}
+}
+
+// accurateReadReady reports whether an accurate read would run in the helper
+// with nothing left to compile. An accurate read in this process, or one
+// started while the helper compiles, would hold up the fast reads a key waits
+// on.
+func (a *Adapter) accurateReadReady() bool {
+	if a.linesHelper == "" {
+		return false
+	}
+
+	select {
+	case <-a.PrepareAccurateRead():
+		return true
+	default:
+		return false
+	}
+}
+
+// joinLines joins the words of lines with a space, top to bottom, as the
+// recognizer spelled them. A word's pieces join with nothing between them.
+func joinLines(lines [][]ports.TextPiece) string {
+	var text strings.Builder
+
+	for _, line := range lines {
+		word := -1
+
+		for _, piece := range line {
+			if text.Len() > 0 && piece.Word != word {
+				text.WriteByte(' ')
+			}
+
+			text.WriteString(piece.Text)
+			word = piece.Word
+		}
+	}
+
+	return text.String()
+}
+
+// readTextNow captures region and reads it.
+func readTextNow(region image.Rectangle, timeout C.int64_t) (string, error) {
+	cgRect := C.CGRect{
+		origin: C.CGPoint{x: C.double(region.Min.X), y: C.double(region.Min.Y)},
+		size:   C.CGSize{width: C.double(region.Dx()), height: C.double(region.Dy())},
+	}
+
+	var captured C.CGRect
+
+	cgImage := C.NeruCaptureRectAtScale(cgRect, readTextScale, &captured, timeout)
+	if uintptr(cgImage) == 0 {
+		return "", derrors.New(derrors.CodeActionFailed, "failed to capture the region to read")
+	}
+	defer C.CGImageRelease(cgImage)
+
+	cText := C.NeruReadText(cgImage)
+	if cText == nil {
+		return "", nil
+	}
+	defer C.free(unsafe.Pointer(cText))
+
+	return C.GoString(cText), nil
+}
+
+// readLinesScale is how much larger than its size in points a region is
+// captured for ReadLines, which is a Retina display's own resolution.
+const readLinesScale = 2
+
+// ReadLines captures region and reads it with the recognizer level names.
+func (a *Adapter) ReadLines(
+	ctx context.Context,
+	region image.Rectangle,
+	level ports.TextLevel,
+) ([][]ports.TextPiece, error) {
+	if region.Empty() {
+		return nil, derrors.New(
+			derrors.CodeInvalidInput,
+			"reading lines needs a region with an area",
+		)
+	}
+
+	timeout, err := captureTimeoutMS(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	started := time.Now()
+
+	var lines [][]ports.TextPiece
+
+	inHelper := level == ports.TextAccurate && a.linesHelper != ""
+	if inHelper {
+		lines, err = a.readLinesInHelper(ctx, region, timeout)
+	} else {
+		lines, err = a.readLinesHere(ctx, region, level)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	a.logger.Debug("Read lines",
+		zap.Bool("accurate", level == ports.TextAccurate),
+		zap.Bool("helper", inHelper),
+		zap.Int("line_count", len(lines)),
+		zap.Duration("duration", time.Since(started)))
+
+	return lines, nil
+}
+
+// readLinesHere captures region and reads it in this process, the two within
+// ctx's one deadline. A fast read is remembered, for ReadLinesOnceChanged to
+// wait for the region to change from.
+func (a *Adapter) readLinesHere(
+	ctx context.Context,
+	region image.Rectangle,
+	level ports.TextLevel,
+) ([][]ports.TextPiece, error) {
+	frame, err := captureReadFrame(ctx, region)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseFrame(frame)
+
+	lines, err := readFrameLines(ctx, frame, level)
+	if err == nil && level == ports.TextFast {
+		a.lastRead.remember(region, frame, lines)
+	}
+
+	return lines, err
+}
+
+// readFrameLines reads a capture's text within what is left of ctx.
+func readFrameLines(
+	ctx context.Context,
+	frame readFrame,
+	level ports.TextLevel,
+) ([][]ports.TextPiece, error) {
+	timeout, err := captureTimeoutMS(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	accurate := C.int(0)
+	if level == ports.TextAccurate {
+		accurate = 1
+	}
+
+	cancel, stopWatching := watchForCancel(ctx)
+	defer stopWatching()
+
+	result := C.NeruReadImageLines(frame.image, frame.bounds, accurate, nil, timeout, cancel)
+	if result == nil {
+		if ctx.Err() != nil {
+			return nil, derrors.Wrap(
+				ctx.Err(),
+				derrors.CodeContextCanceled,
+				"text recognition was canceled",
+			)
+		}
+
+		return nil, derrors.New(derrors.CodeActionFailed, "failed to read the region's text")
+	}
+	defer C.NeruFreeTextResult(result)
+
+	return groupLines(linePiecesOf(result)), nil
+}
+
+// watchForCancel returns a flag NeruReadImageLines stops on once ctx is done,
+// and a func that ends the watch and frees the flag once the read returns.
+func watchForCancel(ctx context.Context) (*C.int, func()) {
+	flag := (*C.int)(C.calloc(1, C.size_t(unsafe.Sizeof(C.int(0)))))
+	stop := make(chan struct{})
+
+	var watcher sync.WaitGroup
+
+	watcher.Go(func() {
+		select {
+		case <-ctx.Done():
+			C.NeruCancelRead(flag)
+		case <-stop:
+		}
+	})
+
+	return flag, func() {
+		close(stop)
+		watcher.Wait()
+		C.free(unsafe.Pointer(flag))
+	}
+}
+
+// ReadLinesOnceChanged waits for region to change from what the last fast
+// read of it captured and to settle, then reads it fast. One that never
+// changes reads the last read's lines again.
+func (a *Adapter) ReadLinesOnceChanged(
+	ctx context.Context,
+	region image.Rectangle,
+) ([][]ports.TextPiece, error) {
+	if region.Empty() {
+		return a.ReadLines(ctx, region, ports.TextFast)
+	}
+
+	started := time.Now()
+
+	before, lines, remembered := a.lastRead.recall(region)
+	defer releaseFrame(before)
+
+	frame, unchanged, err := captureOnceChanged(ctx, before, remembered, settleFrames[readFrame]{
+		capture: func() (readFrame, error) { return captureReadFrame(ctx, region) },
+		same:    sameFrame,
+		release: releaseFrame,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer releaseFrame(frame)
+
+	if !unchanged {
+		lines, err = readFrameLines(ctx, frame, ports.TextFast)
+		if err != nil {
+			return nil, err
+		}
+
+		a.lastRead.remember(region, frame, lines)
+	}
+
+	a.logger.Debug("Read lines once changed",
+		zap.Bool("unchanged", unchanged),
+		zap.Int("line_count", len(lines)),
+		zap.Duration("duration", time.Since(started)))
+
+	return lines, nil
+}
+
+func cRect(r image.Rectangle) C.CGRect {
+	return C.CGRect{
+		origin: C.CGPoint{x: C.double(r.Min.X), y: C.double(r.Min.Y)},
+		size:   C.CGSize{width: C.double(r.Dx()), height: C.double(r.Dy())},
+	}
 }

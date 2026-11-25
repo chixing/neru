@@ -24,7 +24,7 @@ so you can correct a near miss before you click.
 
 `Primary+Shift+Space`, or `neru hints`.
 
-![Animated demo of hints mode](https://github.com/user-attachments/assets/a19ef869-6400-4b5f-b3c6-92af69c2a76b)
+![Animated demo of hints mode](https://github.com/user-attachments/assets/4327c027-d3c8-4915-a740-a0c9c46b386d)
 
 1. Press the hotkey. Every clickable element in the focused window gets a
    short label such as `as` or `f`. A disabled element, such as a greyed-out
@@ -56,7 +56,7 @@ and `NERU_Y`. See [Scripting](scripting.md#hand-the-picked-point-to-a-script).
 
 `Primary+Shift+C`, or `neru recursive_grid`.
 
-![Animated demo of recursive grid mode](https://github.com/user-attachments/assets/d82e14fa-0ac4-4081-9a0a-f99243d1da5b)
+![Animated demo of recursive grid mode](https://github.com/user-attachments/assets/f72b43fb-9745-4c17-a80d-15ca4077a5a2)
 
 1. Press the hotkey. The screen splits into a grid with one key per cell, by
    default 3x3 with `r t y`, `f g h`, `v b n`. Size and keys are under
@@ -73,7 +73,7 @@ nothing from the app, so it works in canvases, games and remote desktops.
 
 `Primary+Shift+B`, or `neru bisect`.
 
-![Animated demo of bisect mode](https://github.com/user-attachments/assets/913e9d15-7f42-470d-b5cf-7a55065789fe)
+![Animated demo of bisect mode](https://github.com/user-attachments/assets/6b18396a-9bb8-4d1b-a8f8-270c19c0f727)
 
 Bisect halves the screen instead of splitting it into cells, so there are no
 labels to read.
@@ -91,7 +91,7 @@ labels to read.
 
 `Primary+Shift+G`, or `neru grid`.
 
-![Animated demo of grid mode](https://github.com/user-attachments/assets/392fcfa1-9779-464c-8bac-a05a6afc73c3)
+![Animated demo of grid mode](https://github.com/user-attachments/assets/b0759650-a3fa-43f3-9123-237124afe870)
 
 1. Press the hotkey. The screen fills with labeled cells.
 2. Type a cell's label. A 3x3 subgrid opens inside it.
@@ -99,6 +99,10 @@ labels to read.
 4. Press `Shift+L` to click.
 
 Grid suits coarse jumps across large monitors. `Space` starts over.
+
+`neru grid --no-subgrid` skips step 3. The label alone selects the cell's
+center, so `neru grid --no-subgrid --action move_mouse` saves a key on every
+jump. Bind it to a second hotkey to keep the subgrid on the first.
 
 ## Scroll
 
@@ -111,9 +115,49 @@ Grid suits coarse jumps across large monitors. `Space` starts over.
 The [`[scroll]` default hotkeys](../reference/configuration.md#scroll-default-hotkeys)
 list the keys for paging, jumping to the top and scrolling sideways.
 
+## Vim
+
+`neru vim`.
+
+![Animated demo of vim mode](https://github.com/user-attachments/assets/3b8a4ccb-f102-4971-902e-c4097d14afe5)
+
+Vim mode has no default hotkey, so bind one:
+
+```toml
+[hotkeys]
+"Primary+Shift+V" = "vim"
+```
+
+1. Press the hotkey. Neru reads the text in the focused window and puts a
+   cursor on the character nearest the mouse pointer. A status bar shows the
+   mode and the command being typed.
+2. Move with vim's keys, such as `w`, `b`, `j`, `k`, `f`, `/` and counts. To
+   jump anywhere, press `s`, type a few characters of the target, then the
+   label that appears on it. The jump and search find text in another
+   script by its romanization, so `shenzhen` finds 深圳 and `boris` finds
+   Борис. This works once Neru has read that script, and on Linux that
+   needs the script's tesseract data [installed](linux.md). The jump also
+   finds the initials of words, so `sas` jumps to "Save As". Labels appear
+   once Neru has finished reading the screen, and until then every key adds
+   to the text.
+3. Act on it. `Return` clicks the character under the cursor, `y` and a
+   motion copy the text as read, and `i`, `c` or `d` edit the app's text in
+   place.
+4. Press `Escape` to leave. With a command half typed, the first `Escape`
+   cancels it.
+
+Vim mode keeps every key for vim, so it does not bind the shared keys in
+the next section, such as `Shift+L`. `gc`, `gr` and `gm` click, and
+`:leftdown` and `:leftup` around a motion drag. On macOS it needs the Screen
+Recording permission, see [Getting started](getting-started.md#macos).
+[`neru vim`](../reference/cli.md#neru-vim) lists every key and what an edit
+does to the app, and [`[vim.keymaps]`](../reference/configuration.md#vim-keymaps)
+remaps them.
+
 ## More than a left click
 
-These work in every mode except monitor select, which only picks a display.
+These work in every mode except monitor select, which only picks a display,
+and vim, which has its own keys for them.
 
 **Double and triple click.** Bind a chain, such as
 `"Ctrl+Enter" = "action left_click,left_click"`. See
@@ -161,15 +205,13 @@ Each display shows a number. Type one and the cursor moves there.
 ## Personal fork hint search
 
 Screen-reading search opens before the scan completes. Accessibility-tree
-search scans first so the native field cannot steal the target window's focus. While typing, matches are underlined
-on macOS. Queries accept arbitrary text and use fuzzy matching after exact
-matches. Tab and Shift+Tab move between matches. Return selects the current or sole match; with several matches it
-closes the input and assigns the shortest available labels for selection.
-Pressing the search hotkey again enters or re-enters search mode.
+search scans before opening the native macOS field, which accepts input
+methods and underlines matches while you type. Search accepts romanization
+and word initials. When those and regular text matching find nothing, it
+tries fuzzy matching for queries of three or more characters.
 
-Upstream search input, cached text normalization, label narrowing and
-`search_hints --confirm-on-label` are retained. A space switches from
-underlines to the original labels, so a query such as `save a` can narrow
-by label. Return preserves those labels after clearing their highlights;
-text-only matches receive the shortest labels. Native input callbacks,
-including Tab and Shift+Tab, run in order and ignore stopped sessions.
+Tab and Shift+Tab move between matches. Return selects the current or sole
+match. With several matches, it closes the input and assigns the shortest
+available labels. A space restores the original labels so a query such as
+`save a` can narrow by label. Press the search hotkey again to start a fresh
+search.

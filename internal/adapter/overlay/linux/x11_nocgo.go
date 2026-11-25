@@ -19,14 +19,10 @@ import (
 	"github.com/y3owk1n/neru/internal/ports"
 )
 
-// x11Overlay is the no-cgo stand-in. Both twins keep their methods
-// per-backend rather than hoisting them onto a shared type the way the cgo
-// build does, deliberately. There is no shared implementation under them to
-// reach (every body is empty, so a hoist would deduplicate signatures and
-// nothing else), and a hoist would break them outright. Their constructors
-// always return nil, so the manager only ever dispatches on a nil pointer and
-// these bodies exist to be reached on a nil receiver, which a promoted method
-// cannot be (../AGENTS.md).
+// x11Overlay is the no-cgo stand-in. Unlike the cgo build, both twins keep
+// their methods per-backend on purpose. Every body is empty, and their
+// constructors always return nil, so these bodies exist to be reached on a
+// nil receiver, which a promoted method cannot be (../AGENTS.md).
 type x11Overlay struct {
 	sublayerKeys string
 }
@@ -42,7 +38,6 @@ func (o *x11Overlay) WindowPtr() unsafe.Pointer                              { r
 func (o *x11Overlay) Show()                                                  {}
 func (o *x11Overlay) Hide()                                                  {}
 func (o *x11Overlay) Clear()                                                 {}
-func (o *x11Overlay) ClearRect(image.Rectangle)                              {}
 func (o *x11Overlay) Resize()                                                {}
 func (o *x11Overlay) Destroy()                                               {}
 func (o *x11Overlay) UpdateGridMatches(string)                               {}
@@ -78,7 +73,18 @@ func (o *x11Overlay) DrawRecursiveGridWithSubKeyPreview(
 }
 func (o *x11Overlay) Flush() {}
 
-func (o *x11Overlay) DrawBadge(int, int, string, overlayColors, overlayBadgeStyle) {}
+func (o *x11Overlay) DrawBadge(
+	int,
+	int,
+	int,
+	string,
+	overlayColors,
+	overlayBadgeStyle,
+) badgeOutcome {
+	return badgeNotShown
+}
+
+func (o *x11Overlay) HideBadge(int) {}
 
 func (o *x11Overlay) DrawHintSearchInput(
 	string,
@@ -100,4 +106,12 @@ func (o *x11Overlay) cancelAnimation()          {}
 func (o *x11Overlay) setRenderMu(_ *sync.Mutex) {}
 
 // withBlanked runs capture as it is, because this build draws no overlay.
-func (o *x11Overlay) withBlanked(capture func() error) error { return capture() }
+func (o *x11Overlay) withBlanked(_ image.Rectangle, capture func() error) error {
+	return capture()
+}
+
+func (o *x11Overlay) showsNothing() bool { return true }
+
+func (o *x11Overlay) drawnOn() []image.Rectangle { return nil }
+
+func (o *x11Overlay) DrawVim(manager.VimScene, manager.VimStyle) {}

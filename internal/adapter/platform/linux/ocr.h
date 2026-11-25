@@ -1,20 +1,16 @@
 #ifndef OCR_H
 #define OCR_H
 
-// Tesseract-backed text recognition for the Linux half of ports.VisionPort.
-//
-// The pixels come from screencapture.h, and this file turns them into positioned words.
-// macOS answers the same port with three Vision requests (text, rectangles,
-// saliency). An OCR engine answers only the text one, which is why Linux
-// `vision` is text-only and the five rectangle options are declared macOS-only
+// Tesseract-backed text recognition for the Linux half of ports.VisionPort,
+// turning screencapture.h pixels into positioned words. macOS answers the port
+// with three Vision requests, and OCR answers only the text one, so Linux
+// `vision` is text-only and the rectangle options are declared macOS-only
 // (docs/adr/0013-parity-is-measured-in-words-not-subsystems.md).
 //
-// Privacy: recognized text is screen content, exactly as the capture buffer it
-// came from is. Nothing here writes a character of it anywhere but the result
-// the caller asked for. neru_ocr_result_free wipes the strings before releasing
-// them, the engine's `tessedit_write_images` and `debug_file` are pinned so
-// tesseract writes neither an image nor a log, and every recognition ends with
-// TessBaseAPIClear so the engine holds no copy of the frame between calls.
+// Privacy: recognized text is screen content. Nothing here writes it anywhere
+// but the result. neru_ocr_result_free wipes the strings,
+// `tessedit_write_images` and `debug_file` are pinned so tesseract writes
+// neither an image nor a log, and every recognition ends with TessBaseAPIClear.
 
 #define NERU_OCR_OK 0
 // The engine could not be initialized for the given tessdata directory and
@@ -27,13 +23,14 @@
 // Recognition failed, or ran past the caller's deadline.
 #define NERU_OCR_ERR_RECOGNIZE 4
 // The engine was busy with another recognition for longer than this caller was
-// willing to wait, or could not be created yet because the X11 hint-search
-// field held the locale guard (locale_guard.h).
+// willing to wait.
 #define NERU_OCR_ERR_BUSY 5
 // Recognition ran past the caller's deadline. Split from ERR_RECOGNIZE because
-// the two want opposite responses. A timeout means raise the budget or hand
-// over a smaller region, a failure means something is wrong with the frame.
+// a timeout wants a bigger budget or smaller region, and a failure a bad frame.
 #define NERU_OCR_ERR_TIMEOUT 6
+// The caller canceled the recognition through its config's cancel flag. It
+// returns no lines, never the part read before it stopped.
+#define NERU_OCR_ERR_CANCELED 7
 
 typedef struct {
 	// text is a NUL-terminated UTF-8 string owned by the result.
@@ -53,13 +50,14 @@ typedef struct {
 typedef struct {
 	NeruOCRWord *words;
 	int count;
-	// How long the recognition itself took, in milliseconds. Filled on success
-	// and on failure alike, because "it took the whole budget" and "it gave up
-	// immediately" are different bugs and only this tells them apart. A
-	// duration describes the work, not what was on the screen, so it is
-	// loggable.
+	// How long recognition took, in ms, filled on failure too, because "took
+	// the whole budget" and "gave up at once" are different bugs. A duration
+	// describes the work, not the screen, so it is loggable.
 	int elapsedMS;
 } NeruOCRResult;
+
+// NERU_OCR_ENGINES is how many engines stay cached at once.
+#define NERU_OCR_ENGINES 2
 
 typedef struct {
 	// datapath is the directory holding <language>.traineddata. Never NULL.
@@ -72,7 +70,38 @@ typedef struct {
 	int wordLevel;
 	// timeoutMS bounds one recognition. <= 0 means no deadline.
 	int timeoutMS;
+	// engine is the cached engine slot, below NERU_OCR_ENGINES. Each slot keeps
+	// one language's engine under a lock of its own.
+	int engine;
+	// cancel, when not NULL, stops the recognition once it reads nonzero.
+	// neru_ocr_cancel sets it from another thread.
+	int *cancel;
 } NeruOCRConfig;
+
+// neru_ocr_cancel sets a cancel flag a recognition is watching.
+void neru_ocr_cancel(int *flag);
+
+// One character of a line read, with the ink box tesseract placed it in. line
+// and word count from 0 in reading order, so the characters of a word share a
+// word number within their line.
+typedef struct {
+	// text is the character as NUL-terminated UTF-8, owned by the result.
+	char *text;
+	// Bounding box of its ink in the captured image's own pixel space.
+	int x;
+	int y;
+	int width;
+	int height;
+	int line;
+	int word;
+} NeruOCRSymbol;
+
+typedef struct {
+	NeruOCRSymbol *symbols;
+	int count;
+	// How long recognition took, in ms, as NeruOCRResult has it.
+	int elapsedMS;
+} NeruOCRLines;
 
 // neru_ocr_probe reports whether the engine can be initialized for this
 // datapath and language, warming it in the process. NERU_OCR_OK or
@@ -87,5 +116,16 @@ int neru_ocr_recognize(
 
 // neru_ocr_result_free wipes and releases a result. Safe on a zeroed struct.
 void neru_ocr_result_free(NeruOCRResult *result);
+
+// neru_ocr_recognize_lines reads RGBA8888 pixels as neru_ocr_recognize does
+// and fills out with every character found, with its line and word. It is for
+// a caller that lays the text out as the screen shows it. config->wordLevel
+// is ignored.
+int neru_ocr_recognize_lines(
+    const unsigned char *pixels, int width, int height, int stride, const NeruOCRConfig *config, NeruOCRLines *out);
+
+// neru_ocr_lines_free wipes and releases what neru_ocr_recognize_lines filled.
+// Safe on a zeroed struct.
+void neru_ocr_lines_free(NeruOCRLines *lines);
 
 #endif /* OCR_H */

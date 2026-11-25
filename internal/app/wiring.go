@@ -7,7 +7,7 @@ import (
 	"go.uber.org/zap"
 
 	accessibilityAdapter "github.com/y3owk1n/neru/internal/adapter/accessibility"
-	accessibilityNative "github.com/y3owk1n/neru/internal/adapter/accessibility/native"
+	"github.com/y3owk1n/neru/internal/adapter/accessibility/ax"
 	"github.com/y3owk1n/neru/internal/adapter/appwatcher"
 	"github.com/y3owk1n/neru/internal/adapter/hotkeys"
 	"github.com/y3owk1n/neru/internal/adapter/logger"
@@ -22,6 +22,7 @@ import (
 	"github.com/y3owk1n/neru/internal/config/loader"
 	"github.com/y3owk1n/neru/internal/derrors"
 	domainHint "github.com/y3owk1n/neru/internal/domain/hint"
+	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 	"github.com/y3owk1n/neru/internal/ports"
 )
 
@@ -58,21 +59,6 @@ func initializeOverlayManager(logger *zap.Logger) OverlayManager {
 	return overlay.Init(logger.Named("overlay"))
 }
 
-// initializeAccessibility checks and configures accessibility permissions and settings.
-func initializeAccessibility(cfg *config.Config, logger *zap.Logger) error {
-	// Apply clickable roles if hints are enabled
-	if cfg.Hints.Enabled {
-		roles := cfg.Hints.ResolvedClickableRoles()
-
-		logger.Debug("Applying clickable roles",
-			zap.Int("configured", len(cfg.Hints.ClickableRoles)),
-			zap.Int("resolved", len(roles)))
-		accessibilityNative.SetClickableRoles(roles, logger)
-	}
-
-	return nil
-}
-
 // initializeHotkeyService creates the hotkey service.
 func initializeHotkeyService(logger *zap.Logger) HotkeyService {
 	return hotkeys.NewManager(logger)
@@ -96,7 +82,10 @@ func initializeAdapters(
 	// the real adapter and its platform AX client when none was provided.
 	accAdapter := app.accessibility
 	if accAdapter == nil {
-		axClient := accessibilityAdapter.NewPlatformAXClient(logger, cfgService)
+		axClient := accessibilityAdapter.NewPlatformAXClient(
+			logger,
+			accessibilitySettings(cfgService),
+		)
 
 		// Store axClient so Cleanup can release its resources (D-Bus conn, a11y status).
 		app.axClient = axClient
@@ -157,13 +146,14 @@ func newIndicatorServices(
 func initializeServices(
 	cfg *config.Config,
 	accAdapter ports.AccessibilityPort,
+	mousePort ports.MousePort,
 	overlayAdapter ports.OverlayPort,
 	systemPort ports.SystemPort,
 	visionPort ports.VisionPort,
 	logger *zap.Logger,
 ) (*services.HintService, *services.GridService, *services.ActionService, *services.ScrollService, indicatorServices, error) {
-	hintGen, hintGenErr := domainHint.NewAlphabetGenerator(
-		cfg.Hints.HintCharacters,
+	hintGen, hintGenErr := newHintGenerator(
+		cfg,
 		domainHint.LabelDirectionFromString(cfg.Hints.LabelDirectionForApp("")),
 	)
 	if hintGenErr != nil {
@@ -194,6 +184,7 @@ func initializeServices(
 
 	actionService := services.NewActionService(
 		accAdapter,
+		mousePort,
 		overlayAdapter,
 		systemPort,
 		logger,
@@ -202,6 +193,7 @@ func initializeServices(
 
 	scrollService := services.NewScrollService(
 		accAdapter,
+		mousePort,
 		systemPort,
 		cfg.Scroll,
 		logger,
@@ -231,7 +223,7 @@ func processHotkeyBindings(cfg *config.Config, logger *zap.Logger) []string {
 		}
 
 		// Canonicalize the key to convert "Primary" to platform-specific modifier ("Cmd" on macOS)
-		canonicalKey := config.CanonicalHotkeyForPlatform(key)
+		canonicalKey := keyvocab.CanonicalHotkeyForPlatform(key)
 		keys = append(keys, canonicalKey)
 	}
 
@@ -259,5 +251,20 @@ func (a *App) configureEventTapHotkeys(cfg *config.Config, logger *zap.Logger) {
 	err := a.eventTap.Disable(a.ctx)
 	if err != nil {
 		logger.Warn("Failed to disable event tap after setting hotkeys", zap.Error(err))
+	}
+}
+
+// accessibilitySettings gives the accessibility backends the live
+// configuration on each read. It returns an untyped nil before one is loaded.
+// Each reload loads a new pointer, and that is what clears the darwin
+// visible-check cache.
+func accessibilitySettings(cfgService *loader.Service) ax.SettingsSource {
+	return func() ax.Settings {
+		cfg := cfgService.Get()
+		if cfg == nil {
+			return nil
+		}
+
+		return cfg
 	}
 }

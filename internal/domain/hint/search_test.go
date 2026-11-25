@@ -37,8 +37,8 @@ func TestFilterBySearch_ContainsFirstThenFuzzy(t *testing.T) {
 	collection := hint.NewCollection(hints)
 
 	got := collection.FilterBySearch("mode").All()
-	if len(got) != 2 || got[0].Element().Title() != batchTitle ||
-		got[1].Element().Title() != "Mode" {
+	if len(got) != 2 || got[0].Element().Title() != "Mode" ||
+		got[1].Element().Title() != batchTitle {
 		t.Fatalf("contains matches = %v", titles(got))
 	}
 

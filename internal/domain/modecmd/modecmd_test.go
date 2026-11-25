@@ -200,6 +200,12 @@ func flagCases() map[modecmd.Flag]flagCase {
 			applied: func(a modecmd.Activation) bool { return a.SplitWord != nil && *a.SplitWord },
 			build:   func(a *modecmd.Activation) { a.SplitWord = new(true) },
 		},
+		modecmd.FlagNoSubgrid: {
+			mode:    domain.ModeGrid,
+			args:    []string{"--no-subgrid"},
+			applied: func(a modecmd.Activation) bool { return a.NoSubgrid != nil && *a.NoSubgrid },
+			build:   func(a *modecmd.Activation) { a.NoSubgrid = new(true) },
+		},
 		modecmd.FlagZoomToDepth: {
 			mode:    domain.ModeRecursiveGrid,
 			args:    []string{"--zoom-to-depth=3"},
@@ -368,39 +374,6 @@ func TestParse_PresenceFlagsRefuseAValue(t *testing.T) {
 	}
 }
 
-// TestParse_ListFlagsRefuseAnEmptyValue pins that a filter given nothing to
-// filter by is reported. Accepting it would leave a user watching every element
-// come back from a command that named a filter.
-func TestParse_ListFlagsRefuseAnEmptyValue(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		args []string
-		want string
-	}{
-		{
-			[]string{"--role="},
-			"--role requires a value (use comma-separated: --role=button,link)",
-		},
-		{[]string{"--text="}, "--text requires a value (use comma-separated: --text=foo,bar)"},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.args[0], func(t *testing.T) {
-			t.Parallel()
-
-			_, err := modecmd.Parse(domain.ModeHints, testCase.args)
-			if err == nil {
-				t.Fatalf("%v was accepted; want a refusal", testCase.args)
-			}
-
-			if got := message(err); got != testCase.want {
-				t.Errorf("message = %q, want %q", got, testCase.want)
-			}
-		})
-	}
-}
-
 // TestParse_AcceptsBothArgumentShapes pins the normalization every other case
 // depends on. A caller modeled on the CLI's own traffic repeats the mode name
 // as the first argument, and a binding does not.
@@ -419,29 +392,6 @@ func TestParse_AcceptsBothArgumentShapes(t *testing.T) {
 
 	if !reflect.DeepEqual(withName, withoutName) {
 		t.Errorf("shapes disagree: %+v vs %+v", withName, withoutName)
-	}
-}
-
-// TestParse_ReadsBothValueSpellings pins that a value may be attached with an
-// equals sign or written as the following argument.
-func TestParse_ReadsBothValueSpellings(t *testing.T) {
-	t.Parallel()
-
-	split, err := modecmd.Parse(domain.ModeHints, []string{"--label-direction", directionReverse})
-	if err != nil {
-		t.Fatalf("space-separated value refused: %v", err)
-	}
-
-	equals, err := modecmd.Parse(
-		domain.ModeHints,
-		[]string{"--label-direction=" + directionReverse},
-	)
-	if err != nil {
-		t.Fatalf("attached value refused: %v", err)
-	}
-
-	if !reflect.DeepEqual(split, equals) {
-		t.Errorf("spellings disagree: %+v vs %+v", split, equals)
 	}
 }
 
@@ -758,6 +708,18 @@ func TestParse_RefusalMessages(t *testing.T) {
 			[]string{"--text"},
 			"--text requires a value (use comma-separated: --text=foo,bar)",
 		},
+		// A filter given nothing to filter by is refused, or the command would
+		// return every element.
+		{
+			domain.ModeHints,
+			[]string{"--role="},
+			"--role requires a value (use comma-separated: --role=button,link)",
+		},
+		{
+			domain.ModeHints,
+			[]string{"--text="},
+			"--text requires a value (use comma-separated: --text=foo,bar)",
+		},
 	}
 
 	for _, testCase := range tests {
@@ -880,9 +842,12 @@ func TestValidate_PinsTheActionVocabulary(t *testing.T) {
 		want string
 	}{
 		{
-			name: "unknown action",
+			name: "unknown action names what a mode accepts",
 			args: []string{"--action=nonsense"},
-			want: "invalid action: nonsense. ",
+			want: "invalid action: nonsense. Supported actions: left_click, right_click, " +
+				"middle_click, left_mouse_down, left_mouse_up, right_mouse_down, " +
+				"right_mouse_up, middle_mouse_down, middle_mouse_up, left_mouse_toggle, " +
+				"right_mouse_toggle, middle_mouse_toggle, move_mouse, and copy_text in hints mode",
 		},
 		{
 			name: "empty entry in a chain",
@@ -914,17 +879,6 @@ func TestValidate_PinsTheActionVocabulary(t *testing.T) {
 				t.Errorf("message = %q, want it to start with %q", got, testCase.want)
 			}
 		})
-	}
-}
-
-// TestValidate_AcceptsAChainedAction pins that commas chain several clicks,
-// which is how a double-click is written.
-func TestValidate_AcceptsAChainedAction(t *testing.T) {
-	t.Parallel()
-
-	_, err := modecmd.Parse(domain.ModeHints, []string{"--action=left_click,left_click"})
-	if err != nil {
-		t.Errorf("chained action refused: %v", err)
 	}
 }
 
@@ -1163,5 +1117,65 @@ func TestNextInCycle(t *testing.T) {
 		if got := modecmd.NextInCycle(cycle, current); got != want {
 			t.Errorf("NextInCycle(%v, %q) = %q, want %q", cycle, current, got, want)
 		}
+	}
+}
+
+// TestValidate_CopyTextIsAHintsActionOnItsOwn pins where --action copy_text
+// is accepted. It copies a hint's text, so only hints takes it, and it presses
+// nothing, so it neither chains with clicks nor takes a --modifier.
+func TestValidate_CopyTextIsAHintsActionOnItsOwn(t *testing.T) {
+	t.Parallel()
+
+	const argCopyText = "--action=copy_text"
+
+	tests := []struct {
+		name string
+		mode domain.Mode
+		args []string
+		want string
+	}{
+		{name: "hints", mode: domain.ModeHints, args: []string{argCopyText}},
+		{
+			name: "hints with on-exit",
+			mode: domain.ModeHints,
+			args: []string{argCopyText, "--on-exit=idle"},
+		},
+		{
+			name: "grid",
+			mode: domain.ModeGrid,
+			args: []string{argCopyText},
+			want: "copy_text works only in hints mode, since only a hint carries text to copy",
+		},
+		{
+			name: "chained",
+			mode: domain.ModeHints,
+			args: []string{"--action=copy_text,left_click"},
+			want: "copy_text cannot be chained with other actions, so give it on its own",
+		},
+		{
+			name: "with a modifier",
+			mode: domain.ModeHints,
+			args: []string{argCopyText, argModifierCmd},
+			want: "--modifier needs a mouse button action, because copy_text presses nothing for it to hold",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := modecmd.Parse(testCase.mode, testCase.args)
+			if testCase.want == "" {
+				if err != nil {
+					t.Fatalf("Parse(%v) = %v, want it accepted", testCase.args, err)
+				}
+
+				return
+			}
+
+			if err == nil || message(err) != testCase.want {
+				t.Fatalf("Parse(%v) = %v, want %q", testCase.args, err, testCase.want)
+			}
+		})
 	}
 }

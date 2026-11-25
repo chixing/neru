@@ -38,7 +38,6 @@ func (o *wlrootsOverlay) WindowPtr() unsafe.Pointer {
 func (o *wlrootsOverlay) Show()                                                  {}
 func (o *wlrootsOverlay) Hide()                                                  {}
 func (o *wlrootsOverlay) Clear()                                                 {}
-func (o *wlrootsOverlay) ClearRect(image.Rectangle)                              {}
 func (o *wlrootsOverlay) Resize()                                                {}
 func (o *wlrootsOverlay) Destroy()                                               {}
 func (o *wlrootsOverlay) UpdateGridMatches(string)                               {}
@@ -78,7 +77,18 @@ func (o *wlrootsOverlay) DrawRecursiveGridWithSubKeyPreview(
 }
 func (o *wlrootsOverlay) Flush() {}
 
-func (o *wlrootsOverlay) DrawBadge(int, int, string, overlayColors, overlayBadgeStyle) {}
+func (o *wlrootsOverlay) DrawBadge(
+	int,
+	int,
+	int,
+	string,
+	overlayColors,
+	overlayBadgeStyle,
+) badgeOutcome {
+	return badgeNotShown
+}
+
+func (o *wlrootsOverlay) HideBadge(int) {}
 
 func (o *wlrootsOverlay) DrawHintSearchInput(
 	string,
@@ -104,4 +114,12 @@ func (o *wlrootsOverlay) setKeyboardCaptureEnabled(bool) {}
 func (o *wlrootsOverlay) startPoller()                   {}
 
 // withBlanked runs capture as it is, because this build draws no overlay.
-func (o *wlrootsOverlay) withBlanked(capture func() error) error { return capture() }
+func (o *wlrootsOverlay) withBlanked(_ image.Rectangle, capture func() error) error {
+	return capture()
+}
+
+func (o *wlrootsOverlay) showsNothing() bool { return true }
+
+func (o *wlrootsOverlay) drawnOn() []image.Rectangle { return nil }
+
+func (o *wlrootsOverlay) DrawVim(manager.VimScene, manager.VimStyle) {}

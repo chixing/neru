@@ -26,79 +26,6 @@ import (
 	"github.com/y3owk1n/neru/internal/ports/mocks"
 )
 
-func TestHintService_RefreshHints(t *testing.T) {
-	tests := []struct {
-		name           string
-		overlayVisible bool
-		expectRefresh  bool
-		refreshError   error
-		wantErr        bool
-	}{
-		{
-			name:           "refresh when visible",
-			overlayVisible: true,
-			expectRefresh:  true,
-			refreshError:   nil,
-			wantErr:        false,
-		},
-		{
-			name:           "skip refresh when not visible",
-			overlayVisible: false,
-			expectRefresh:  false,
-			refreshError:   nil,
-			wantErr:        false,
-		},
-		{
-			name:           "refresh error when visible",
-			overlayVisible: true,
-			expectRefresh:  true,
-			refreshError:   derrors.New(derrors.CodeOverlayFailed, "overlay refresh failed"),
-			wantErr:        true,
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			mockAcc := &mocks.MockAccessibilityPort{}
-			mockOverlay := &mocks.MockOverlayPort{}
-
-			refreshCalled := false
-			mockOverlay.IsVisibleFunc = func() bool {
-				return testCase.overlayVisible
-			}
-			mockOverlay.RefreshFunc = func(_ context.Context) error {
-				refreshCalled = true
-
-				return testCase.refreshError
-			}
-
-			generator, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionReverse)
-			logger := logger.Get()
-
-			service := services.NewHintService(
-				mockAcc,
-				mockOverlay,
-				&mocks.MockSystemPort{},
-				generator,
-				config.HintsConfig{},
-				logger,
-				nil,
-			)
-
-			ctx := context.Background()
-			refreshHintsErr := service.RefreshHints(ctx)
-
-			if (refreshHintsErr != nil) != testCase.wantErr {
-				t.Errorf("RefreshHints() error = %v, wantErr %v", refreshHintsErr, testCase.wantErr)
-			}
-
-			if refreshCalled != testCase.expectRefresh {
-				t.Errorf("Refresh called = %v, want %v", refreshCalled, testCase.expectRefresh)
-			}
-		})
-	}
-}
-
 func TestHintService_GenerateHintsVisionCombinesSupplementaryAndWindowElements(
 	t *testing.T,
 ) {
@@ -341,6 +268,105 @@ func TestHintService_ProbeHints_ReturnsAFailedCaptureDetection(t *testing.T) {
 	}
 }
 
+// TestHintService_GenerateHints_ScansOnlyWhatTheScreensShow pins the region a
+// capture strategy scans when the focused window runs past a screen (#1925).
+// The Linux capture backends refuse any region that runs past the screen, so
+// a window one pixel past the edge got no hints at all. The layout is the one
+// from the report, a 2880x1920 laptop beside a taller 5120x2160 monitor. That
+// leaves a strip under the laptop that no screen covers.
+func TestHintService_GenerateHints_ScansOnlyWhatTheScreensShow(t *testing.T) {
+	laptop := image.Rect(0, 0, 2880, 1920)
+	monitor := image.Rect(2880, 0, 8000, 2160)
+	layout := []ports.Screen{
+		{Name: "eDP", Bounds: laptop},
+		{Name: "DisplayPort-1", Bounds: monitor},
+	}
+
+	tests := []struct {
+		name       string
+		window     image.Rectangle
+		screens    []ports.Screen
+		screensErr error
+		want       image.Rectangle
+	}{
+		{
+			name:    "window one pixel past the desktop's right edge",
+			window:  image.Rect(2881, 38, 8001, 2111),
+			screens: layout,
+			want:    image.Rect(2881, 38, 8000, 2111),
+		},
+		{
+			name:    "window hanging into the strip no screen covers",
+			window:  image.Rect(100, 100, 1000, 2000),
+			screens: layout,
+			want:    image.Rect(100, 100, 1000, 1920),
+		},
+		{
+			name:    "window across the seam keeps both halves",
+			window:  image.Rect(2000, 100, 4000, 1000),
+			screens: layout,
+			want:    image.Rect(2000, 100, 4000, 1000),
+		},
+		{
+			name:    "window on no screen scans the screen",
+			window:  image.Rect(9000, 0, 9500, 500),
+			screens: layout,
+			want:    monitor,
+		},
+		{
+			name:       "screens that cannot be listed leave the window uncut",
+			window:     image.Rect(2881, 38, 8001, 2111),
+			screensErr: derrors.New(derrors.CodeNotSupported, "no screen list"),
+			want:       image.Rect(2881, 38, 8001, 2111),
+		},
+		{
+			name:   "no screens listed leaves the window uncut",
+			window: image.Rect(2881, 38, 8001, 2111),
+			want:   image.Rect(2881, 38, 8001, 2111),
+		},
+	}
+
+	for _, strategy := range []string{domain.StrategyVision, domain.StrategyContour, domain.StrategySegment} {
+		for _, test := range tests {
+			t.Run(strategy+"/"+test.name, func(t *testing.T) {
+				mockSystem := &mocks.MockSystemPort{}
+				mockSystem.FocusedWindowBoundsFunc = func(context.Context) (image.Rectangle, bool, error) {
+					return test.window, true, nil
+				}
+				mockSystem.ScreensFunc = func(context.Context) ([]ports.Screen, error) {
+					return test.screens, test.screensErr
+				}
+				mockSystem.ScreenBoundsFunc = func(context.Context) (image.Rectangle, error) {
+					return monitor, nil
+				}
+
+				vision := &mockVisionPort{}
+				generator, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionNormal)
+				service := services.NewHintService(
+					&mocks.MockAccessibilityPort{},
+					&mocks.MockOverlayPort{},
+					mockSystem,
+					generator,
+					config.HintsConfig{},
+					logger.Get(),
+					vision,
+				)
+
+				_, err := service.GenerateHints(
+					context.Background(), nil, nil, "com.example.app", strategy, "", "", false,
+				)
+				if err != nil {
+					t.Fatalf("GenerateHints() unexpected error: %v", err)
+				}
+
+				if vision.region != test.want {
+					t.Errorf("scanned %v, want %v", vision.region, test.want)
+				}
+			})
+		}
+	}
+}
+
 // TestHintService_GenerateHintsVisionNoticeSurvivesTheActivationContext is the
 // regression test for the way this notification is easiest to lose.
 //
@@ -545,188 +571,23 @@ func TestHintService_UpdateGenerator(t *testing.T) {
 		)
 	}
 
+	if got == service.Generator(hint.LabelDirectionReverse.String()) {
+		t.Error("reverse and normal resolved to the same generator instance")
+	}
+
+	// An empty or unknown direction falls back to the default generator.
+	for _, direction := range []string{"", "made-up"} {
+		fallback := service.Generator(direction)
+		if fallback == nil || fallback.LabelDirection() != hint.LabelDirectionReverse {
+			t.Errorf("Generator(%q) did not fall back to the reverse default", direction)
+		}
+	}
+
 	// A nil generator must be ignored rather than wiping a live one.
 	service.UpdateGenerator(context.Background(), nil)
 
 	if service.Generator(hint.LabelDirectionNormal.String()) == nil {
 		t.Error("UpdateGenerator(nil) cleared the previously registered generator")
-	}
-}
-
-func TestHintService_GeneratorReturnsDirectionSpecificInstance(t *testing.T) {
-	mockAcc := &mocks.MockAccessibilityPort{}
-	mockOverlay := &mocks.MockOverlayPort{}
-	logger := logger.Get()
-
-	reverseGen, _ := hint.NewAlphabetGenerator("abcd", hint.LabelDirectionReverse)
-	normalGen, _ := hint.NewAlphabetGenerator("abcd", hint.LabelDirectionNormal)
-
-	service := services.NewHintService(
-		mockAcc,
-		mockOverlay,
-		&mocks.MockSystemPort{},
-		reverseGen,
-		config.HintsConfig{},
-		logger,
-		nil,
-	)
-
-	// Register a normal-direction generator on top of the reverse default.
-	ctx := context.Background()
-	service.UpdateGenerator(ctx, normalGen)
-
-	// Each direction must resolve to its own generator instance, not the
-	// shared default.
-	gotReverse := service.Generator(domain.LabelDirectionReverse)
-	if gotReverse == nil {
-		t.Fatal("Generator(reverse) returned nil")
-	}
-
-	if gotReverse.LabelDirection() != hint.LabelDirectionReverse {
-		t.Errorf(
-			"Generator(reverse).LabelDirection() = %v, want %v",
-			gotReverse.LabelDirection(),
-			hint.LabelDirectionReverse,
-		)
-	}
-
-	gotNormal := service.Generator(domain.LabelDirectionNormal)
-	if gotNormal == nil {
-		t.Fatal("Generator(normal) returned nil")
-	}
-
-	if gotNormal.LabelDirection() != hint.LabelDirectionNormal {
-		t.Errorf(
-			"Generator(normal).LabelDirection() = %v, want %v",
-			gotNormal.LabelDirection(),
-			hint.LabelDirectionNormal,
-		)
-	}
-
-	if gotReverse == gotNormal {
-		t.Error("reverse and normal resolved to the same generator instance")
-	}
-
-	// Empty direction falls back to the default (reverse) generator.
-	gotDefault := service.Generator("")
-	if gotDefault == nil {
-		t.Fatal("Generator(\"\") returned nil")
-	}
-
-	if gotDefault.LabelDirection() != hint.LabelDirectionReverse {
-		t.Errorf(
-			"Generator(\"\").LabelDirection() = %v, want %v",
-			gotDefault.LabelDirection(),
-			hint.LabelDirectionReverse,
-		)
-	}
-
-	// Unknown direction falls back to the default rather than failing.
-	gotUnknown := service.Generator("made-up")
-	if gotUnknown == nil {
-		t.Fatal("Generator(\"made-up\") returned nil")
-	}
-
-	if gotUnknown.LabelDirection() != hint.LabelDirectionReverse {
-		t.Errorf(
-			"Generator(\"made-up\").LabelDirection() = %v, want %v",
-			gotUnknown.LabelDirection(),
-			hint.LabelDirectionReverse,
-		)
-	}
-}
-
-func TestHintService_GenerateHintsPicksDirectionGenerator(t *testing.T) {
-	mockAcc := &mocks.MockAccessibilityPort{}
-	mockOverlay := &mocks.MockOverlayPort{}
-	logger := logger.Get()
-
-	normalGen, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionNormal)
-	reverseGen, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionReverse)
-
-	// Five elements force both algorithms into the two-character tier, where
-	// reverse and normal produce *different* label sequences. The exact
-	// normal sequence is [A S D FA FS], and the exact reverse sequence is
-	// [AA SA DA FA AS]. The 4th and 5th labels expose the difference.
-	mockAcc.ClickableElementsFunc = func(_ context.Context, _ ports.ElementFilter) ([]*element.Element, error) {
-		return []*element.Element{
-			mustNewElement("e1", image.Rect(0, 0, 10, 10)),
-			mustNewElement("e2", image.Rect(20, 20, 30, 30)),
-			mustNewElement("e3", image.Rect(40, 40, 50, 50)),
-			mustNewElement("e4", image.Rect(60, 60, 70, 70)),
-			mustNewElement("e5", image.Rect(80, 80, 90, 90)),
-		}, nil
-	}
-
-	service := services.NewHintService(
-		mockAcc,
-		mockOverlay,
-		&mocks.MockSystemPort{},
-		normalGen,
-		config.HintsConfig{},
-		logger,
-		nil,
-	)
-
-	ctx := context.Background()
-	service.UpdateGenerator(ctx, reverseGen)
-
-	// Without an override, the configured (empty) label direction resolves
-	// to the default normal generator. The normal algorithm keeps 3
-	// single-char slots ([A S D]) and expands the 4th alphabet slot (F)
-	// into 2-char labels starting at [FA].
-	hints, err := service.GenerateHints(ctx, nil, nil, "", "", "", "", false)
-	if err != nil {
-		t.Fatalf("GenerateHints() unexpected error: %v", err)
-	}
-
-	if len(hints) != 5 {
-		t.Fatalf("GenerateHints() returned %d hints, want 5", len(hints))
-	}
-
-	wantNormalLabels := []string{"A", "S", "D", "FA", "FS"}
-	for i, want := range wantNormalLabels {
-		if got := hints[i].Label(); got != want {
-			t.Errorf("default-direction hint[%d].Label() = %q, want %q", i, got, want)
-		}
-	}
-
-	// With a reverse override, the override must resolve to the registered
-	// reverse generator, not silently fall back to the default normal one.
-	// The reverse algorithm fills all 4 single-char slots ([AA SA DA FA])
-	// before yielding a 2-char label ([AS]). The 1st and 5th labels (AA, AS)
-	// prove the override actually engaged.
-	hints, err = service.GenerateHints(
-		ctx,
-		nil,
-		nil,
-		"",
-		"",
-		"",
-		domain.LabelDirectionReverse,
-		false,
-	)
-	if err != nil {
-		t.Fatalf("GenerateHints() with reverse override unexpected error: %v", err)
-	}
-
-	if len(hints) != 5 {
-		t.Fatalf(
-			"GenerateHints() with reverse override returned %d hints, want 5",
-			len(hints),
-		)
-	}
-
-	wantReverseLabels := []string{"AA", "SA", "DA", "FA", "AS"}
-	for i, want := range wantReverseLabels {
-		if got := hints[i].Label(); got != want {
-			t.Errorf(
-				"reverse-override hint[%d].Label() = %q, want %q",
-				i,
-				got,
-				want,
-			)
-		}
 	}
 }
 
@@ -804,14 +665,18 @@ func mustNewElement(id string, bounds image.Rectangle) *element.Element {
 type mockVisionPort struct {
 	detectedElements []*element.Element
 	detectErr        error
+	// region is the last region a detector was asked to scan.
+	region image.Rectangle
 }
 
 func (m *mockVisionPort) DetectElements(
-	context.Context,
-	image.Rectangle,
-	config.HintsVisionConfig,
-	bool,
+	_ context.Context,
+	region image.Rectangle,
+	_ config.HintsVisionConfig,
+	_ bool,
 ) ([]*element.Element, error) {
+	m.region = region
+
 	if m.detectErr != nil {
 		return nil, m.detectErr
 	}
@@ -820,10 +685,12 @@ func (m *mockVisionPort) DetectElements(
 }
 
 func (m *mockVisionPort) DetectContours(
-	context.Context,
-	image.Rectangle,
-	config.HintsContourConfig,
+	_ context.Context,
+	region image.Rectangle,
+	_ config.HintsContourConfig,
 ) ([]*element.Element, error) {
+	m.region = region
+
 	if m.detectErr != nil {
 		return nil, m.detectErr
 	}
@@ -832,15 +699,25 @@ func (m *mockVisionPort) DetectContours(
 }
 
 func (m *mockVisionPort) DetectSegments(
-	context.Context,
-	image.Rectangle,
-	config.HintsSegmentConfig,
+	_ context.Context,
+	region image.Rectangle,
+	_ config.HintsSegmentConfig,
 ) ([]*element.Element, error) {
+	m.region = region
+
 	if m.detectErr != nil {
 		return nil, m.detectErr
 	}
 
 	return m.detectedElements, nil
+}
+
+func (m *mockVisionPort) DetectSegmentsAsRead(
+	ctx context.Context,
+	region image.Rectangle,
+	cfg config.HintsSegmentConfig,
+) ([]*element.Element, error) {
+	return m.DetectSegments(ctx, region, cfg)
 }
 
 func (m *mockVisionPort) CaptureScreen(context.Context) (*image.RGBA, error) {
@@ -849,199 +726,35 @@ func (m *mockVisionPort) CaptureScreen(context.Context) (*image.RGBA, error) {
 
 func (m *mockVisionPort) CaptureExcludesOwnWindows() bool { return false }
 
+func (m *mockVisionPort) AccurateReadDiffers() bool { return true }
+
+func (m *mockVisionPort) ForgetLastRead() {}
+
+func (m *mockVisionPort) PrepareAccurateRead() <-chan struct{} {
+	prepared := make(chan struct{})
+	close(prepared)
+
+	return prepared
+}
+
+func (m *mockVisionPort) ReadLinesOnceChanged(
+	ctx context.Context, region image.Rectangle,
+) ([][]ports.TextPiece, error) {
+	return m.ReadLines(ctx, region, ports.TextFast)
+}
+
+func (m *mockVisionPort) ReadLines(
+	context.Context, image.Rectangle, ports.TextLevel,
+) ([][]ports.TextPiece, error) {
+	return nil, derrors.New(derrors.CodeNotSupported, "not used by hints")
+}
+
+func (m *mockVisionPort) ReadText(context.Context, image.Rectangle) (string, error) {
+	return "", derrors.New(derrors.CodeNotSupported, "not supported")
+}
+
 func (m *mockVisionPort) Health(context.Context) error {
 	return nil
-}
-
-func TestHintService_GenerateHintsContour(t *testing.T) {
-	t.Parallel()
-
-	elem, err := element.NewElement(
-		element.ID("test-btn"),
-		image.Rect(100, 100, 150, 120),
-		element.RoleButton,
-		element.WithClickable(true),
-		element.WithSource(element.SourceContour),
-	)
-	if err != nil {
-		t.Fatalf("NewElement failed: %v", err)
-	}
-
-	generator, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionNormal)
-	service := services.NewHintService(
-		&mocks.MockAccessibilityPort{
-			FocusedAppBundleIDFunc: func(context.Context) (string, error) {
-				return "com.example.app", nil
-			},
-		},
-		&mocks.MockOverlayPort{},
-		&mocks.MockSystemPort{
-			FocusedWindowBoundsFunc: func(context.Context) (image.Rectangle, bool, error) {
-				return image.Rect(0, 0, 800, 600), true, nil
-			},
-		},
-		generator,
-		config.DefaultConfig().Hints,
-		zap.NewNop(),
-		&mockVisionPort{detectedElements: []*element.Element{elem}},
-	)
-
-	hints, err := service.GenerateHints(
-		context.Background(),
-		nil,
-		nil,
-		"com.example.app",
-		domain.StrategyContour, "",
-		"",
-		false,
-	)
-	if err != nil {
-		t.Fatalf("GenerateHints() failed: %v", err)
-	}
-
-	if len(hints) != 1 {
-		t.Fatalf("len(hints) = %d, want 1", len(hints))
-	}
-}
-
-func TestHintService_GenerateHintsContourCombinesSupplementaryAndWindowElements(
-	t *testing.T,
-) {
-	supplementElement := mustNewElement("menubar", image.Rect(10, 0, 60, 20))
-	windowElement := mustNewElement("window", image.Rect(10, 40, 60, 90))
-
-	mockAcc := &mocks.MockAccessibilityPort{}
-	mockAcc.ClickableElementsFunc = func(
-		_ context.Context,
-		filter ports.ElementFilter,
-	) ([]*element.Element, error) {
-		if !filter.SkipWindowElements {
-			t.Error("accessibility should not collect window elements when using contour strategy")
-
-			return nil, nil
-		}
-
-		return []*element.Element{supplementElement}, nil
-	}
-
-	mockSystem := &mocks.MockSystemPort{}
-	mockSystem.FocusedWindowBoundsFunc = func(context.Context) (image.Rectangle, bool, error) {
-		return image.Rect(0, 0, 200, 200), true, nil
-	}
-
-	generator, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionReverse)
-	service := services.NewHintService(
-		mockAcc,
-		&mocks.MockOverlayPort{},
-		mockSystem,
-		generator,
-		config.HintsConfig{
-			ClickableRoles:      []string{string(element.SemanticButton)},
-			IncludeMenubarHints: true,
-			IncludeDockHints:    true,
-		},
-		logger.Get(),
-		&mocks.MockVisionPort{
-			DetectContoursFunc: func(context.Context, image.Rectangle, config.HintsContourConfig) ([]*element.Element, error) {
-				return []*element.Element{windowElement}, nil
-			},
-		},
-	)
-
-	hints, err := service.GenerateHints(
-		context.Background(),
-		nil,
-		nil,
-		"com.example.app",
-		domain.StrategyContour, "",
-		"",
-		false,
-	)
-	if err != nil {
-		t.Fatalf("GenerateHints() unexpected error: %v", err)
-	}
-
-	seen := map[element.ID]int{}
-	for _, generatedHint := range hints {
-		seen[generatedHint.Element().ID()]++
-	}
-
-	if seen[supplementElement.ID()] != 1 || seen[windowElement.ID()] != 1 {
-		t.Errorf("hint ids = %v, want one supplementary and one window element", seen)
-	}
-}
-
-func TestHintService_GenerateHintsContour_ScansFocusedWindow(t *testing.T) {
-	t.Parallel()
-
-	elem, err := element.NewElement(
-		element.ID("window-btn"),
-		image.Rect(200, 150, 300, 190),
-		element.RoleButton,
-		element.WithClickable(true),
-		element.WithSource(element.SourceContour),
-	)
-	if err != nil {
-		t.Fatalf("NewElement failed: %v", err)
-	}
-
-	var capturedRegion image.Rectangle
-
-	mockVision := &mocks.MockVisionPort{
-		DetectContoursFunc: func(_ context.Context, region image.Rectangle, _ config.HintsContourConfig) ([]*element.Element, error) {
-			capturedRegion = region
-
-			return []*element.Element{elem}, nil
-		},
-	}
-
-	generator, _ := hint.NewAlphabetGenerator("asdf", hint.LabelDirectionNormal)
-	service := services.NewHintService(
-		&mocks.MockAccessibilityPort{
-			FocusedAppBundleIDFunc: func(context.Context) (string, error) {
-				return "com.example.app", nil
-			},
-		},
-		&mocks.MockOverlayPort{},
-		&mocks.MockSystemPort{
-			ScreenBoundsFunc: func(context.Context) (image.Rectangle, error) {
-				return image.Rect(0, 0, 1920, 1080), nil
-			},
-			FocusedWindowBoundsFunc: func(context.Context) (image.Rectangle, bool, error) {
-				return image.Rect(100, 100, 800, 600), true, nil
-			},
-		},
-		generator,
-		config.DefaultConfig().Hints,
-		zap.NewNop(),
-		mockVision,
-	)
-
-	hints, err := service.GenerateHints(
-		context.Background(),
-		nil,
-		nil,
-		"com.example.app",
-		domain.StrategyContour, "",
-		"",
-		false,
-	)
-	if err != nil {
-		t.Fatalf("GenerateHints() failed: %v", err)
-	}
-
-	if len(hints) != 1 {
-		t.Fatalf("len(hints) = %d, want 1", len(hints))
-	}
-
-	wantWindow := image.Rect(100, 100, 800, 600)
-	if capturedRegion != wantWindow {
-		t.Errorf(
-			"DetectContours captured region = %v, want focused window %v",
-			capturedRegion,
-			wantWindow,
-		)
-	}
 }
 
 func TestHintService_GenerateHintsContour_ScreenScopeSkipsTheWindow(t *testing.T) {

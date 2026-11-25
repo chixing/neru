@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -105,18 +106,22 @@ func TestResolveTessdataDir_IgnoresAnEmptyEnvironmentEntry(t *testing.T) {
 
 // TestOCRError_MapsEveryStatusToAnActionableSentence pins the half of the
 // native contract a Go test can see: which failures a caller should stop
-// retrying, and that no status falls through to an empty message.
+// retrying, and that no status falls through to an empty message. Even the
+// success code is an error, because ocrError is only reached on a failure
+// path and answering nil there would turn a wrong branch into a silent success.
 func TestOCRError_MapsEveryStatusToAnActionableSentence(t *testing.T) {
 	tests := []struct {
 		status       ocrStatus
 		notSupported bool
 	}{
+		{ocrStatusOK, false},
 		{ocrStatusInit, true},
 		{ocrStatusAlloc, false},
 		{ocrStatusImage, false},
 		{ocrStatusRecognize, false},
 		{ocrStatusBusy, false},
 		{ocrStatusTimeout, false},
+		{ocrStatusCanceled, false},
 		{ocrStatus(99), false},
 	}
 
@@ -144,17 +149,6 @@ func TestOCRError_MapsEveryStatusToAnActionableSentence(t *testing.T) {
 	}
 }
 
-// TestOCRError_OKIsStillAnError guards the shape every status mapper in this
-// package shares. ocrError is only reached on a failure path, so being handed
-// the success code means the caller's branch is wrong, and answering nil would
-// turn that into a silent success.
-func TestOCRError_OKIsStillAnError(t *testing.T) {
-	err := ocrError(ocrStatusOK)
-	if err == nil {
-		t.Fatal("ocrError(ocrStatusOK) returned nil")
-	}
-}
-
 type stubEnv map[string]string
 
 func (s stubEnv) get(key string) string { return s[key] }
@@ -162,3 +156,62 @@ func (s stubEnv) get(key string) string { return s[key] }
 type stubExists map[string]bool
 
 func (s stubExists) has(path string) bool { return s[path] }
+
+func TestLocaleLanguages_NamesEachLanguageInAnotherScript(t *testing.T) {
+	const lang = "LANG"
+
+	tests := []struct {
+		name string
+		env  map[string]string
+		want []string
+	}{
+		{name: "no locale", env: map[string]string{}, want: nil},
+		{name: "English", env: map[string]string{lang: "en_US.UTF-8"}, want: nil},
+		{name: "a Latin language", env: map[string]string{lang: "fr_FR.UTF-8"}, want: nil},
+		{
+			name: "Simplified Chinese",
+			env:  map[string]string{lang: "zh_CN.UTF-8"},
+			want: []string{"chi_sim"},
+		},
+		{
+			name: "Taiwan reads Traditional",
+			env:  map[string]string{lang: "zh_TW.UTF-8"},
+			want: []string{"chi_tra"},
+		},
+		{
+			name: "Hong Kong reads Traditional",
+			env:  map[string]string{"LC_ALL": "zh_HK"},
+			want: []string{"chi_tra"},
+		},
+		{
+			name: "Japanese",
+			env:  map[string]string{"LC_MESSAGES": "ja_JP.UTF-8"},
+			want: []string{"jpn"},
+		},
+		{name: "Russian", env: map[string]string{lang: "ru_RU.UTF-8"}, want: []string{"rus"}},
+		{
+			name: "every language LANGUAGE lists, in order",
+			env:  map[string]string{"LANGUAGE": "en_US:ru_RU:ko_KR", lang: "en_US.UTF-8"},
+			want: []string{"rus", "kor"},
+		},
+		{
+			name: "LANGUAGE before LANG, each once",
+			env:  map[string]string{"LANGUAGE": "ja", lang: "ja_JP.UTF-8"},
+			want: []string{"jpn"},
+		},
+		{
+			name: "a language merely starting with ja",
+			env:  map[string]string{lang: "jam_JM"},
+			want: nil,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := localeLanguages(func(name string) string { return testCase.env[name] })
+			if !slices.Equal(got, testCase.want) {
+				t.Fatalf("localeLanguages = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}

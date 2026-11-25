@@ -25,6 +25,7 @@ const (
 	ModeNameGrid          = "grid"
 	ModeNameRecursiveGrid = "recursive_grid"
 	ModeNameBisect        = "bisect"
+	ModeNameVim           = "vim"
 	ModeNameScroll        = "scroll"
 	ModeNameMonitorSelect = "monitor_select"
 )
@@ -101,27 +102,6 @@ const DisabledSentinel = "__disabled__"
 // "config.override.toml", and "my-neru.toml" produces "my-neru.override.toml".
 const OverrideSuffix = ".override.toml"
 
-// The comparison forms the control characters a tap delivers resolve to, and
-// the modifier names. These are not a listing of the named keys.
-// internal/domain/keyvocab declares those, and every other named key reaches
-// its comparison form by being lowercased rather than by being named here.
-const (
-	minimumModifierParts = 2
-	KeyNameEscape        = "escape"
-	KeyNameReturn        = "return"
-	KeyNameTab           = "tab"
-	KeyNameSpace         = "space"
-	KeyNameDelete        = "delete"
-	modifierNameCmd      = "cmd"
-	modifierNameCtrl     = "ctrl"
-	modifierNameAlt      = "alt"
-	modifierNameShift    = "shift"
-	modifierDisplayCmd   = "Cmd"
-	modifierDisplayCtrl  = "Ctrl"
-	modifierDisplayAlt   = "Alt"
-	modifierDisplaySuper = "Super"
-)
-
 // Config is the complete application configuration structure.
 type Config struct {
 	General         GeneralConfig                  `json:"general"         toml:"general"`
@@ -134,6 +114,7 @@ type Config struct {
 	Grid            GridConfig                     `json:"grid"            toml:"grid"`
 	RecursiveGrid   RecursiveGridConfig            `json:"recursiveGrid"   toml:"recursive_grid"`
 	Bisect          BisectConfig                   `json:"bisect"          toml:"bisect"`
+	Vim             VimConfig                      `json:"vim"             toml:"vim"`
 	MonitorSelect   MonitorSelectConfig            `json:"monitorSelect"   toml:"monitor_select"`
 	VirtualPointer  VirtualPointerConfig           `json:"virtualPointer"  toml:"virtual_pointer"`
 	MouseAction     MouseActionConfig              `json:"mouseAction"     toml:"mouse_action_indicator"`
@@ -227,6 +208,7 @@ type ModeIndicatorConfig struct {
 	RecursiveGrid ModeIndicatorModeConfig `json:"recursiveGrid" toml:"recursive_grid"`
 	Bisect        ModeIndicatorModeConfig `json:"bisect"        toml:"bisect"`
 	MonitorSelect ModeIndicatorModeConfig `json:"monitorSelect" toml:"monitor_select"`
+	Vim           ModeIndicatorModeConfig `json:"vim"           toml:"vim"`
 	UI            ModeIndicatorUI         `json:"ui"            toml:"ui"`
 }
 
@@ -265,6 +247,9 @@ type AppConfig struct {
 	ScrollStepHalf       *int                           `json:"scrollStepHalf"       toml:"scroll_step_half,omitempty"`
 	ScrollStepFull       *int                           `json:"scrollStepFull"       toml:"scroll_step_full,omitempty"`
 	Hotkeys              map[string]StringOrStringArray `json:"hotkeys"              toml:"hotkeys"`
+	// SelectWith replaces hints' select_with entries for this app, one
+	// modifier set at a time. Only hints reads it.
+	SelectWith map[string]StringOrStringArray `json:"selectWith" toml:"select_with,omitempty"`
 }
 
 // HotkeysConfig defines hotkey mappings and their associated actions.
@@ -327,6 +312,49 @@ func (c *BisectConfig) RenderConfig() RecursiveGridConfig {
 		Animation: c.Animation,
 		UI:        c.UI,
 	}
+}
+
+// VimConfig defines vim mode: the text read off the screen, with a cursor
+// moved over it by vim's motions, search and operators.
+type VimConfig struct {
+	Enabled bool `json:"enabled" toml:"enabled"`
+	// CaptureScope is what the mode reads: the focused window or the whole
+	// active screen.
+	CaptureScope string `json:"captureScope" toml:"capture_scope"`
+	UI           VimUI  `json:"ui"           toml:"ui"`
+
+	AppConfigs []AppConfig `json:"appConfigs" toml:"app_configs"`
+
+	// Keymaps maps keys to other keys inside vim, as vim's noremap does.
+	Keymaps VimKeymaps `json:"keymaps" toml:"keymaps"`
+
+	// Hotkeys binds keys to actions ahead of vim, so a bound key runs its
+	// action and vim never sees it. It ships empty, since vim answers every
+	// key it is given.
+	Hotkeys map[string]StringOrStringArray `json:"hotkeys" toml:"-"`
+}
+
+// VimKeymaps maps keys in normal and visual mode, from the keys typed to the
+// keys they run, both in vim's notation, such as "<Space>j". The keys run are
+// vim's own and never mapped again, so vim mode's own commands are written
+// as <Plug>(name). A mapping replaces vim mode's own mapping of the same
+// keys, and "<Nop>" makes the keys do nothing.
+type VimKeymaps struct {
+	Normal map[string]string `json:"normal" toml:"normal"`
+	Visual map[string]string `json:"visual" toml:"visual"`
+}
+
+// VimUI is how vim mode draws: the cursor, the selection, the search matches,
+// the outline of the container the cursor is in, and the status bar.
+type VimUI struct {
+	FontSize              int    `json:"fontSize"              toml:"font_size"`
+	FontFamily            string `json:"fontFamily"            toml:"font_family"`
+	CursorColor           Color  `json:"cursorColor"           toml:"cursor_color"`
+	SelectionColor        Color  `json:"selectionColor"        toml:"selection_color"`
+	MatchColor            Color  `json:"matchColor"            toml:"match_color"`
+	ContainerColor        Color  `json:"containerColor"        toml:"container_color"`
+	StatusBackgroundColor Color  `json:"statusBackgroundColor" toml:"status_background_color"`
+	StatusTextColor       Color  `json:"statusTextColor"       toml:"status_text_color"`
 }
 
 // CustomModeConfig is one mode the user declared under [modes.<name>]: a mode
@@ -538,6 +566,7 @@ type HintsConfig struct {
 	CaptureScope      string              `json:"captureScope"      toml:"capture_scope"`
 	HintCharacters    string              `json:"hintCharacters"    toml:"hint_characters"`
 	LabelDirection    string              `json:"labelDirection"    toml:"label_direction"`
+	LabelAlternation  string              `json:"labelAlternation"  toml:"label_alternation"`
 	MaxDepth          int                 `json:"maxDepth"          toml:"max_depth"`
 	UI                HintsUI             `json:"ui"                toml:"ui"`
 	SearchInputUI     SearchInputUI       `json:"searchInputUi"     toml:"search_input_ui"`
@@ -562,6 +591,11 @@ type HintsConfig struct {
 	VisibleCheckEnabled  bool     `json:"visibleCheckEnabled"  toml:"visible_check_enabled"`
 
 	AppConfigs []AppConfig `json:"appConfigs" toml:"app_configs"`
+
+	// SelectWith maps a set of held modifiers, such as "shift" or
+	// "cmd+shift", to the steps that run in place of the session's --action
+	// when the key completing a label is typed with exactly those modifiers.
+	SelectWith map[string]StringOrStringArray `json:"selectWith" toml:"select_with"`
 
 	Hotkeys map[string]StringOrStringArray `json:"hotkeys" toml:"-"`
 }
@@ -835,6 +869,8 @@ func (c *Config) ModeEnabled(modeName string) bool {
 		return c.Bisect.Enabled
 	case ModeNameMonitorSelect:
 		return c.MonitorSelect.Enabled
+	case ModeNameVim:
+		return c.Vim.Enabled
 	default:
 		return true
 	}
@@ -854,6 +890,8 @@ func (c *Config) baseHotkeysForMode(modeName string) map[string]StringOrStringAr
 		return c.Scroll.Hotkeys
 	case ModeNameMonitorSelect:
 		return c.MonitorSelect.Hotkeys
+	case ModeNameVim:
+		return c.Vim.Hotkeys
 	default:
 		// A name no built-in mode answers to is a declared one, or nothing.
 		// An undeclared name reads the zero value, whose table is nil.

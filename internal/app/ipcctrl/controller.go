@@ -35,6 +35,7 @@ type Controller struct {
 	EventTap  ports.EventTapPort
 	IPCServer ports.IPCPort
 	KeyFeed   ports.KeyFeedPort
+	Clipboard ports.ClipboardPort
 
 	// Mode management
 	Modes *modes.Handler
@@ -103,6 +104,7 @@ type Deps struct {
 	EventTap  ports.EventTapPort
 	IPCServer ports.IPCPort
 	KeyFeed   ports.KeyFeedPort
+	Clipboard ports.ClipboardPort
 
 	// ReloadConfig performs a full app-level config reload.
 	ReloadConfig func(ctx context.Context, configPath string) error
@@ -144,6 +146,7 @@ func New(deps Deps) *Controller {
 		EventTap:        deps.EventTap,
 		IPCServer:       deps.IPCServer,
 		KeyFeed:         deps.KeyFeed,
+		Clipboard:       deps.Clipboard,
 		ReloadConfig:    deps.ReloadConfig,
 		ExecuteSequence: deps.ExecuteSequence,
 		ExecuteMacro:    deps.ExecuteMacro,
@@ -193,8 +196,8 @@ func (c *Controller) HandleCommand(ctx context.Context, command ipc.Command) ipc
 }
 
 // answeredWhilePaused lists what `neru stop` does not switch off: lifecycle,
-// status, the queries and configuration, and the preference toggles. Anything
-// else is refused while paused.
+// status, the queries, describe and configuration, and the preference
+// toggles. Anything else is refused while paused.
 var answeredWhilePaused = map[string]bool{
 	domain.CommandPing:                        true,
 	domain.CommandStart:                       true,
@@ -204,6 +207,7 @@ var answeredWhilePaused = map[string]bool{
 	domain.CommandQueryCursor:                 true,
 	domain.CommandQueryWindow:                 true,
 	domain.CommandQueryApp:                    true,
+	domain.CommandDescribe:                    true,
 	domain.CommandConfig:                      true,
 	domain.CommandReloadConfig:                true,
 	domain.CommandHealth:                      true,
@@ -279,6 +283,7 @@ func (c *Controller) registerHandlers(cfg *config.Config) {
 		c.Modes,
 		c.AppState,
 		c.KeyFeed,
+		c.Clipboard,
 		cursorSlots,
 		c.Logger,
 	)

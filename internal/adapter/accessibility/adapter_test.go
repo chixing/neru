@@ -2,7 +2,6 @@ package accessibility_test
 
 import (
 	"context"
-	"image"
 	"slices"
 	"testing"
 
@@ -11,7 +10,6 @@ import (
 	"github.com/y3owk1n/neru/internal/adapter/accessibility"
 	"github.com/y3owk1n/neru/internal/adapter/accessibility/ax"
 	"github.com/y3owk1n/neru/internal/derrors"
-	"github.com/y3owk1n/neru/internal/domain/action"
 	"github.com/y3owk1n/neru/internal/domain/element"
 	"github.com/y3owk1n/neru/internal/ports"
 )
@@ -42,169 +40,6 @@ func TestAdapter_UpdateClickableRoles(t *testing.T) {
 			len(newRoles),
 			len(mockClient.MockClickableRoles),
 		)
-	}
-}
-
-func TestAdapter_Scroll(t *testing.T) {
-	logger := zap.NewNop()
-	mockClient := &accessibility.MockAXClient{}
-	adapter := accessibility.NewAdapter(logger, mockClient, false)
-	ctx := context.Background()
-
-	tests := []struct {
-		name   string
-		deltaX int
-		deltaY int
-	}{
-		{
-			name:   "scroll down",
-			deltaX: 0,
-			deltaY: -10,
-		},
-		{
-			name:   "scroll up",
-			deltaX: 0,
-			deltaY: 10,
-		},
-		{
-			name:   "scroll right",
-			deltaX: 10,
-			deltaY: 0,
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			scrollErr := adapter.Scroll(ctx, testCase.deltaX, testCase.deltaY, 0)
-			if scrollErr != nil {
-				t.Errorf("Scroll() error = %v", scrollErr)
-			}
-		})
-	}
-}
-
-func TestAdapter_Health(t *testing.T) {
-	logger := zap.NewNop()
-	mockClient := &accessibility.MockAXClient{MockPermissions: true}
-	adapter := accessibility.NewAdapter(logger, mockClient, false)
-	ctx := context.Background()
-
-	healthErr := adapter.Health(ctx)
-	if healthErr != nil {
-		t.Errorf("Health() error = %v", healthErr)
-	}
-}
-
-func TestAdapter_MatchesFilter(t *testing.T) {
-	logger := zap.NewNop()
-	mockClient := &accessibility.MockAXClient{}
-	adapter := accessibility.NewAdapter(logger, mockClient, false)
-
-	elem, _ := element.NewElement(
-		element.ID("test-id"),
-		image.Rect(0, 0, 100, 100),
-		element.RoleButton,
-	)
-
-	elemWithSearchText, _ := element.NewElement(
-		element.ID("test-id-with-search-text"),
-		image.Rect(0, 0, 100, 100),
-		element.RoleButton,
-		element.WithSearchText("Apple Notes row"),
-	)
-
-	tests := []struct {
-		name   string
-		elem   *element.Element
-		filter ports.ElementFilter
-		want   bool
-	}{
-		{
-			name: "match by role",
-			elem: elem,
-			filter: ports.ElementFilter{
-				Roles: []element.Role{element.RoleButton},
-			},
-			want: true,
-		},
-		{
-			name: "no match by role",
-			elem: elem,
-			filter: ports.ElementFilter{
-				Roles: []element.Role{element.RoleLink},
-			},
-			want: false,
-		},
-		{
-			name: "match by min size",
-			elem: elem,
-			filter: ports.ElementFilter{
-				MinSize: image.Point{X: 50, Y: 50},
-			},
-			want: true,
-		},
-		{
-			name: "match by extra search text",
-			elem: elemWithSearchText,
-			filter: ports.ElementFilter{
-				ValueContains: "notes",
-			},
-			want: true,
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			got := adapter.MatchesFilter(testCase.elem, testCase.filter)
-			if got != testCase.want {
-				t.Errorf("matchesFilter() = %v, want %v", got, testCase.want)
-			}
-		})
-	}
-}
-
-func TestAdapter_PerformActionAtPoint(t *testing.T) {
-	logger := zap.NewNop()
-	mockClient := &accessibility.MockAXClient{}
-	adapter := accessibility.NewAdapter(logger, mockClient, false)
-	ctx := context.Background()
-
-	tests := []struct {
-		name       string
-		actionType action.Type
-		point      image.Point
-		wantErr    bool
-	}{
-		{
-			name:       "click at point",
-			actionType: action.TypeLeftClick,
-			point:      image.Point{X: 100, Y: 100},
-			wantErr:    false,
-		},
-		{
-			name:       "right click at point",
-			actionType: action.TypeRightClick,
-			point:      image.Point{X: 200, Y: 200},
-			wantErr:    false,
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			performActionErr := adapter.PerformActionAtPoint(
-				ctx,
-				testCase.actionType,
-				testCase.point,
-				0,
-			)
-			if (performActionErr != nil) != testCase.wantErr {
-				t.Errorf(
-					"PerformActionAtPoint() error = %v, wantErr %v",
-					performActionErr,
-					testCase.wantErr,
-				)
-			}
-		})
 	}
 }
 
@@ -272,15 +107,26 @@ func TestAdapter_FocusedAppBundleID(t *testing.T) {
 	}
 }
 
-func TestAdapter_Health_PermissionsDenied(t *testing.T) {
-	logger := zap.NewNop()
-	mockClient := &accessibility.MockAXClient{MockPermissions: false}
-	adapter := accessibility.NewAdapter(logger, mockClient, false)
-	ctx := context.Background()
+func TestAdapter_Health(t *testing.T) {
+	tests := []struct {
+		name        string
+		permissions bool
+		wantErr     bool
+	}{
+		{name: "permissions granted", permissions: true, wantErr: false},
+		{name: "permissions denied", permissions: false, wantErr: true},
+	}
 
-	healthErr := adapter.Health(ctx)
-	if healthErr == nil {
-		t.Error("Health() expected error when permissions denied, got nil")
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			mockClient := &accessibility.MockAXClient{MockPermissions: testCase.permissions}
+			adapter := accessibility.NewAdapter(zap.NewNop(), mockClient, false)
+
+			healthErr := adapter.Health(context.Background())
+			if (healthErr != nil) != testCase.wantErr {
+				t.Errorf("Health() error = %v, wantErr %v", healthErr, testCase.wantErr)
+			}
+		})
 	}
 }
 
@@ -290,7 +136,6 @@ func TestAdapter_RolePassing(t *testing.T) {
 	mockClient := &accessibility.MockAXClient{
 		MockPermissions:     true,
 		MockFrontmostWindow: mockWindow,
-		MockAllWindows:      []ax.Window{mockWindow},
 	}
 
 	initialRoles := []string{axButtonRole}
@@ -459,7 +304,6 @@ func TestAdapter_ClickableElements_MissionControlIsPartOfDockHints(t *testing.T)
 			mockClient := &accessibility.MockAXClient{
 				MockPermissions:          true,
 				MockFrontmostWindow:      mockWindow,
-				MockAllWindows:           []ax.Window{mockWindow},
 				MockMissionControlActive: testCase.missionControl,
 				MockFocusedApp: &mockAXApp{
 					bundleID: bundleIDAppleDock,
@@ -513,7 +357,6 @@ func TestAdapter_UpdateMissionControlDetection_FollowsTheReloadedSetting(t *test
 			mockClient := &accessibility.MockAXClient{
 				MockPermissions:          true,
 				MockFrontmostWindow:      mockWindow,
-				MockAllWindows:           []ax.Window{mockWindow},
 				MockMissionControlActive: true,
 				MockFocusedApp: &mockAXApp{
 					bundleID: bundleIDAppleDock,

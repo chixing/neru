@@ -18,8 +18,7 @@ import (
 )
 
 // newHintSearchTestHandler builds a handler sitting in hints mode with one hint
-// found, which is everything starting a search needs, over the overlay and text
-// input given.
+// found, which is everything starting a search needs, over the overlay given.
 func newHintSearchTestHandler(
 	t *testing.T,
 	overlayPort ports.OverlayPort,
@@ -62,142 +61,6 @@ func newHintSearchTestHandler(
 	return handler
 }
 
-// TestStartHintSearch_PlacesTheTextInputOverTheDrawnBox is the ordinary case.
-// The overlay says where it put the search box and the platform's input field
-// is placed over exactly that rectangle, rather than deriving the placement a
-// second time here.
-func TestStartHintSearch_PlacesTheTextInputOverTheDrawnBox(t *testing.T) {
-	t.Parallel()
-
-	// The box is relative to the active screen, here a second monitor, and
-	// the frame carries that screen so a platform field can place itself.
-	box := image.Rect(410, 740, 610, 780)
-	screen := image.Rect(1920, 0, 3840, 1080)
-	overlayPort := &portmocks.MockOverlayPort{
-		HintSearchBoundsFunc: func(image.Rectangle) image.Rectangle { return box },
-	}
-	textInput := &portmocks.MockTextInputPort{Started: true}
-
-	handler := newHintSearchTestHandler(t, overlayPort, textInput)
-
-	handler.mu.Lock()
-	handler.screenBounds = screen
-	err := handler.startHintSearch(false)
-	handler.mu.Unlock()
-
-	if err != nil {
-		t.Fatalf("startHintSearch() error = %v", err)
-	}
-
-	if textInput.StartCount() != 1 {
-		t.Fatalf("text input started %d times, want 1", textInput.StartCount())
-	}
-
-	want := ports.TextInputFrame{
-		X: box.Min.X, Y: box.Min.Y, Width: box.Dx(), Height: box.Dy(), Screen: screen,
-	}
-	if got := textInput.Frame(); got != want {
-		t.Errorf("text input frame = %+v, want %+v", got, want)
-	}
-}
-
-// TestStartHintSearch_NoBoxOnScreenStartsNoTextInput pins the degradation that
-// comes with the overlay being able to refuse a search input it cannot place
-// (#1329). An empty rectangle means nothing was drawn, and the platform's field
-// is not sized from the box it sits over (macOS substitutes a 16x16 one at the
-// screen origin), so starting the session anyway would hand the keyboard to an
-// invisible input in a corner while the event tap is switched off. Search still
-// works. The query arrives through the key stream, the way it does on every
-// overlay that draws no search box at all.
-func TestStartHintSearch_NoBoxOnScreenStartsNoTextInput(t *testing.T) {
-	t.Parallel()
-
-	overlayPort := &portmocks.MockOverlayPort{
-		HintSearchBoundsFunc: func(image.Rectangle) image.Rectangle { return image.Rectangle{} },
-	}
-	textInput := &portmocks.MockTextInputPort{Started: true}
-
-	handler := newHintSearchTestHandler(t, overlayPort, textInput)
-
-	handler.mu.Lock()
-	err := handler.startHintSearch(false)
-	searchActive := handler.hints.Context.SearchActive()
-	textInputActive := handler.hintSearchTextInputActive
-	handler.mu.Unlock()
-
-	if err != nil {
-		t.Fatalf("startHintSearch() error = %v", err)
-	}
-
-	if textInput.StartCount() != 0 {
-		t.Errorf(
-			"text input started %d times with no search box on screen, want 0",
-			textInput.StartCount(),
-		)
-	}
-
-	if textInputActive {
-		t.Error("the handler recorded an active text input session that was never started")
-	}
-
-	// The search itself still opened. Only the native field was skipped.
-	if !searchActive {
-		t.Error("hint search is not active; the key stream has nothing to filter")
-	}
-}
-
-// TestStartHintSearch_NoBoxOnScreenGivesTheKeyboardBack pins the half of that
-// degradation the user would notice. Starting a search stops any live session
-// while deliberately leaving the event tap off, because the session about to
-// start wants it off. When no session starts, the tap has to come back on. It
-// is the only thing left that can deliver a key, and hints mode with the
-// keyboard switched off and nothing listening is indistinguishable from a hang.
-func TestStartHintSearch_NoBoxOnScreenGivesTheKeyboardBack(t *testing.T) {
-	t.Parallel()
-
-	enables := 0
-	eventTap := &portmocks.MockEventTapPort{
-		EnableFunc: func(context.Context) error {
-			enables++
-
-			return nil
-		},
-	}
-
-	overlayPort := &portmocks.MockOverlayPort{
-		HintSearchBoundsFunc: func(image.Rectangle) image.Rectangle { return image.Rectangle{} },
-	}
-
-	handler := newHintSearchTestHandler(
-		t,
-		overlayPort,
-		&portmocks.MockTextInputPort{Started: true},
-	)
-
-	handler.mu.Lock()
-	// In the state a live session leaves behind, the tap is off and the handler
-	// knows it turned it off.
-	handler.eventTap = eventTap
-	handler.hintSearchTextInputActive = true
-	handler.hintSearchEventTapDisabled = true
-
-	err := handler.startHintSearch(false)
-	stillDisabled := handler.hintSearchEventTapDisabled
-	handler.mu.Unlock()
-
-	if err != nil {
-		t.Fatalf("startHintSearch() error = %v", err)
-	}
-
-	if enables != 1 {
-		t.Errorf("event tap enabled %d times, want 1: the keyboard is still switched off", enables)
-	}
-
-	if stillDisabled {
-		t.Error("the handler still believes it owes the event tap a re-enable")
-	}
-}
-
 // TestHintsModeRefreshForThemeChange_RedrawsAnOpenSearchBox pins the half of a
 // theme refresh a redraw of the labels alone would lose. On the backends that
 // paint the search box onto the same surface as the labels (Linux and Windows),
@@ -213,11 +76,10 @@ func TestHintsModeRefreshForThemeChange_RedrawsAnOpenSearchBox(t *testing.T) {
 
 			return nil
 		},
-		HintSearchBoundsFunc: func(image.Rectangle) image.Rectangle { return image.Rectangle{} },
 	}
 
-	handler := newHintSearchTestHandler(t, overlayPort, &portmocks.MockTextInputPort{})
-	mode := &HintsMode{baseMode: baseMode{handler: &handler.handlerState}}
+	handler := newHintSearchTestHandler(t, overlayPort, nil)
+	mode := &HintsMode{handler: &handler.handlerState}
 
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
@@ -302,18 +164,18 @@ func TestStartHintSearch_IgnoresCallbacksFromAStoppedSession(t *testing.T) {
 	}
 }
 
-// TestHandleSearchInputKey_KeepsShiftedLettersAndSpaces pins the query text
+// TestHandleSearchInputKey_TakesKeysTypedWithShiftHeld pins the query text
 // itself, which matching cannot. Search ignores case, so a capital typed as
-// "Shift+c" and kept as "c" would still find the same elements. The Linux and
-// Windows taps name a key typed with Shift held this way.
-func TestHandleSearchInputKey_KeepsShiftedLettersAndSpaces(t *testing.T) {
+// "Shift+c" and kept as "c" would still find the same elements. The taps name
+// a key typed with Shift held this way, and a shifted digit or symbol is the
+// character it types on a US layout. Backspace and Escape still edit and
+// cancel with Shift held.
+func TestHandleSearchInputKey_TakesKeysTypedWithShiftHeld(t *testing.T) {
 	t.Parallel()
 
-	overlayPort := &portmocks.MockOverlayPort{
-		HintSearchBoundsFunc: func(image.Rectangle) image.Rectangle { return image.Rectangle{} },
-	}
+	overlayPort := &portmocks.MockOverlayPort{}
 
-	handler := newHintSearchTestHandler(t, overlayPort, &portmocks.MockTextInputPort{})
+	handler := newHintSearchTestHandler(t, overlayPort, nil)
 
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
@@ -323,62 +185,17 @@ func TestHandleSearchInputKey_KeepsShiftedLettersAndSpaces(t *testing.T) {
 		t.Fatalf("startHintSearch() error = %v", err)
 	}
 
-	for _, key := range []string{"Shift+c", "a", "Shift+Space", "shift+b", "Shift+1"} {
+	for _, key := range []string{"Shift+c", "a", "Shift+Space", "shift+b", "Shift+1", "Shift+1", "Shift+Delete"} {
 		handler.handleSearchInputKey(key)
 	}
 
-	// The shifted symbol depends on the layout, so it stays dropped.
-	if got := handler.hints.Context.SearchQuery(); got != "Ca B" {
-		t.Errorf("query = %q, want %q", got, "Ca B")
-	}
-}
-
-// TestStartHintSearch_ReplacementThatFailsGivesTheKeyboardBack is the same
-// promise for a restarted search. The live session is stopped with the tap
-// left off for its replacement, and when the replacement field does not
-// start, the tap has to come back on.
-func TestStartHintSearch_ReplacementThatFailsGivesTheKeyboardBack(t *testing.T) {
-	t.Parallel()
-
-	enables := 0
-	eventTap := &portmocks.MockEventTapPort{
-		EnableFunc: func(context.Context) error {
-			enables++
-
-			return nil
-		},
+	if got := handler.hints.Context.SearchQuery(); got != "Ca B!" {
+		t.Errorf("query = %q, want %q", got, "Ca B!")
 	}
 
-	overlayPort := &portmocks.MockOverlayPort{
-		HintSearchBoundsFunc: func(image.Rectangle) image.Rectangle {
-			return image.Rect(0, 0, 200, 30)
-		},
-	}
+	handler.handleSearchInputKey("Shift+Escape")
 
-	handler := newHintSearchTestHandler(
-		t,
-		overlayPort,
-		&portmocks.MockTextInputPort{Started: false},
-	)
-
-	handler.mu.Lock()
-	handler.eventTap = eventTap
-	handler.hintSearchTextInputActive = true
-	handler.hintSearchEventTapDisabled = true
-
-	err := handler.startHintSearch(false)
-	stillDisabled := handler.hintSearchEventTapDisabled
-	handler.mu.Unlock()
-
-	if err != nil {
-		t.Fatalf("startHintSearch() error = %v", err)
-	}
-
-	if enables != 1 {
-		t.Errorf("event tap enabled %d times, want 1: the keyboard is still switched off", enables)
-	}
-
-	if stillDisabled {
-		t.Error("the handler still believes it owes the event tap a re-enable")
+	if handler.hints.Context.SearchActive() {
+		t.Error("Shift+Escape left the search open")
 	}
 }

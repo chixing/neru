@@ -9,6 +9,7 @@ import (
 
 	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain/action"
+	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 	"github.com/y3owk1n/neru/internal/domain/modecmd"
 )
 
@@ -40,8 +41,8 @@ var validModifiers = map[string]bool{
 // sided names are left out because the hotkey backends match a modifier and
 // not the side it was pressed on.
 var primaryModifierNames = []string{
-	modifierDisplayCmd, "Command", modifierDisplaySuper, "Meta",
-	modifierDisplayCtrl, "Control", modifierDisplayAlt, "Option",
+	keyvocab.ModifierDisplayCmd, "Command", keyvocab.ModifierDisplaySuper, "Meta",
+	keyvocab.ModifierDisplayCtrl, "Control", keyvocab.ModifierDisplayAlt, "Option",
 }
 
 const minModifierComboParts = 2
@@ -84,6 +85,7 @@ func (c *Config) ValidateHotkeys() error {
 		// monitor_select binds keys like the other modes and dispatches them
 		// through the same executor, so its table is checked like theirs.
 		{ModeNameMonitorSelect, c.MonitorSelect.Hotkeys},
+		{ModeNameVim, c.Vim.Hotkeys},
 	}, len(c.Modes))
 
 	for name, mode := range c.Modes {
@@ -157,6 +159,7 @@ func (c *Config) checkHotkeysConflicts() error {
 		{ModeNameBisect, c.Bisect.Hotkeys},
 		{ModeNameScroll, c.Scroll.Hotkeys},
 		{ModeNameMonitorSelect, c.MonitorSelect.Hotkeys},
+		{ModeNameVim, c.Vim.Hotkeys},
 	}, len(c.Modes))
 
 	for name, mode := range c.Modes {
@@ -198,6 +201,7 @@ func (c *Config) checkHotkeysConflicts() error {
 		{ModeNameRecursiveGrid, c.RecursiveGrid.AppConfigs},
 		{ModeNameBisect, c.Bisect.AppConfigs},
 		{ModeNameScroll, c.Scroll.AppConfigs},
+		{ModeNameVim, c.Vim.AppConfigs},
 	}
 
 	for _, mode := range appTables {

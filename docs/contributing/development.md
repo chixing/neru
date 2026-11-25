@@ -29,7 +29,7 @@ Neru rather than develop it, see [installation](../guide/installation.md).
 
 ### Prerequisites
 
-- **Go 1.26+**, **Just** and **golangci-lint**, from oku or by hand (below)
+- **Go 1.27+**, **Just** and **golangci-lint**, from oku or by hand (below)
 - **Xcode Command Line Tools** (macOS): `xcode-select --install`
 - **Build dependencies** (Linux): see [Build dependencies](#build-dependencies)
 - **A POSIX shell and Bash** (Windows): `just` runs recipes with `sh` by
@@ -94,6 +94,7 @@ gofumpt and golines are optional, through `go install`.
 | `just genman` | Generate man pages |
 | `just genflagref` | Rewrite the mode-flag reference in `docs/reference/cli.md` |
 | `just gensupportref` | Rewrite the platform-support table in `docs/reference/platform-support.md` |
+| `just genhookref` | Rewrite the hooks and hook-variable tables in `docs/reference/configuration.md` from the event catalog |
 | `just genschema` | Rewrite `schemas/config.schema.json` and `schemas/ipc.schema.json` through `cmd/genschema` |
 | `just clean` | Remove build artifacts |
 
@@ -330,7 +331,7 @@ in numbered phases that unwind in reverse on failure. `app.New` takes
 functional options ([options.go](../../internal/app/options.go)), which tests
 use to substitute doubles: `WithSystemPort`, `WithAccessibility`,
 `WithEventTap`, `WithIPCServer`, `WithOverlayPort`, `WithHotkeyService`,
-`WithWatcher`, `WithTextInput`, `WithConfig`, `WithConfigPath`, `WithLogger`,
+`WithWatcher`, `WithConfig`, `WithConfigPath`, `WithLogger`,
 `WithWrittenConfig` and `WithConfigWarnings`. An option left out falls back to
 the real adapter.
 

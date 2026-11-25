@@ -5,6 +5,7 @@ import (
 	"image"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/y3owk1n/neru/internal/domain/action"
 	"github.com/y3owk1n/neru/internal/domain/element"
 	"github.com/y3owk1n/neru/internal/domain/event"
+	"github.com/y3owk1n/neru/internal/ports"
 )
 
 // snap sends `neru action snap` with args to the app.
@@ -161,7 +163,7 @@ func TestSimulation_SnapWithNothingToSnapToLeavesTheGridClickWorking(t *testing.
 
 	sim.app.HandleCommand(context.Background(), ipc.Command{
 		Action: domain.CommandRun,
-		Args:   []string{"action snap --bail-on-error", "action left_click"},
+		Args:   []string{"action snap --bail-on-error", stepLeftClick},
 	})
 
 	if clicks := sim.ax.recordedClicks(); len(clicks) != 0 {
@@ -170,7 +172,7 @@ func TestSimulation_SnapWithNothingToSnapToLeavesTheGridClickWorking(t *testing.
 
 	sim.app.HandleCommand(context.Background(), ipc.Command{
 		Action: domain.CommandRun,
-		Args:   []string{"action snap", "action left_click"},
+		Args:   []string{"action snap", stepLeftClick},
 	})
 
 	clicks := sim.ax.recordedClicks()
@@ -225,43 +227,110 @@ func TestSimulation_SnapIsDroppedWhenTheSelectionMovesDuringTheScan(t *testing.T
 	}
 }
 
-// TestSimulation_SnapInsideAGridSubgridStaysInTheCell covers grid. Once a
-// subgrid is open, a snap searches the cell it sits in and ignores a nearer
-// element outside it.
-func TestSimulation_SnapInsideAGridSubgridStaysInTheCell(t *testing.T) {
+// TestSimulation_SnapIsDroppedWhenTheSelectionMovesDuringTheAppLookup covers
+// a key typed while a snap asks which app is focused, before it scans. The
+// snap reads the mode's selection before that lookup, so the move still drops
+// it.
+func TestSimulation_SnapIsDroppedWhenTheSelectionMovesDuringTheAppLookup(t *testing.T) {
 	sim := newSimHarness(t, simConfig(), nil)
 
-	sim.pressHotkey(gridHotkey)
-	sim.waitMode(domain.ModeGrid)
-	sim.waitFor("grid drawn", func() bool { return sim.overlay.lastGrid() != nil })
+	region := sim.zoomRecursiveGrid()
+	inside := image.Rect(region.Min.X, region.Min.Y, region.Min.X+40, region.Min.Y+40)
+	sim.ax.setElements([]*element.Element{simElement(t, "inside", inside, "Inside")})
 
-	cells := sim.overlay.lastGrid().Cells()
-	cell := cells[len(cells)/2]
+	asking := make(chan struct{})
+	release := make(chan struct{})
 
-	sim.typeLabel(cell.Coordinate())
-	sim.waitFor("subgrid open", func() bool { return sim.overlay.subgridCount() == 1 })
-
-	bounds := cell.Bounds()
-	center := rectCenter(bounds)
-	// In the cell's corner, and just past its right edge, nearer its center.
-	inside := image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Min.X+4, bounds.Min.Y+4)
-	outside := image.Rect(bounds.Max.X, center.Y-2, bounds.Max.X+4, center.Y+2)
-	sim.ax.setElements([]*element.Element{
-		simElement(t, "inside", inside, "Inside"),
-		simElement(t, "outside", outside, "Outside"),
+	sim.ax.setFocusGate(func() {
+		close(asking)
+		<-release
 	})
 
-	resp := sim.snap()
-	if !resp.Success {
-		t.Fatalf("snap failed: %s (%s)", resp.Message, resp.Code)
+	answer := make(chan ipc.Response, 1)
+
+	go func() { answer <- sim.snap() }()
+
+	<-asking
+
+	drawsBefore := sim.overlay.recursiveGridDrawCount()
+	sim.press("r")
+	sim.waitFor("the key zoomed in while the snap asked for the focused app", func() bool {
+		return sim.overlay.recursiveGridDrawCount() > drawsBefore
+	})
+
+	close(release)
+
+	resp := <-answer
+	if resp.Success || resp.Code != ipc.CodeChainBail {
+		t.Fatalf("snap = %+v, want a chain bail once the selection moved", resp)
 	}
 
-	if got, want := sim.cursor.position(), rectCenter(inside); got != want {
-		t.Errorf("cursor = %v after the snap, want %v, the element inside the cell", got, want)
+	if got := sim.cursor.position(); got == rectCenter(inside) {
+		t.Errorf("cursor = %v, the stale snap moved it anyway", got)
+	}
+}
+
+// TestSimulation_SnapInsideASelectedGridCellStaysInTheCell covers grid. Once a
+// full label has picked a cell, whether it opened a subgrid there or completed
+// on the label with --no-subgrid, a snap searches that cell and ignores a
+// nearer element outside it.
+func TestSimulation_SnapInsideASelectedGridCellStaysInTheCell(t *testing.T) {
+	tests := []struct {
+		binding  string
+		subgrids int
+	}{
+		{binding: stepGrid, subgrids: 1},
+		{binding: "grid --no-subgrid", subgrids: 0},
 	}
 
-	if mode := sim.app.CurrentMode(); mode != domain.ModeGrid {
-		t.Errorf("mode = %v after the snap, want grid still open", mode)
+	for _, testCase := range tests {
+		t.Run(testCase.binding, func(t *testing.T) {
+			cfg := simConfig()
+			cfg.Hotkeys.Bindings[gridHotkey] = []string{testCase.binding}
+			sim := newSimHarness(t, cfg, nil)
+
+			sim.pressHotkey(gridHotkey)
+			sim.waitMode(domain.ModeGrid)
+			sim.waitFor("grid drawn", func() bool { return sim.overlay.lastGrid() != nil })
+
+			cells := sim.overlay.lastGrid().Cells()
+			cell := cells[len(cells)/2]
+
+			sim.typeLabel(cell.Coordinate())
+			// The cursor follows the selection by default, so it lands on the
+			// cell center once the label picks the cell.
+			sim.waitFor("cell selected", func() bool {
+				return sim.cursor.position() == cell.Center()
+			})
+
+			if got := sim.overlay.subgridCount(); got != testCase.subgrids {
+				t.Fatalf("subgrids opened = %d, want %d", got, testCase.subgrids)
+			}
+
+			bounds := cell.Bounds()
+			center := rectCenter(bounds)
+			// In the cell's corner, and just past its right edge, nearer its center.
+			inside := image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Min.X+4, bounds.Min.Y+4)
+			outside := image.Rect(bounds.Max.X, center.Y-2, bounds.Max.X+4, center.Y+2)
+			sim.ax.setElements([]*element.Element{
+				simElement(t, "inside", inside, "Inside"),
+				simElement(t, "outside", outside, "Outside"),
+			})
+
+			resp := sim.snap()
+			if !resp.Success {
+				t.Fatalf("snap failed: %s (%s)", resp.Message, resp.Code)
+			}
+
+			if got, want := sim.cursor.position(), rectCenter(inside); got != want {
+				t.Errorf("cursor = %v after the snap, want %v, the element inside the cell",
+					got, want)
+			}
+
+			if mode := sim.app.CurrentMode(); mode != domain.ModeGrid {
+				t.Errorf("mode = %v after the snap, want grid still open", mode)
+			}
+		})
 	}
 }
 
@@ -567,6 +636,76 @@ func TestSimulation_SnapWithAPixelStrategyReadsPastTheZoomedRegion(t *testing.T)
 
 	if got, want := sim.cursor.position(), rectCenter(region); got != want {
 		t.Errorf("cursor = %v, want %v, the wide button's part inside the cell", got, want)
+	}
+}
+
+// TestSimulation_SnapWithACaptureStrategyAsksForScreenRecordingFirst covers a
+// segment snap before screen recording is granted. The snap fails without
+// capturing or moving the cursor and opens one permission dialog, even when it
+// repeats. Once the user grants the permission, the next snap scans and lands.
+func TestSimulation_SnapWithACaptureStrategyAsksForScreenRecordingFirst(t *testing.T) {
+	sim := newSimHarness(t, simConfig(), nil)
+	sim.screenCapture.denied.Store(true)
+
+	button := image.Rect(100, 100, 140, 140)
+
+	var scans atomic.Int32
+
+	sim.vision.DetectSegmentsFunc = func(
+		context.Context, image.Rectangle, config.HintsSegmentConfig,
+	) ([]*element.Element, error) {
+		scans.Add(1)
+
+		found, err := element.NewElement("button", button, element.RoleButton)
+		if err != nil {
+			return nil, err
+		}
+
+		return []*element.Element{found}, nil
+	}
+
+	start := sim.cursor.position()
+
+	for range 2 {
+		resp := sim.snap("--strategy=segment")
+		if resp.Success || resp.Code != ipc.CodeActionFailed {
+			t.Fatalf(
+				"snap without permission = %v (%s), want an action failure",
+				resp.Success,
+				resp.Code,
+			)
+		}
+	}
+
+	sim.waitFor("the permission dialog open", func() bool {
+		return sim.screenCapture.requests.Load() == 1
+	})
+
+	if n := scans.Load(); n != 0 {
+		t.Errorf("segment scanned %d times before the permission was granted, want 0", n)
+	}
+
+	if got := sim.cursor.position(); got != start {
+		t.Errorf("cursor = %v after a refused snap, want it left at %v", got, start)
+	}
+
+	sim.screenCapture.consents <- ports.ScreenCaptureGranted
+
+	sim.waitFor("the permission granted", func() bool {
+		return !sim.screenCapture.denied.Load()
+	})
+
+	resp := sim.snap("--strategy=segment")
+	if !resp.Success {
+		t.Fatalf("snap after the grant failed: %s (%s)", resp.Message, resp.Code)
+	}
+
+	if got, want := sim.cursor.position(), rectCenter(button); got != want {
+		t.Errorf("cursor = %v after the grant, want %v, the button's center", got, want)
+	}
+
+	if n := sim.screenCapture.requests.Load(); n != 1 {
+		t.Errorf("permission dialog requested %d times, want 1", n)
 	}
 }
 

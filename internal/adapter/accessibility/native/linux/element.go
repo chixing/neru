@@ -5,19 +5,11 @@ package linux
 import (
 	"image"
 	"os"
-	"slices"
-	"sync"
-	"time"
 
 	"go.uber.org/zap"
 
-	eventtaplinux "github.com/y3owk1n/neru/internal/adapter/eventtap/linux"
+	"github.com/y3owk1n/neru/internal/adapter/accessibility/ax"
 	"github.com/y3owk1n/neru/internal/adapter/platform"
-	linuxplatform "github.com/y3owk1n/neru/internal/adapter/platform/linux"
-	"github.com/y3owk1n/neru/internal/adapter/platform/mousestate"
-	"github.com/y3owk1n/neru/internal/config"
-	"github.com/y3owk1n/neru/internal/derrors"
-	"github.com/y3owk1n/neru/internal/domain/action"
 )
 
 // Element is a UI element for Linux (e.g., AT-SPI).
@@ -25,17 +17,6 @@ type Element struct {
 	bundleIdentifier string
 	title            string
 	pid              int
-}
-
-// linuxHeldButtons records which mouse buttons Neru is currently holding down.
-var linuxHeldButtons mousestate.Tracker
-
-func abs(v int) int {
-	if v < 0 {
-		return -v
-	}
-
-	return v
 }
 
 // SetClickableRoles configures which accessibility roles are treated as clickable (Linux stub).
@@ -103,9 +84,6 @@ func (ei *ElementInfo) PID() int { return ei.pid }
 // CheckAccessibilityPermissions verifies permissions for Linux (Linux stub).
 func CheckAccessibilityPermissions() bool { return true }
 
-// SystemWideElement returns the system-wide element (Linux stub).
-func SystemWideElement() *Element { return nil }
-
 // FocusedApplication returns the focused application.
 func FocusedApplication() *Element {
 	if currentLinuxBackend() == linuxBackendWayland {
@@ -141,41 +119,6 @@ func FocusedApplication() *Element {
 	}
 }
 
-// ApplicationByPID returns an application by PID.
-func ApplicationByPID(pid int) *Element {
-	if currentLinuxBackend() == linuxBackendWayland {
-		bundleID := wlrootsApplicationBundleIdentifier(pid)
-		if bundleID != "" {
-			return &Element{
-				bundleIdentifier: bundleID,
-				pid:              pid,
-			}
-		}
-
-		if os.Getenv("DISPLAY") != "" {
-			bundleID = linuxApplicationBundleIdentifier(pid)
-			if bundleID != "" {
-				return &Element{
-					bundleIdentifier: bundleID,
-					pid:              pid,
-				}
-			}
-		}
-
-		return nil
-	}
-
-	bundleID := linuxApplicationBundleIdentifier(pid)
-	if bundleID == "" {
-		return nil
-	}
-
-	return &Element{
-		bundleIdentifier: bundleID,
-		pid:              pid,
-	}
-}
-
 // ApplicationByBundleID returns an application by bundle ID.
 func ApplicationByBundleID(bundleID string) *Element {
 	if bundleID == "" {
@@ -184,9 +127,6 @@ func ApplicationByBundleID(bundleID string) *Element {
 
 	return &Element{bundleIdentifier: bundleID}
 }
-
-// ElementAtPosition returns the element at a position (Linux stub).
-func ElementAtPosition(_, _ int) *Element { return nil }
 
 // Info retrieves metadata and positioning information for the element (Linux stub).
 func (e *Element) Info() (*ElementInfo, error) {
@@ -208,9 +148,6 @@ func (e *Element) Attribute(_ string) (string, error) { return "", nil }
 // Release releases the element (Linux stub).
 func (e *Element) Release() {}
 
-// ReleaseAll releases all elements (Linux stub).
-func ReleaseAll(_ []*Element) {}
-
 // Hash returns a hash of the element (Linux stub).
 func (e *Element) Hash() (uint64, error) { return 0, nil }
 
@@ -219,9 +156,6 @@ func (e *Element) Equal(_ *Element) bool { return false }
 
 // Clone returns a clone of the element (Linux stub).
 func (e *Element) Clone() (*Element, error) { return &Element{}, nil }
-
-// AllWindows returns all windows (Linux stub).
-func AllWindows() ([]*Element, error) { return []*Element{}, nil }
 
 // FrontmostAndPopoverWindows returns frontmost/popover windows (Linux stub).
 func FrontmostAndPopoverWindows() ([]*Element, error) { return []*Element{}, nil }
@@ -273,604 +207,11 @@ func (e *Element) BundleIdentifier() string { return e.bundleIdentifier }
 // ScrollBounds returns the scroll bounds (Linux stub).
 func (e *Element) ScrollBounds() image.Rectangle { return image.Rectangle{} }
 
-// IsMouseButtonDown returns whether the given mouse button is held down.
-func IsMouseButtonDown(button action.MouseButton) bool {
-	return linuxHeldButtons.IsDown(button)
-}
-
-// EnsureMouseUp releases every mouse button Neru is currently holding down.
-func EnsureMouseUp() {
-	for _, button := range linuxHeldButtons.HeldButtons() {
-		_ = MouseUp(button)
-	}
-}
-
-// MoveMouseToPoint moves the mouse.
-func MoveMouseToPoint(point image.Point, _ bool) {
-	if currentLinuxBackend() == linuxBackendX11 {
-		_ = x11MoveMouseToPoint(point)
-	} else if currentLinuxBackend() == linuxBackendWayland {
-		_ = wlrootsMoveMouseToPoint(point)
-	}
-}
-
-// noMouseBackend is what a mouse action answers with neither X11 nor Wayland
-// detected. nil would report a click or drag that never happened.
-func noMouseBackend(what string) error {
-	return derrors.Newf(derrors.CodeNotSupported, "%s requires an X11 or Wayland backend", what)
-}
-
-// LeftClickAtPoint performs a left click.
-func LeftClickAtPoint(point image.Point, restoreCursor bool, modifiers action.Modifiers) error {
-	if currentLinuxBackend() == linuxBackendX11 {
-		return x11LeftClickAtPoint(point, restoreCursor, modifiers)
-	}
-
-	if currentLinuxBackend() == linuxBackendWayland {
-		return wlrootsLeftClickAtPoint(point, restoreCursor, modifiers)
-	}
-
-	return noMouseBackend("left click")
-}
-
-// RightClickAtPoint performs a right click.
-func RightClickAtPoint(point image.Point, restoreCursor bool, modifiers action.Modifiers) error {
-	if currentLinuxBackend() == linuxBackendX11 {
-		return x11RightClickAtPoint(point, restoreCursor, modifiers)
-	}
-
-	if currentLinuxBackend() == linuxBackendWayland {
-		return wlrootsRightClickAtPoint(point, restoreCursor, modifiers)
-	}
-
-	return noMouseBackend("right click")
-}
-
-// MiddleClickAtPoint performs a middle click.
-func MiddleClickAtPoint(point image.Point, restoreCursor bool, modifiers action.Modifiers) error {
-	if currentLinuxBackend() == linuxBackendX11 {
-		return x11MiddleClickAtPoint(point, restoreCursor, modifiers)
-	}
-
-	if currentLinuxBackend() == linuxBackendWayland {
-		return wlrootsMiddleClickAtPoint(point, restoreCursor, modifiers)
-	}
-
-	return noMouseBackend("middle click")
-}
-
-// MouseDownAtPoint presses and holds the given mouse button at the point.
-func MouseDownAtPoint(
-	point image.Point,
-	button action.MouseButton,
-	modifiers action.Modifiers,
-) error {
-	if currentLinuxBackend() == linuxBackendX11 {
-		err := x11MouseDownAtPoint(point, button, modifiers)
-		if err == nil {
-			linuxHeldButtons.SetDown(button, point, modifiers)
-		}
-
-		return err
-	}
-
-	if currentLinuxBackend() == linuxBackendWayland {
-		err := wlrootsMouseDownAtPoint(point, button, modifiers)
-		if err == nil {
-			linuxHeldButtons.SetDown(button, point, modifiers)
-		}
-
-		return err
-	}
-
-	return noMouseBackend("mouse down")
-}
-
-// MouseUpAtPoint releases the given mouse button at the point.
-//
-// A press holds its modifiers until the matching release, so the release has to
-// undo the set recorded at press time rather than whatever this call was given.
-// Releasing a modified press with a bare "up" action would otherwise leave the
-// modifier logically held. The wlroots path applies the same rule internally,
-// and the X11 one picks up the keys its own press actually touched, so the set
-// recorded here is what it falls back on for a release with no press behind it.
-func MouseUpAtPoint(
-	point image.Point,
-	button action.MouseButton,
-	modifiers action.Modifiers,
-) error {
-	if currentLinuxBackend() == linuxBackendX11 {
-		if heldModifiers, wasHeld := linuxHeldButtons.DownModifiers(button); wasHeld {
-			modifiers = heldModifiers
-		}
-
-		err := x11MouseUpAtPoint(point, button, modifiers)
-		if err == nil {
-			linuxHeldButtons.Clear(button)
-		}
-
-		return err
-	}
-
-	if currentLinuxBackend() == linuxBackendWayland {
-		err := wlrootsMouseUpAtPoint(point, button, modifiers)
-		if err == nil {
-			linuxHeldButtons.Clear(button)
-		}
-
-		return err
-	}
-
-	return noMouseBackend("mouse up")
-}
-
-// MouseUp releases the given mouse button at the cursor, together with the
-// modifiers its press is holding. This is the idle-cleanup path, so a modified
-// press that is never explicitly released still leaves nothing held.
-func MouseUp(button action.MouseButton) error {
-	if currentLinuxBackend() == linuxBackendX11 {
-		heldModifiers, _ := linuxHeldButtons.DownModifiers(button)
-
-		err := x11MouseUp(button, heldModifiers)
-		if err == nil {
-			linuxHeldButtons.Clear(button)
-		}
-
-		return err
-	}
-
-	if currentLinuxBackend() == linuxBackendWayland {
-		err := wlrootsMouseUp(button)
-		if err == nil {
-			linuxHeldButtons.Clear(button)
-		}
-
-		return err
-	}
-
-	return noMouseBackend("mouse up")
-}
-
-// scrollPixelsPerNotch is how many pixels of a caller's delta make one wheel
-// notch. The scroll service speaks in pixels (scroll_step = 50,
-// scroll_step_half = 500, scroll_step_full = 1000000) and every Linux injection
-// path has to land on the same conversion, or the same binding would travel a
-// different distance depending on which backend answered.
-const scrollPixelsPerNotch = 30
-
-// scrollNotches is how many wheel notches a scroll of delta pixels is: the
-// nearest whole notch, and never fewer than one so a step shorter than a notch
-// still moves. Truncating instead left a default 50 px step one notch short
-// of the two it rounds to, and a 59 px step no further than a 30 px one.
-// Every unanimated Linux path and the animated total share this, so the two
-// travel the same distance.
-func scrollNotches(delta int) int {
-	return max((abs(delta)+scrollPixelsPerNotch/2)/scrollPixelsPerNotch, 1)
-}
-
-// ScrollAtCursor scrolls at the cursor, presenting modifiers as held.
-//
-// The caller's deltaX is positive-left, Neru's shared convention. Every Linux
-// layer below reads positive as right, which covers X11 button 7, REL_HWHEEL
-// and the Wayland horizontal axis. This function negates deltaX once, so every
-// call below it uses the Linux convention.
-//
-// Linux has no event-flags concept, so a modifier is a real key press around
-// the scroll. On Wayland that forces a choice of injection layer. The modifier
-// can only be pressed on the wlroots virtual keyboard (or libei on KDE), while
-// the fast path for the scroll itself is the uinput evdev device. Interleaving
-// the two leaves the compositor to merge seat state across devices, which it is
-// not obliged to do, so a modified scroll goes out entirely through
-// wlroots/libei and skips the uinput batch. That costs throughput on a large
-// modified scroll and buys a modifier that actually arrives.
-//
-// Hyprland is the exception, and the reason it is named rather than folded into
-// the Wayland arm is that it fails the other way round. Its virtual-pointer
-// scroll is what goes missing (#1474), so the modifier is the half that has to
-// give and the uinput batch is the half that stays. Every other wlroots
-// compositor keeps the merge-free path above, and so does KDE, whose modifier
-// goes out on libei, further from the uinput scroll than wlroots is, not closer.
-//
-// With smooth_scroll.enabled the scroll is handed to the animator instead and
-// arrives as a sequence of eased chunks, which is what the same setting does on
-// macOS. That includes modified scrolls, on Hyprland as everywhere else, because
-// a setting that quietly stops applying to one binding is the shape of bug this
-// path already has one of. The backend is asked whether it can inject at all
-// before that handoff, because the animation runs on a worker goroutine where a
-// refusal has nobody to go back to. A refusal that reaches nobody is exactly the
-// silent no-op turning this option on must not introduce.
-func ScrollAtCursor(deltaX, deltaY int, modifiers action.Modifiers) error {
-	deltaX = -deltaX
-
-	cfg := currentLinuxConfig()
-	if cfg != nil && cfg.SmoothScroll.Enabled {
-		err := scrollBackendAvailable()
-		if err != nil {
-			return err
-		}
-
-		if deltaX == 0 && deltaY == 0 {
-			return nil
-		}
-
-		scrollAnim.animate(
-			deltaX,
-			deltaY,
-			modifiers,
-			cfg.SmoothScroll.Steps,
-			cfg.SmoothScroll.MaxDuration,
-			cfg.SmoothScroll.DurationPerPixel,
-		)
-
-		return nil
-	}
-
-	// A scroll arriving with the animation switched off must not be chased by
-	// chunks scheduled before the reload.
-	scrollAnim.stop()
-
-	return scrollAtCursorNow(deltaX, deltaY, modifiers)
-}
-
-// scrollAtCursorNow injects the whole scroll in one go, which is what every
-// caller got before smooth scroll existed and what a caller still gets with it
-// switched off.
-func scrollAtCursorNow(deltaX, deltaY int, modifiers action.Modifiers) error {
-	if currentLinuxBackend() == linuxBackendX11 {
-		return x11ScrollAtCursor(deltaX, deltaY, modifiers)
-	}
-
-	if currentLinuxBackend() == linuxBackendWayland {
-		// Nothing to travel, so nothing to present it with. The guard is here
-		// rather than at the top of the function because the no-backend arm
-		// below still owes a modified scroll a refusal. A zero delta is a
-		// scroll that moved nothing, and a missing backend is a binding that
-		// cannot work, which is not the same answer.
-		if deltaX == 0 && deltaY == 0 {
-			return nil
-		}
-
-		// Release the held chord first, or a ctrl+j scroll goes out as ctrl+scroll.
-		restore := liftPhysicalModifiers()
-		defer restore()
-
-		if modifiers != 0 {
-			if !hyprlandKeepsUinputScroll() {
-				// Uncapped, unlike the X11 path's 50-click ceiling, because this
-				// is the same event count the uinput batch below would send for
-				// the same delta. The events are only slower per round trip.
-				// Capping here would make a modified go_bottom travel a different
-				// distance from an unmodified one, which is worse than slow.
-				return wlrootsScrollAtCursor(deltaX, deltaY, modifiers)
-			}
-
-			pressed, err := pressWaylandModifiers(modifiers)
-			if err != nil {
-				return err
-			}
-
-			// Both sides wait. ScrollDeviceScrollBatch returns once the kernel
-			// has taken the write, not once the compositor has read it, so a
-			// release that follows the batch immediately can lift the modifier
-			// out from under notches still being delivered.
-			defer func() {
-				waitForScrollDelivery()
-
-				_ = releaseWaylandModifiers(pressed)
-			}()
-
-			waitForWaylandModifierPress()
-		}
-
-		// maxBatchEvents caps the number of uinput events sent per
-		// write/flush to avoid overflowing the kernel evdev buffer (~8192
-		// bytes) or the Wayland socket buffer. Each batch is kept small so
-		// the compositor and client can process events incrementally.
-		const maxBatchEvents = 50
-
-		// fallbackCause is the uinput error that sends the rest of the scroll
-		// to the virtual pointer, for the one-time warning below.
-		var fallbackCause error
-
-		sendScaledScroll := func(axis int, delta int) int {
-			if delta == 0 {
-				return 0
-			}
-
-			totalNotches := scrollNotches(delta)
-
-			remainingNotches := totalNotches
-			batch := make([]int, 0, maxBatchEvents)
-
-			value := 1
-			if delta < 0 {
-				value = -1
-			}
-
-			for remainingNotches > 0 {
-				batch = append(batch, value)
-				remainingNotches--
-
-				if len(batch) >= maxBatchEvents || remainingNotches == 0 {
-					err := uinputScrollBatch(axis, batch)
-					if err != nil {
-						// uinput is unavailable, so add back unsent notches so the
-						// remaining delta is retried via wlroots virtual pointer
-						// fallback without double-counting already-sent notches.
-						remainingNotches += len(batch)
-						fallbackCause = err
-
-						break
-					}
-
-					batch = batch[:0]
-				}
-			}
-
-			return uinputScrollRemainder(
-				delta, totalNotches, remainingNotches, scrollPixelsPerNotch,
-			)
-		}
-
-		remainY := sendScaledScroll(uinputScrollAxisVertical, deltaY)
-		remainX := sendScaledScroll(uinputScrollAxisHorizontal, deltaX)
-
-		if remainY == 0 && remainX == 0 {
-			return nil
-		}
-
-		warnUinputScrollFallback(fallbackCause)
-
-		return wlrootsScrollAtCursor(remainX, remainY, 0)
-	}
-
-	// No backend to inject through. An unmodified scroll has always been a
-	// silent no-op here. A modified one must not be, because the user would
-	// read the missing zoom as a broken binding rather than as a missing
-	// backend.
-	if modifiers != 0 {
-		return derrors.Newf(
-			derrors.CodeNotSupported,
-			"modified scroll (%s) is not supported without an X11 or Wayland backend",
-			modifiers,
-		)
-	}
-
-	return nil
-}
-
-// uinputScrollRemainder is the part of a scroll the uinput wheel did not
-// send, in the caller's pixels, for the virtual pointer to finish.
-//
-// It is zero whenever every notch went out, even when the delta was not a
-// whole number of notches. A 50 px step is two 30 px notches, and the 10 px
-// left over is rounding, not a lost scroll. Handing it on used to add an
-// extra, opposite-signed notch to every press on Hyprland, which Chromium
-// and Electron clients summed to nothing. When some notches remain, the
-// pixels handed on round to exactly the unsent count, so the virtual pointer
-// finishes the same scroll rather than a re-rounded one.
-func uinputScrollRemainder(delta, totalNotches, remainingNotches, scale int) int {
-	if remainingNotches == 0 {
-		return 0
-	}
-
-	pixelsSent := (totalNotches - remainingNotches) * scale
-	if delta > 0 {
-		return max(delta-pixelsSent, 0)
-	}
-
-	return min(delta+pixelsSent, 0)
-}
-
-// wlrootsScrollNotch is one wheel notch for the virtual pointer: the pixel
-// step and the discrete count, in the Wayland convention where positive is
-// down on the vertical axis and right on the horizontal one. The caller's
-// delta is positive-up on the vertical axis, so that axis flips both values
-// together. A discrete count that disagrees with the step makes a client
-// that reads axis_value120 scroll the opposite way from one that reads axis.
-func wlrootsScrollNotch(axis, delta, step int) (int, int) {
-	if delta < 0 {
-		step = -step
-	}
-
-	if axis == uinputScrollAxisVertical {
-		step = -step
-	}
-
-	disc := 1
-	if step < 0 {
-		disc = -1
-	}
-
-	return step, disc
-}
-
-// uinputScrollFallbackOnce keeps the fallback warning to one line per
-// process. The condition is a session fact, and every scroll would repeat it.
-var uinputScrollFallbackOnce sync.Once
-
-// warnUinputScrollFallback says, once, that scrolling left the uinput wheel
-// for the compositor's virtual pointer and why. The two paths look the same
-// from the log otherwise, and only the virtual pointer one is ignored by
-// Chromium and Electron clients on Hyprland, which is how a user with a
-// root-only /dev/uinput reads as "scroll works in Firefox but not Discord".
-// cause is the batch error that triggered it: the device creation failure,
-// reason included, or a write that failed after a good start.
-func warnUinputScrollFallback(cause error) {
-	uinputScrollFallbackOnce.Do(func() {
-		currentLogger().Warn(
-			"Scrolling through the wlroots virtual pointer instead of uinput; "+
-				"some clients ignore that path (grant write access to /dev/uinput, "+
-				"see docs/guide/linux.md)",
-			zap.Error(cause),
-		)
-	})
-}
-
-// hyprlandKeepsUinputScroll reports whether a modified scroll on this session
-// keeps the uinput batch and presses the modifier beside it, rather than moving
-// the whole scroll onto the wlroots virtual pointer.
-func hyprlandKeepsUinputScroll() bool {
-	return currentLinuxBackend() == linuxBackendWayland && platform.IsHyprlandSession()
-}
-
-// uinput scroll axes, in the vocabulary ScrollDeviceScrollBatch takes.
-const (
-	uinputScrollAxisVertical   = 0
-	uinputScrollAxisHorizontal = 1
-)
-
-// The virtual keyboard and the uinput scroll device are separate input sources,
-// so nothing orders one against the other. A scroll notch that overtakes the
-// modifier arrives unmodified, and one that outlives its release arrives
-// modified when it should not. Both sides of a hold therefore wait, but only
-// one of them has something real to wait on.
-const (
-	// modifierSyncTimeout bounds the barrier a press waits on. It is generous
-	// because it is not a delay. A compositor that answers in a millisecond
-	// costs a millisecond. What it bounds is a compositor that has stopped
-	// answering, and a scroll is not worth blocking the dispatch goroutine on
-	// for longer than this.
-	modifierSyncTimeout = 100 * time.Millisecond
-	// modifierSettleDelay is the fixed wait used where no barrier exists.
-	modifierSettleDelay = 5 * time.Millisecond
-)
-
-// waitForWaylandModifierPress blocks until the compositor has applied the
-// modifier that was just pressed.
-//
-// wl_display.sync answers once every request issued before it has been
-// processed, so this is a real barrier rather than a guess. After it returns
-// true, the modifier is applied and the uinput notches written next cannot
-// overtake it. The fixed delay is the fallback for the cases with nothing to
-// ask: a build without cgo, a compositor that stopped answering, a session
-// with no virtual keyboard.
-func waitForWaylandModifierPress() {
-	if linuxplatform.WaylandSyncModifiers(modifierSyncTimeout) {
-		return
-	}
-
-	time.Sleep(modifierSettleDelay)
-}
-
-// waitForScrollDelivery gives uinput notches already written time to be read
-// before the modifier holding them is let go.
-//
-// This side has no barrier, and syncing the Wayland connection would not be
-// one. It would report that the compositor processed our Wayland requests,
-// which says nothing about how far it has got through a kernel evdev device it
-// reads on its own. Nothing on that path reports back, so the wait is a fixed
-// period and is named as the heuristic it is.
-func waitForScrollDelivery() {
-	time.Sleep(modifierSettleDelay)
-}
-
-// waylandModifierEvent is the virtual-keyboard press or release the two helpers
-// below go through, and uinputScrollBatch is the write every uinput scroll goes
-// through. Both are variables so a test can read back what was emitted and fail
-// one on demand, which is the only way to reach the unwind and fallback paths
-// without a compositor.
-var (
-	waylandModifierEvent = linuxplatform.WaylandModifierEvent
-	uinputScrollBatch    = eventtaplinux.ScrollDeviceScrollBatch
-)
-
-// waylandModifierKeys is the modifier vocabulary the wlroots virtual keyboard
-// speaks, in press order. A release walks it backwards, so a set going down
-// shift-first comes back up shift-last.
-var waylandModifierKeys = []struct {
-	modifier action.Modifiers
-	name     string
-}{
-	{action.ModShift, "shift"},
-	{action.ModCtrl, "ctrl"},
-	{action.ModAlt, "alt"},
-	{action.ModCmd, "cmd"},
-}
-
-// pressWaylandModifiers presses each requested modifier on the virtual keyboard
-// and reports the set that actually went down, which the caller has to release.
-//
-// A failure unwinds that set and nothing else. The dispatcher behind
-// WaylandModifierEvent refcounts holders and emits a real key-up when the count
-// reaches zero, so releasing a modifier this call never pressed does not
-// cancel out. It lets go of one the user is physically holding, and every key
-// they press next arrives without it.
-func pressWaylandModifiers(modifiers action.Modifiers) (action.Modifiers, error) {
-	var pressed action.Modifiers
-
-	for _, key := range waylandModifierKeys {
-		if !modifiers.Has(key.modifier) {
-			continue
-		}
-
-		err := waylandModifierEvent(key.name, true)
-		if err != nil {
-			_ = releaseWaylandModifiers(pressed)
-
-			return 0, err
-		}
-
-		pressed |= key.modifier
-	}
-
-	return pressed, nil
-}
-
-// releaseWaylandModifiers releases exactly the set pressWaylandModifiers
-// reported, reporting the first failure and letting go of the rest regardless.
-// Stopping at the first error would leave the modifiers after it held.
-func releaseWaylandModifiers(pressed action.Modifiers) error {
-	_, err := releaseWaylandModifiersRemaining(pressed)
-
-	return err
-}
-
-// releaseWaylandModifiersRemaining is releaseWaylandModifiers reporting the
-// modifiers still held because their release failed, for a caller that keeps
-// a record to retry from.
-func releaseWaylandModifiersRemaining(pressed action.Modifiers) (action.Modifiers, error) {
-	var (
-		firstErr  error
-		remaining action.Modifiers
-	)
-
-	for _, key := range slices.Backward(waylandModifierKeys) {
-		if !pressed.Has(key.modifier) {
-			continue
-		}
-
-		err := waylandModifierEvent(key.name, false)
-		if err != nil {
-			remaining |= key.modifier
-
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-
-	return remaining, firstErr
-}
-
-// CurrentCursorPosition returns the cursor position.
-func CurrentCursorPosition() image.Point {
-	if currentLinuxBackend() == linuxBackendX11 {
-		return x11CurrentCursorPosition()
-	}
-
-	if currentLinuxBackend() == linuxBackendWayland {
-		return wlrootsCurrentCursorPosition()
-	}
-
-	return image.Point{}
-}
-
 // IsClickable checks if the element is clickable (Linux stub).
 func (e *Element) IsClickable(
 	_ *ElementInfo,
 	_ map[string]struct{},
-	_ config.Provider,
+	_ ax.SettingsSource,
 	_ bool,
 ) bool {
 	return false
@@ -887,12 +228,8 @@ const (
 	linuxBackendWayland linuxBackend = "wayland"
 )
 
-// DetectBundleType returns "" on Linux (stub).
-func DetectBundleType(_ string) string { return "" }
-
-// currentLinuxBackend delegates to the canonical platform.DetectLinuxBackend
-// so that compositor-family detection (GNOME, KDE, wlroots, etc.) is
-// consistent across all layers.
+// currentLinuxBackend maps platform.DetectLinuxBackend so compositor-family
+// detection is consistent across layers.
 func currentLinuxBackend() linuxBackend {
 	switch platform.DetectLinuxBackend() {
 	case platform.BackendX11:

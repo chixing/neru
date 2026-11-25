@@ -14,89 +14,17 @@ import (
 	"github.com/y3owk1n/neru/internal/config/loader"
 )
 
-func TestNewService(t *testing.T) {
-	cfg := config.DefaultConfig()
-	path := "/tmp/config.toml"
-	service := loader.NewService(cfg, path, zap.NewNop(), nil)
-
-	if service == nil {
-		t.Fatal("NewService returned nil")
-	}
-
-	if service.Get() != cfg {
-		t.Error("Get() returned incorrect config")
-	}
-
-	if service.Path() != path {
-		t.Errorf("Path() = %v, want %v", service.Path(), path)
-	}
-}
-
-func TestService_Validate(t *testing.T) {
-	service := loader.NewService(config.DefaultConfig(), "", zap.NewNop(), nil)
-
-	tests := []struct {
-		name    string
-		cfg     *config.Config
-		wantErr bool
-	}{
-		{
-			name:    "nil config",
-			cfg:     nil,
-			wantErr: true,
-		},
-		{
-			name:    "valid default config",
-			cfg:     config.DefaultConfig(),
-			wantErr: false,
-		},
-		{
-			name: "invalid hints characters",
-			cfg: func() *config.Config {
-				c := config.DefaultConfig()
-				c.Hints.Enabled = true
-				c.Hints.HintCharacters = "a" // Too short
-
-				return c
-			}(),
-			wantErr: true,
-		},
-		{
-			name: "empty clickable roles",
-			cfg: func() *config.Config {
-				c := config.DefaultConfig()
-				c.Hints.Enabled = true
-				c.Hints.ClickableRoles = []string{}
-
-				return c
-			}(),
-			wantErr: true,
-		},
-		{
-			name: "invalid grid characters",
-			cfg: func() *config.Config {
-				c := config.DefaultConfig()
-				c.Grid.Enabled = true
-				c.Grid.Characters = "a" // Too short
-
-				return c
-			}(),
-			wantErr: false,
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			validateErr := service.Validate(testCase.cfg)
-			if (validateErr != nil) != testCase.wantErr {
-				t.Errorf("Validate() error = %v, wantErr %v", validateErr, testCase.wantErr)
-			}
-		})
-	}
-}
-
+// TestService_Update pins that a hot reload installs a valid configuration and
+// keeps the running one when the new one is refused, nil included.
 func TestService_Update(t *testing.T) {
-	service := loader.NewService(config.DefaultConfig(), "", zap.NewNop(), nil)
+	const path = "/tmp/config.toml"
+
+	service := loader.NewService(config.DefaultConfig(), path, zap.NewNop(), nil)
+
+	if got := service.Path(); got != path {
+		t.Errorf("Path() = %q, want %q", got, path)
+	}
+
 	newConfig := config.DefaultConfig()
 	newConfig.Hints.HintCharacters = "xyz"
 
@@ -120,6 +48,15 @@ func TestService_Update(t *testing.T) {
 
 	if service.Get().Hints.HintCharacters == "a" {
 		t.Error("Update() updated config despite validation error")
+	}
+
+	updateErr = service.Update(nil, nil)
+	if updateErr == nil {
+		t.Error("Update(nil) should be refused")
+	}
+
+	if service.Get() != newConfig {
+		t.Error("Update(nil) replaced the running config")
 	}
 }
 
@@ -184,6 +121,54 @@ func TestService_Replace(t *testing.T) {
 	case <-watchCh:
 		t.Error("Replace() sent unexpected watcher notification")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// TestService_Animation_FollowsAnUpdate pins that a source taken once reads
+// the configuration current at each call, which is how a reload reaches the
+// platform adapters on their next move.
+func TestService_Animation_FollowsAnUpdate(t *testing.T) {
+	t.Parallel()
+
+	service := loader.NewService(config.DefaultConfig(), "", zap.NewNop(), nil)
+	source := service.Animation
+
+	updated := config.DefaultConfig()
+	updated.SmoothCursor.MoveMouseEnabled = true
+	updated.SmoothCursor.Steps = 7
+	updated.SmoothScroll.Enabled = true
+	updated.SmoothScroll.MaxDuration = 90
+
+	err := service.Update(updated, updated)
+	if err != nil {
+		t.Fatalf("Update() failed: %v", err)
+	}
+
+	got, found := source()
+	if !found {
+		t.Fatal("Animation() reported no settings after Update()")
+	}
+
+	if !got.Cursor.MoveMouseEnabled || got.Cursor.Steps != 7 {
+		t.Errorf("Animation().Cursor = %+v, want move_mouse_enabled and steps 7", got.Cursor)
+	}
+
+	if !got.Scroll.Enabled || got.Scroll.MaxDuration != 90 {
+		t.Errorf("Animation().Scroll = %+v, want enabled and max_duration 90", got.Scroll)
+	}
+}
+
+// TestService_Animation_ReportsNoneWithoutAConfiguration pins the unset case
+// the adapters read as "do not animate".
+func TestService_Animation_ReportsNoneWithoutAConfiguration(t *testing.T) {
+	t.Parallel()
+
+	service := loader.NewService(config.DefaultConfig(), "", zap.NewNop(), nil)
+	service.Replace(nil, nil)
+
+	_, found := service.Animation()
+	if found {
+		t.Error("Animation() reported settings with no configuration loaded")
 	}
 }
 

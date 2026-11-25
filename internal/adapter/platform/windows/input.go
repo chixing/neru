@@ -293,6 +293,23 @@ func HeldMouseButtons() []action.MouseButton {
 	return heldButtons.HeldButtons()
 }
 
+// EnsureMouseUp releases every button Neru is holding down, at the cursor.
+func EnsureMouseUp() {
+	for _, button := range HeldMouseButtons() {
+		_ = mouseUpAtCursor(button)
+	}
+}
+
+// mouseUpAtCursor releases the given button at the current cursor position.
+func mouseUpAtCursor(button action.MouseButton) error {
+	pos, err := CurrentCursorPosition()
+	if err != nil {
+		return err
+	}
+
+	return MouseUp(pos, button, 0)
+}
+
 // MouseUp releases the given button at the given point, undoing the hold its
 // press kept, or presenting modifiers for the length of the release event
 // when no press of this process is behind it. Releasing a drag does not depend
@@ -619,15 +636,15 @@ func ScrollWheel(deltaX, deltaY int, modifiers action.Modifiers) error {
 		return nil
 	}
 
-	cfg := currentWindowsConfig()
-	if cfg != nil && cfg.SmoothScroll.Enabled {
-		scrollAnim.animate(
+	anim, ok := currentAnimation()
+	if ok && anim.Scroll.Enabled {
+		scrollAnim.Animate(
 			deltaX,
 			deltaY,
 			modifiers,
-			cfg.SmoothScroll.Steps,
-			cfg.SmoothScroll.MaxDuration,
-			cfg.SmoothScroll.DurationPerPixel,
+			anim.Scroll.Steps,
+			anim.Scroll.MaxDuration,
+			anim.Scroll.DurationPerPixel,
 		)
 
 		return nil
@@ -635,7 +652,7 @@ func ScrollWheel(deltaX, deltaY int, modifiers action.Modifiers) error {
 
 	// A scroll arriving with the animation switched off must not be chased by
 	// chunks scheduled before the reload.
-	scrollAnim.stop()
+	scrollAnim.Stop()
 
 	return scrollWheelNow(deltaX, deltaY, modifiers)
 }

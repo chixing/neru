@@ -61,6 +61,10 @@ and on apt, dnf and pacman prints the command that finds its package.
 - **tesseract English language data** is a separate package. Without it the
   `vision` strategy reports that `eng.traineddata` is missing. Set
   `TESSDATA_PREFIX` to use language data from elsewhere, such as `tessdata_fast`.
+  Vim mode also reads the languages in other scripts your locale names, such
+  as Chinese or Russian, when their data is installed. For Chinese that is
+  `tesseract-langpack-chi_sim` on Fedora, `tesseract-ocr-chi-sim` on Debian and
+  Ubuntu, or `tesseract-data-chi_sim` on Arch.
 - **pipewire** carries screen capture on KDE, but a missing
   `libpipewire-0.3.so` stops the daemon on every desktop.
 - **libei** injects input on KDE, COSMIC and GNOME.
@@ -69,6 +73,10 @@ and on apt, dnf and pacman prints the command that finds its package.
   overlays and talk to the display server.
 - **DejaVu fonts** are the overlay fonts when `font_family` is unset, and
   carry the sticky modifier symbols `❖⇧⌥⌃`.
+
+[`copy_text`](../reference/cli.md#neru-action-copy_text) also needs a
+clipboard tool. Install `wl-copy` (package `wl-clipboard`) on Wayland, or
+`xclip` or `xsel` on X11. Only that action uses it, so it is optional.
 
 ### Debian / Ubuntu
 
@@ -153,10 +161,15 @@ With either one:
   a built-in trackpad on the same node. A volume knob does not count.
 - Per-device compositor settings, such as a Sway or Hyprland `input` block or a
   KDE per-device layout, apply to `neru-keyboard-proxy` while the daemon runs.
+- A laptop touchpad stops pausing while you type.
+  [Mark the proxy as built in](#the-touchpad-stays-active-while-typing) to
+  restore it.
 
 ## Wayland scroll injection permissions
 
-Neru scrolls through a virtual wheel on `/dev/uinput`, which most distros make
+On Hyprland, Neru scrolls through a virtual wheel on `/dev/uinput`, because
+Chromium and Electron apps there ignore a scroll sent through the compositor.
+Elsewhere it scrolls through the compositor. Most distros make `/dev/uinput`
 root-only. The udev rule in [step 3](#setup-steps) opens it to the `input`
 group. The same device lets the keyboard proxy re-emit keys and gives
 `neru key` its fast path. Restart the daemon after adding the rule.
@@ -171,8 +184,8 @@ Without a writable `/dev/uinput`:
 
 - Modes capture keys through the overlay's keyboard focus, so a hotkey chord
   also reaches the focused app.
-- Scrolling goes through the compositor instead. Chromium and Electron apps on
-  Hyprland ignore it. `neru doctor` reports this under `scroll`.
+- On Hyprland, scrolling goes through the compositor instead, which Chromium
+  and Electron apps there ignore. `neru doctor` reports this under `scroll`.
 - Modified clicks may degrade, and `general.passthrough_unbounded_keys` does
   nothing.
 
@@ -268,6 +281,26 @@ See [Wayland keyboard capture permissions](#wayland-keyboard-capture-permissions
 
 Modes fall back to the overlay's keyboard focus. Add the udev rule from
 [step 3](#setup-steps) and restart the daemon.
+
+### The touchpad stays active while typing
+
+libinput pauses a laptop touchpad only for keys from a keyboard it counts as
+built in. On Wayland your keys reach libinput through `neru-keyboard-proxy`,
+which is virtual and so counts as external. Mark the proxy as built in with a
+libinput quirk:
+
+```bash
+sudo mkdir -p /etc/libinput
+sudo tee -a /etc/libinput/local-overrides.quirks <<'EOF'
+[Neru keyboard proxy]
+MatchUdevType=keyboard
+MatchName=neru-keyboard-proxy
+AttrKeyboardIntegration=internal
+EOF
+```
+
+libinput reads the file only at startup, so log out and back in. Keys from an
+external keyboard pass through the same proxy, so they pause the touchpad too.
 
 ### Sticky modifier indicator shows `[][][][]`
 

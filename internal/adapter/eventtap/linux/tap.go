@@ -11,7 +11,7 @@ import (
 
 	"github.com/y3owk1n/neru/internal/adapter/eventtap/tap"
 	"github.com/y3owk1n/neru/internal/adapter/platform"
-	"github.com/y3owk1n/neru/internal/config"
+	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain/action"
 	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 )
@@ -27,9 +27,8 @@ const syntheticModifierSuppressionWindow = 250 * time.Millisecond
 const dispatchChBufferSize = 256
 
 // linuxModifierState tracks the reference count of each modifier key group.
-// Counts may go transiently negative when a grab captures the keyboard after
-// some modifiers were already held (the release arrives without a matching
-// press). The <= 0 sentinel in allZero() handles this gracefully.
+// Counts can go negative when a grab starts while modifiers are held (the
+// release arrives without its press), which allZero's <= 0 check tolerates.
 type linuxModifierState struct {
 	shift int
 	ctrl  int
@@ -70,20 +69,18 @@ type EventTap struct {
 	stickyModifierToggle bool
 	enabled              bool
 
-	// Modifier passthrough state. Populated by SetModifierPassthrough /
-	// SetInterceptedModifierKeys and consulted only by the Wayland evdev
-	// backend (evdevSession.handlePress). The proxy keyboard can re-emit an
-	// unbound chord to the focused app. The X11 grab and the
-	// wl-keyboard fallback cannot re-inject selectively, so this stays inert
-	// there. Chords are stored canonicalized via tap.CanonicalChord.
+	// Modifier passthrough state, set by SetModifierPassthrough and
+	// SetInterceptedModifierKeys. Only the Wayland evdev backend reads it
+	// (evdevSession.handlePress), because only the proxy keyboard can re-emit
+	// an unbound chord. The X11 grab and the wl-keyboard fallback cannot.
+	// Chords are canonicalized via tap.CanonicalChord.
 	passthroughEnabled   bool
 	passthroughBlacklist map[string]struct{}
 	interceptedChords    map[string]struct{}
 
-	// Detection arming: sticky modifier events are only dispatched once all
-	// initially-held modifiers have been released (matching macOS behavior).
-	// SetStickyModifierToggle(true) disarms, and the platform handler re-arms when
-	// the modifier state reaches a clean slate.
+	// Sticky modifier events dispatch only once every initially held
+	// modifier is released, as on macOS. SetStickyModifierToggle(true)
+	// disarms, and the platform handler re-arms on a clean slate.
 	stickyModifierDetectionArmed bool
 
 	syntheticModifierEvents []pendingSyntheticModifierEvent
@@ -91,28 +88,33 @@ type EventTap struct {
 	stopCh chan struct{}
 	doneCh chan struct{}
 
-	// dispatchCh decouples the event-tap goroutine from the callback
-	// goroutine, preventing a deadlock when a key dispatch triggers a mode
-	// exit that waits for the event-tap goroutine to stop.
-	// The event-tap goroutine enqueues keys here, and the dispatch goroutine
-	// reads from this channel and invokes the callback. This matches the
-	// macOS eventtap design.
+	// dispatchCh decouples the event-tap goroutine from the callback, as on
+	// macOS, so a key whose dispatch exits the mode cannot deadlock waiting
+	// for the event-tap goroutine to stop.
 	dispatchCh chan string
 	dispatchWg sync.WaitGroup
 	destroyed  bool
 
-	// dispatchEpoch is incremented on every Disable(). dispatchLoop
-	// snapshots the epoch before processing a key and verifies it
-	// hasn't changed before invoking the callback. This prevents
-	// stale buffered events from leaking across enable/disable cycles.
+	// dispatchEpoch is bumped on every Disable. dispatchLoop checks it is
+	// unchanged before invoking the callback, so stale buffered events never
+	// leak across enable/disable cycles.
 	dispatchEpoch atomic.Uint64
 
-	// overlayPassiveOnce gates the one call that tells the Wayland overlay to
-	// stop asking for keyboard focus once the evdev proxy owns the keys.
+	// overlayPassiveOnce gates telling the Wayland overlay to stop asking for
+	// keyboard focus once the evdev proxy owns the keys.
 	overlayPassiveOnce sync.Once
 
 	// dropWarned limits a full dispatch channel to one warning until it drains.
 	dropWarned atomic.Bool
+
+	// x11Grabbed is true from the X11 tap's grab until its run ends,
+	// through a yield, and yieldCh is how YieldKeyboard asks it to step aside.
+	x11Grabbed atomic.Bool
+	yieldCh    chan x11Yield
+
+	// overlayCapture is true while the Wayland fallback holds the keyboard
+	// through Neru's own overlay surface.
+	overlayCapture atomic.Bool
 }
 
 // NewEventTap creates a new EventTap.
@@ -122,6 +124,7 @@ func NewEventTap(callback tap.Callback, logger *zap.Logger) *EventTap {
 		callback: callback,
 	}
 	tap.dispatchCh = make(chan string, dispatchChBufferSize)
+	tap.yieldCh = make(chan x11Yield)
 	tap.dispatchWg.Add(1)
 
 	go tap.dispatchLoop()
@@ -164,17 +167,11 @@ func (et *EventTap) Disable() {
 
 	<-doneCh
 
-	// Bump the dispatch epoch so any in-flight event that dispatchLoop
-	// picked up before we drained will be discarded rather than delivered
-	// to the callback.
+	// Discard any event dispatchLoop picked up before the drain.
 	et.dispatchEpoch.Add(1)
 
-	// Drain any stale events from the dispatch channel. After the evdev
-	// goroutine has exited, no new events are being enqueued, so whatever
-	// remains in the buffer was enqueued before the stop signal landed.
-	// These stale events must be discarded to prevent them from being
-	// misinterpreted by the next mode's handler after the event tap is
-	// re-enabled.
+	// Drain stale events. The evdev goroutine has exited, so whatever is
+	// buffered predates the stop and must not reach the next mode's handler.
 	for {
 		select {
 		case <-et.dispatchCh:
@@ -184,8 +181,7 @@ func (et *EventTap) Disable() {
 	}
 }
 
-// Destroy stops and cleans up the EventTap.
-// It is safe to call multiple times. Later calls are no-ops.
+// Destroy stops and cleans up the EventTap. Later calls are no-ops.
 func (et *EventTap) Destroy() {
 	et.mu.Lock()
 	if et.destroyed {
@@ -199,9 +195,8 @@ func (et *EventTap) Destroy() {
 
 	et.Disable()
 
-	// Stop the dispatch goroutine and wait for it to finish.
-	// dispatchCh is created once in NewEventTap and lives as long as the
-	// EventTap, so closing it is what tells the dispatch goroutine to exit.
+	// dispatchCh lives as long as the EventTap, so closing it is what stops
+	// the dispatch goroutine.
 	close(et.dispatchCh)
 	et.dispatchWg.Wait()
 }
@@ -222,10 +217,9 @@ func (et *EventTap) SetHotkeys(hotkeys []string) {
 	et.hotkeys = append([]string(nil), hotkeys...)
 }
 
-// SetModifierPassthrough enables/disables modifier passthrough and records the
-// blacklist of chords Neru must keep consuming even when they are otherwise
-// unbound (the mode layer folds the active mode's own hotkeys into this list).
-// Only the Wayland evdev backend acts on it, as the struct field comment says.
+// SetModifierPassthrough enables or disables modifier passthrough and records
+// the chords Neru must keep consuming even when unbound (the mode layer folds
+// the active mode's hotkeys in). Only the Wayland evdev backend acts on it.
 func (et *EventTap) SetModifierPassthrough(enabled bool, blacklist []string) {
 	set := tap.CanonicalChordSet(blacklist)
 
@@ -260,10 +254,8 @@ func (et *EventTap) SetStickyModifierToggle(enabled bool) {
 
 	et.stickyModifierToggle = enabled
 	if enabled {
-		// Disarm detection. The platform handler will re-arm once the
-		// modifier state reaches a clean slate (all pre-held modifiers
-		// released). This matches macOS behavior where modifier events
-		// from the activation chord are not interpreted as sticky toggles.
+		// Disarm until the platform handler sees every pre-held modifier
+		// released, so the activation chord is not read as a sticky toggle.
 		et.stickyModifierDetectionArmed = false
 	} else {
 		et.stickyModifierDetectionArmed = true
@@ -277,16 +269,11 @@ func (et *EventTap) PostModifierEvent(modifier string, isDown bool) {
 		return
 	}
 
-	// On X11, synthetic modifier events (from XTest) re-enter the event tap
-	// loop and must be suppressed so they don't trigger __modifier_ events.
-	// On Wayland, zwp_virtual_keyboard_v1_modifiers does not generate evdev
-	// or wl_keyboard events, so the synthetic event never re-enters.
-	// Remembering it would falsely suppress a genuine physical modifier
-	// press within the suppression window.
-	//
-	// This must be the same answer postLinuxModifierEvent gives, or the
-	// bookkeeping is kept for an injection that never happens. Both ask the
-	// one detector.
+	// On X11, XTest modifier events re-enter the tap and must be suppressed
+	// so they do not trigger __modifier_ events. On Wayland,
+	// zwp_virtual_keyboard_v1_modifiers generates no evdev or wl_keyboard
+	// event, and remembering one would suppress a real press. This must match
+	// postLinuxModifierEvent's answer, so both ask the one detector.
 	onWayland := platform.DetectLinuxBackend().IsWayland()
 	if !onWayland {
 		et.rememberSyntheticModifierEvent(modifier, isDown)
@@ -299,10 +286,9 @@ func (et *EventTap) PostModifierEvent(modifier string, isDown bool) {
 	}
 }
 
-// syntheticModifierNames is every modifier the tap has a name for, paired with
-// the bit an injection path names it by. It is the same set x11ModifierName
-// resolves keysyms onto, because the two have to agree for a registration to
-// match the event it was made for.
+// syntheticModifierNames is every modifier the tap names, paired with the bit
+// an injection path names it by. It must match the set x11ModifierName
+// resolves keysyms onto, or a registration misses its event.
 var syntheticModifierNames = []struct {
 	bit  action.Modifiers
 	name string
@@ -314,34 +300,25 @@ var syntheticModifierNames = []struct {
 }
 
 // RememberSyntheticModifier disowns a modifier key event Neru is about to
-// inject through a path of its own, so the tap reads it as Neru's rather than
-// as the user's.
+// inject through its own path, so the tap reads it as Neru's, not the user's.
 //
-// PostModifierEvent posts its own key events and books them in on the way past.
-// The accessibility backend does not go through it. Presenting an action's
-// modifiers on X11 means pressing and releasing real keys against the display
-// server (see internal/adapter/platform/modifierstate), and those key events
-// re-enter the grab like any other. A press followed by a release is a modifier
-// tap by this tap's own definition, so without this the injection can latch a
+// PostModifierEvent books its own events. The X11 mouse injection
+// (platform/linux/inject) presents an action's modifiers by pressing real keys
+// (internal/adapter/platform/modifierstate), which re-enter the grab, and a
+// press plus release is a modifier tap. Without this the injection can latch a
 // sticky modifier the user never pressed (#1484).
 //
-// It is the caller's job to call this immediately before injecting rather than
-// after. The grab reads on its own goroutine and can see the event first
-// otherwise. Registrations expire on their own after
-// syntheticModifierSuppressionWindow, which is what covers an injection that
-// the display server ends up refusing. An XTest key event reports nothing to
-// take back.
-//
-// X11 is the whole of what this is for. Wayland's virtual-keyboard modifier
-// path generates no evdev or wl_keyboard event, so nothing re-enters and the
-// only caller, the X11 injection backend, never runs there.
+// Call it immediately before injecting, since the grab reads on its own
+// goroutine and could see the event first. Registrations expire after
+// syntheticModifierSuppressionWindow, which covers an injection the display
+// server refuses. Wayland never needs it, because its virtual-keyboard
+// modifiers generate no evdev or wl_keyboard event.
 func (et *EventTap) RememberSyntheticModifier(modifier action.Modifiers, isDown bool) {
 	name := syntheticModifierName(modifier)
 	if name == "" {
 		// Unreachable while every key a plan names carries one modifier, and a
-		// silent regression to #1484 if that ever stops being true, so it
-		// says so rather than degrading quietly. Debug, not warn, because the
-		// injection itself is still correct, and this is per-keypress.
+		// silent #1484 regression if that changes. Debug, not warn, because
+		// the injection is still correct and this is per-keypress.
 		if et.logger != nil && modifier != 0 {
 			et.logger.Debug(
 				"Injected modifier key names no single modifier; leaving it unannounced",
@@ -358,13 +335,9 @@ func (et *EventTap) RememberSyntheticModifier(modifier action.Modifiers, isDown 
 // syntheticModifierName is the name the grab will read an injected key event
 // under, and "" when modifier does not name exactly one.
 //
-// One key event resolves to one name (x11ModifierName) and one registration is
-// what consuming it takes off the queue, so a set naming two would leave one
-// entry unanswered for the whole suppression window, long enough to swallow a
-// modifier the user really pressed. Announcing nothing for a set it cannot
-// place is the safer of the two failures. It leaves the injection unannounced,
-// which is where the injection path started, rather than suppressing an event
-// that was never Neru's.
+// One key event consumes one registration, so a set naming two would leave an
+// entry waiting out the suppression window, long enough to swallow a real
+// modifier press. Announcing nothing is the safer failure.
 func syntheticModifierName(modifier action.Modifiers) string {
 	var name string
 
@@ -383,6 +356,64 @@ func syntheticModifierName(modifier action.Modifiers) string {
 	return name
 }
 
+// x11Yield is one YieldKeyboard request. The tap closes released once it has
+// let go of the keyboard, and the caller closes sent once its keys are out.
+type x11Yield struct {
+	released chan struct{}
+	sent     chan struct{}
+}
+
+// YieldKeyboard runs send with the X11 keyboard grab released, and the tap
+// takes the grab back once send returns. A key the user presses in that moment
+// goes to the focused window. With no grab held, as on Wayland or with no mode
+// open, send runs as is.
+func (et *EventTap) YieldKeyboard(send func() error) error {
+	err := et.KeysReachApp()
+	if err != nil {
+		return err
+	}
+
+	if !et.x11Grabbed.Load() {
+		return send()
+	}
+
+	et.mu.RLock()
+	doneCh := et.doneCh
+	et.mu.RUnlock()
+
+	request := x11Yield{released: make(chan struct{}), sent: make(chan struct{})}
+
+	select {
+	case et.yieldCh <- request:
+	case <-doneCh:
+		return send()
+	}
+
+	defer close(request.sent)
+
+	<-request.released
+
+	return send()
+}
+
+// errTypedKeysComeBack refuses a typed key while the Wayland fallback holds
+// the keyboard, where it would come straight back to Neru.
+var errTypedKeysComeBack = derrors.New(
+	derrors.CodeNotSupported,
+	"typing into the app needs a readable /dev/input and a writable /dev/uinput",
+)
+
+// KeysReachApp reports whether a key typed now would reach the focused app.
+// It refuses while the Wayland fallback holds the keyboard through Neru's own
+// overlay, since a typed key would come back to Neru.
+func (et *EventTap) KeysReachApp() error {
+	if et.overlayCapture.Load() {
+		return errTypedKeysComeBack
+	}
+
+	return nil
+}
+
 // IsEnabled returns whether interception is active.
 func (et *EventTap) IsEnabled() bool {
 	et.mu.RLock()
@@ -392,7 +423,7 @@ func (et *EventTap) IsEnabled() bool {
 }
 
 // stickyArmDetection arms sticky modifier detection. The platform handler
-// calls this when it determines all pre-held modifiers have been released.
+// calls it once all pre-held modifiers are released.
 func (et *EventTap) stickyArmDetection() {
 	et.mu.Lock()
 	defer et.mu.Unlock()
@@ -400,7 +431,6 @@ func (et *EventTap) stickyArmDetection() {
 	et.stickyModifierDetectionArmed = true
 }
 
-// stickyDetectionArmed returns whether sticky detection is armed.
 func (et *EventTap) stickyDetectionArmed() bool {
 	et.mu.RLock()
 	defer et.mu.RUnlock()
@@ -408,19 +438,18 @@ func (et *EventTap) stickyDetectionArmed() bool {
 	return et.stickyModifierDetectionArmed
 }
 
-// shouldPassthroughChord reports whether an unbound modifier chord should be
-// passed through to the focused application instead of consumed by Neru. It
-// mirrors the macOS event-tap decision: passthrough must be enabled, the chord
-// must carry a Ctrl/Alt/Cmd modifier (shift-only chords stay usable inside
-// modes), and it must be neither blacklisted nor in the mode's intercepted set.
+// shouldPassthroughChord reports whether an unbound modifier chord should go
+// to the focused app instead of Neru, mirroring macOS. Passthrough must be
+// enabled, the chord must carry Ctrl, Alt or Cmd (shift-only chords stay
+// usable in modes), and it must be neither blacklisted nor intercepted.
 func (et *EventTap) shouldPassthroughChord(chord string) bool {
-	// Check the cheap enabled flag before the allocating normalization so the
-	// common disabled case (the default) costs nothing on the key hot path.
+	// Check the enabled flag before the allocating normalization, so the
+	// default disabled case costs nothing on the key path.
 	et.mu.RLock()
 	enabled := et.passthroughEnabled
 	et.mu.RUnlock()
 
-	if !enabled || !config.HasPassthroughModifier(chord) {
+	if !enabled || !keyvocab.HasPassthroughModifier(chord) {
 		return false
 	}
 
@@ -440,10 +469,9 @@ func (et *EventTap) shouldPassthroughChord(chord string) bool {
 	return true
 }
 
-// firePassthroughCallback invokes the registered passthrough callback (if any)
-// on its own goroutine and without holding et.mu, so it can neither block the
-// key-reader goroutine nor deadlock against the mode handler's own lock. This
-// mirrors the async dispatch the macOS tap uses for the same callback.
+// firePassthroughCallback invokes the passthrough callback, if any, on its own
+// goroutine without et.mu, so it can neither block the key reader nor
+// deadlock against the mode handler's lock, as on macOS.
 func (et *EventTap) firePassthroughCallback() {
 	et.mu.RLock()
 	cb := et.passthroughCallback
@@ -455,13 +483,9 @@ func (et *EventTap) firePassthroughCallback() {
 }
 
 // run starts the event interception loop: evdev under a Wayland compositor, a
-// keyboard grab on X11.
-//
-// The choice comes off platform.DetectLinuxBackend, the one detector for the
-// compositor family, rather than a read of the environment here. This package
-// had always documented it that way and did not do it (#1429). A backend the
-// factory refuses to serve runs the X11 loop, which finds no DISPLAY and
-// returns.
+// keyboard grab on X11. The choice comes from platform.DetectLinuxBackend,
+// not the environment (#1429). A backend the factory refuses runs the X11
+// loop, which finds no DISPLAY and returns.
 func (et *EventTap) run() {
 	if platform.DetectLinuxBackend().IsWayland() {
 		et.runWayland()
@@ -470,10 +494,8 @@ func (et *EventTap) run() {
 	}
 }
 
-// dispatchKey enqueues a key event for dispatch. The callback is invoked
-// from a dedicated dispatch goroutine so that the event-tap goroutine never
-// blocks on the callback (preventing a deadlock when the callback triggers
-// a mode exit that waits for the event-tap goroutine to stop).
+// dispatchKey enqueues a key for the dispatch goroutine, so the event-tap
+// goroutine never blocks on the callback (see dispatchCh).
 func (et *EventTap) dispatchKey(key string) {
 	if key == "" {
 		return
@@ -496,9 +518,8 @@ func (et *EventTap) dispatchKey(key string) {
 	}
 }
 
-// dispatchLoop reads key events from the dispatch channel and invokes the
-// registered callback. It runs in a dedicated goroutine that lives for the
-// entire lifetime of the EventTap.
+// dispatchLoop reads keys from the dispatch channel and invokes the callback,
+// for the EventTap's lifetime.
 func (et *EventTap) dispatchLoop() {
 	defer et.dispatchWg.Done()
 
@@ -520,7 +541,6 @@ func (et *EventTap) dispatchLoop() {
 	}
 }
 
-// stickyToggleEnabled returns whether sticky toggle is active.
 func (et *EventTap) stickyToggleEnabled() bool {
 	et.mu.RLock()
 	defer et.mu.RUnlock()

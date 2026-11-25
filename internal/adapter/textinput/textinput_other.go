@@ -1,4 +1,4 @@
-//go:build !darwin && !linux && !windows
+//go:build !darwin
 
 package textinput
 
@@ -17,8 +17,6 @@ import (
 // CodeNotSupported error. TextInputPort.StartHintSearchSession is defined as
 // best-effort, and callers already branch on started to pick the key-stream
 // path. Reporting an error would make an expected degrade look like a failure.
-// The unavailability is instead surfaced through the text_input entry in
-// ports.PlatformCapabilities, which reports stub here.
 type TextInput struct {
 	logger *zap.Logger
 }

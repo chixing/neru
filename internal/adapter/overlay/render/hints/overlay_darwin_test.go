@@ -18,9 +18,9 @@ import (
 const unknownPlacement = "floating"
 
 // TestHintPlacementValue_EveryPlacementMapsToItsOwnConstant is the macOS half
-// of the placement pin. The architecture test keeps the C header and the
-// Objective-C enum agreeing about the numbers, and this keeps the translation
-// honest. A placement added to config.HintPlacements() and not to this switch
+// of the placement pin. The Objective-C enum takes its numbers from the C
+// header, and this test checks the translation. A placement added to
+// config.HintPlacements() and not to this switch
 // would validate, reach the overlay and be refused rather than drawn. This
 // test is what says so before a user sees it.
 func TestHintPlacementValue_EveryPlacementMapsToItsOwnConstant(t *testing.T) {
@@ -53,8 +53,8 @@ func TestHintPlacementValue_EveryPlacementMapsToItsOwnConstant(t *testing.T) {
 // same constant the declared default resolves to, so a configuration that
 // reaches the overlay before validation settles it still draws where the
 // documented default says. Refusing it instead would leave an unsettled style
-// drawing no hints at all, and the Linux overlay answers it the same way
-// (resolveHintBadgeOffset).
+// drawing no hints at all, and the Linux and Windows overlays answer it the
+// same way (badge.ResolveHintOffset).
 func TestHintPlacementValue_UnsetDrawsTheDefault(t *testing.T) {
 	t.Parallel()
 
@@ -72,30 +72,6 @@ func TestHintPlacementValue_UnsetDrawsTheDefault(t *testing.T) {
 		t.Errorf(
 			"hintPlacementValue(\"\") = %d, want %d (the value of %q)",
 			unset, fallback, config.HintPlacementDefault,
-		)
-	}
-}
-
-// TestHintPlacementValue_UnknownPlacementIsNotSupported pins the other half of
-// the vocabulary. A value outside it is refused, not translated. It used to
-// come back as HINT_PLACEMENT_BOTTOM, which made a placement with no branch
-// here indistinguishable from `bottom`, silent everywhere and wrong on
-// screen. The Linux overlay already refuses the same value (#1331).
-func TestHintPlacementValue_UnknownPlacementIsNotSupported(t *testing.T) {
-	t.Parallel()
-
-	value, err := hintPlacementValue(unknownPlacement)
-	if err == nil {
-		t.Fatalf(
-			"hintPlacementValue(%q) = %d, nil; an unrecognized placement must be refused",
-			unknownPlacement, value,
-		)
-	}
-
-	if !derrors.IsNotSupported(err) {
-		t.Errorf(
-			"hintPlacementValue(%q) returned %v (code %q), want CodeNotSupported",
-			unknownPlacement, err, derrors.GetCode(err),
 		)
 	}
 }

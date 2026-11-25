@@ -38,12 +38,14 @@ capability. A port is done only with all four:
 [`keyfeed`](../../internal/adapter/keyfeed/) is the reference example: shared
 normalization untagged in `keyfeed.go`, one unexported `postKey` per platform,
 `Adapter` implementing the port, capability entry, mock, contract tests.
+[`mouse`](../../internal/adapter/mouse/) has the same shape, with the rules
+every platform shares in `adapter.go` and one `platformBackend` per platform.
 
 ### Tier 2: In-package dispatch
 
 A capability only one adapter package uses is not a port. Put an
-**unexported** function such as `platformActiveScreenBounds` in
-`platform_darwin.go`, `platform_other.go` and so on, because an exported one
+**unexported** function such as the mouse adapter's `platformBackend` in
+`backend_darwin.go`, `backend_other.go` and so on, because an exported one
 becomes another package's dependency and so a badly specified port. Examples:
 `accessibility/priming_*.go`, `appwatcher/platform_*.go`. The exception is a
 package whose whole job is the platform split and which several packages
@@ -57,7 +59,10 @@ interface **in `ports`, next to the port it extends**, such as
 `RelativeCursorMover` in `ports/system.go`. The caller finds it with a type
 assertion and keeps a working fallback. Adapters that opt in assert it
 (`var _ ports.RelativeCursorMover = (*SystemAdapter)(nil)`) so a signature
-drift fails to compile instead of silently downgrading the platform. The one
+drift fails to compile instead of silently downgrading the platform. Some
+extensions have no fallback, such as `SystemCursorHider`. A caller that finds
+no implementation refuses with `CodeNotSupported`, so a platform must never
+implement one with methods that do nothing. The one
 extension off `ports` is `SyntheticModifierSink` on the Linux `tap.Tap`
 backend contract, because only X11 cannot tell its own injected key events
 from the user's.
@@ -119,7 +124,9 @@ it: `overlay/linux/wayland_cgo.go`, not
 `overlay/linux/overlay_linux_wayland_cgo.go`. The four Linux backend rows are
 the spelling for a mixed package, and none uses them today. The
 `*_integration_cgo.go` row exists because Go rejects `import "C"` in a
-`_test.go` file.
+`_test.go` file. Darwin scaffolding in a mixed package is spelled
+`*_integration_darwin.go`, since the package needs the OS token and darwin code
+never carries a cgo tag (`vision/readtext_support_integration_darwin.go`).
 
 The guardrail rejects `_stub.go`, `_default.go`, `_fallback.go`, `_noop.go`
 and similar names, and requires an OS tag on every file in a single-platform
@@ -165,6 +172,7 @@ Per-mode `Context` types live in `internal/app/components/`.
 | global hotkeys                                               | `internal/adapter/hotkeys/`                               |
 | keyboard event capture                                       | `internal/adapter/eventtap/`                              |
 | accessibility integration                                    | `internal/adapter/accessibility/` (`ax/`, `atspi/`, `native/`) |
+| clicks, presses, releases and scrolls                        | `internal/adapter/mouse/`, injecting through `platform/darwin`, `platform/windows` and `platform/linux/inject` |
 | overlay window orchestration **and all Linux/Windows drawing** | `internal/adapter/overlay/`                             |
 | overlay rendering by mode (macOS only, stubs elsewhere)  | `internal/adapter/overlay/render/*/overlay_*.go`          |
 | app watcher and other isolated platform hooks                | dispatch-style `platform_*.go` in the relevant package       |
@@ -223,9 +231,9 @@ bindings (`x/sys/windows` or syscall), and add no further Windows backend
 naming without a real need. User Interface Privilege Isolation keeps elevated
 windows out of reach of `SendInput` and the `WH_KEYBOARD_LL` hook
 ([Known Gaps](../reference/platform-support.md#known-gaps)). Smooth cursor
-animation ([mouse_animator.go](../../internal/adapter/platform/windows/mouse_animator.go))
-reuses the Linux animator's shape with `SetCursorPos` as the sink, and stays
-off unless `smooth_cursor.move_mouse_enabled` is set.
+animation uses the same animator as Linux
+([cursoranim](../../internal/adapter/platform/cursoranim/animator.go)) and
+stays off unless `smooth_cursor.move_mouse_enabled` is set.
 
 ## CGO guidance
 
@@ -310,6 +318,7 @@ landing page. The homes:
 | A gap closed or discovered | [Known Gaps](../reference/platform-support.md#known-gaps) |
 | Which platforms an option, mode flag or action does anything on | the `PlatformSupport()` declaration beside that vocabulary, then `just gensupportref` |
 | A config option, its default or its platform column | [configuration reference](../reference/configuration.md) |
+| An event, when its hook runs, or the variables its hook sees | the catalog in `internal/domain/event/catalog.go`, then `just genhookref` |
 | The schema editors read for `config.toml` | the config structs, then `just genschema` |
 | The IPC schema | the reply types in `client` and the request and response in `internal/adapter/ipc`, then `just genschema`. What counts as a breaking change is in [ADR 0015](../adr/0015-the-wire-protocol-breaks-only-at-a-major.md) |
 | A command or flag | [CLI reference](../reference/cli.md), with mode flags through `just genflagref` |

@@ -25,11 +25,6 @@ var (
 	mcDetectionEnabled atomic.Bool
 )
 
-// AppWatcher returns the global application watcher instance.
-func AppWatcher() AppWatcherInterface {
-	return appWatcherSlot.Get()
-}
-
 // HotkeyEventKind describes whether a global hotkey was pressed or released.
 type HotkeyEventKind int
 
@@ -80,6 +75,19 @@ func ParseKeyString(keyString string) (int, int, bool) {
 	result := C.NeruParseKeyString(cKeyString, &keyCode, &modifiers)
 
 	return int(keyCode), int(modifiers), result == 1
+}
+
+// SpecialKeyName returns the name the event tap gives a named key's virtual
+// key code ("Return", "F1"), or "" when the key code is not a named key. It
+// exists so tests can pin the tap's spelling from Go.
+func SpecialKeyName(keyCode uint16) string {
+	cName := C.NeruCopySpecialKeyName(C.int(keyCode))
+	if cName == nil {
+		return ""
+	}
+	defer C.free(unsafe.Pointer(cName))
+
+	return C.GoString(cName)
 }
 
 //export hotkeyCallbackBridge

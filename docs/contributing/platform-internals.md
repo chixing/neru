@@ -43,38 +43,41 @@ the footnotes below give the mechanism behind its limits.
 | **Keymap learns the focused app** | published by the watcher | published by the watcher | published by the watcher | published by the watcher | published by the watcher |
 | **Cursor position**           | `CGEventGetLocation`  | `XQueryPointer`     | `hyprctl` on Hyprland, else sync-surface cache | sync-surface cache | `GetCursorPos` |
 | **Cursor move**               | `CGEventPost` | XTest (`XTestFakeMotionEvent`) | `zwlr_virtual_pointer` | libei                | `SetCursorPos`, glided while a button is held |
-| **Mouse buttons / drag**      | `CGEventPost`         | XTest ⁷             | `zwlr_virtual_pointer` ⁷  | libei ⁷              | `SendInput` ⁷             |
-| **Scroll injection**          | both axes             | both axes ⁷         | both axes (uinput, virtual-pointer fallback) | both axes (uinput, libei fallback) | both axes ⁷               |
-| **Modified scroll (`--modifier`)** | `CGEventSetFlags` on every chunk | XTest key hold ⁷ | virtual keyboard + virtual pointer (uinput on Hyprland ⁹) | libei | `SendInput` key hold ⁷ |
+| **Mouse buttons / drag**      | `CGEventPost`         | XTest ⁶             | `zwlr_virtual_pointer` ⁶  | libei ⁶              | `SendInput` ⁶             |
+| **Scroll injection**          | both axes             | both axes ⁶         | both axes, virtual pointer (uinput on Hyprland ⁸) | both axes, libei wheel clicks | both axes ⁶               |
+| **Modified scroll (`--modifier`)** | `CGEventSetFlags` on every chunk | XTest key hold ⁶ | virtual keyboard + virtual pointer (uinput on Hyprland ⁸) | libei | `SendInput` key hold ⁶ |
 | **Smooth cursor animation**   | incl. relative, opt-in | incl. relative, opt-in | incl. relative, opt-in | incl. relative, opt-in | incl. relative, opt-in |
 | **Held-key glide (`held_repeat`)** | `CGEventPost` per tick | XTest per tick | virtual-pointer relative motion per tick | libei per tick | `SetCursorPos` per tick |
-| **Smooth scroll animation**   | continuous axis       | whole notches only ³ | continuous axis ³ (whole notches when modified on Hyprland ⁹) | libei scroll delta, unverified ³ | 120ths of a notch ³ |
+| **Smooth scroll animation**   | continuous axis       | whole notches only ³ | continuous axis ³ (whole notches when modified on Hyprland ⁸) | libei scroll delta, unverified ³ | 120ths of a notch ³ |
 | **Element discovery (hints)** | AXUIElement           | AT-SPI walk         | AT-SPI walk               | AT-SPI walk          | UIA, control view only    |
-| **Overlay**                   | NSPanel + CoreAnimation | X11 + Cairo       | layer-shell + Cairo       | layer-shell + Cairo  | DirectComposition + Direct2D (GDI fallback, and windows/arm64 is GDI only ¹⁰) |
+| **Overlay**                   | NSPanel + CoreAnimation | X11 + Cairo       | layer-shell + Cairo       | layer-shell + Cairo  | DirectComposition + Direct2D (GDI fallback, and windows/arm64 is GDI only ⁹) |
 | **Global hotkeys**            | one shared CGEventTap | `XGrabKey`          | evdev proxy (`input` group) | evdev proxy (`input` group) | `RegisterHotKey`          |
 | **Keyboard capture**          | CGEventTap            | `XGrabKeyboard`     | evdev proxy (uinput, wl-keyboard fallback) | evdev proxy (uinput) | `WH_KEYBOARD_LL`          |
 | **Modifier passthrough**      | CGEventTap forwards or blocks per event | none, the grab is all-or-nothing | evdev backend only        | evdev backend only   | `WH_KEYBOARD_LL` forwards or blocks per event |
 | **Dark mode detection**       | Cocoa appearance      | xdg appearance portal | xdg appearance portal   | kdeglobals + portal  | registry                  |
 | **Font resolution**           | NSFont                | fontconfig          | fontconfig                | fontconfig           | GDI `EnumFontFamiliesExW` ¹ |
 | **Text measurement**          | CoreText              | Cairo text extents ¹ | Cairo text extents ¹      | Cairo text extents ¹ | GDI `GetTextExtentPoint32W` ¹ |
-| **System tray**               | NSStatusItem ⁸        | D-Bus StatusNotifierItem ⁸ | StatusNotifierItem ⁸      | StatusNotifierItem ⁸ | Win32 notification area ⁸ |
+| **System tray**               | NSStatusItem ⁷        | D-Bus StatusNotifierItem ⁷ | StatusNotifierItem ⁷      | StatusNotifierItem ⁷ | Win32 notification area ⁷ |
+| **Clipboard (`copy_text`)**   | `pbcopy`, `LANG` forced to UTF-8 | `xclip`, else `xsel` | `wl-copy`, else `xclip`/`xsel` on Xwayland | `wl-copy`, else `xclip`/`xsel` on Xwayland | `SetClipboardData` (Unicode) |
 | **Native alerts**             | NSAlert               | D-Bus, not modal    | D-Bus, not modal          | D-Bus, not modal     | `MessageBoxW`             |
-| **Native notifications**      | UNNotification        | `org.freedesktop.Notifications` | `org.freedesktop.Notifications` | `org.freedesktop.Notifications` | Tray balloon tips ⁸ |
+| **Native notifications**      | UNNotification        | `org.freedesktop.Notifications` | `org.freedesktop.Notifications` | `org.freedesktop.Notifications` | Tray balloon tips ⁷ |
 | **Secure input detection**    | private macOS API     | always false        | always false              | always false         | always false              |
 | **System cursor hide**        | `CGDisplayHideCursor` | none                | none                      | none                 | none                      |
 | **`monitor_select` mode**     | native panels         | Cairo panels        | Cairo panels              | Cairo panels         | layered panels            |
-| **Native hint-search field**  | text view in a key panel | XIM window ⁴        | layer-shell field ⁴       | layer-shell field ⁴  | `EDIT` control in a tool window ⁴ |
-| **Screen capture**            | ScreenCaptureKit      | `XGetImage`         | `wlr-screencopy`          | portal ScreenCast, consent ⁵ | `BitBlt` ⁵        |
-| **Vision / OCR detection**    | Vision framework      | tesseract and contour ⁶ | tesseract and contour ⁶ | tesseract and contour ⁶ | `Windows.Media.Ocr` and contour ⁶ |
-| **Key feed (`action feed`)** | `CGEventPost`         | uinput               | uinput / virtual-keyboard | uinput               | `SendInput`               |
+| **`vim` mode**                | CALayers on the shared window | Cairo on the shared overlay | Cairo on the shared overlay | Cairo on the shared overlay | the shared overlay window |
+| **Screen capture**            | ScreenCaptureKit      | `XGetImage`         | `wlr-screencopy`          | portal ScreenCast, consent ⁴ | `BitBlt` ⁴        |
+| **Vision / OCR detection**    | Vision framework      | tesseract and contour ⁵ | tesseract and contour ⁵ | tesseract and contour ⁵ | `Windows.Media.Ocr` and contour ⁵ |
+| **Key feed (`action feed`)** | `CGEventPost`         | XTest                | uinput / virtual-keyboard | uinput               | `SendInput`               |
 | **Service management (`neru services`)** | launchd user agent | systemd user unit only ² | systemd user unit only ² | systemd user unit only ² | Task Scheduler logon task |
 
 Each footnote gives the mechanism. The effect a user sees is in the
 [user notes](../reference/platform-support.md#notes) and the [font rules](../reference/configuration.md#fonts).
 
 ¹ **Font resolution.** Linux and Windows resolve a family at load and fall back
-when it is missing. macOS and the non-CGO Linux build let the renderer
-substitute at draw time. **Text measurement** sizes boxes from the text,
+when it is missing. Linux also draws and measures text a family has no glyphs
+for, such as Chinese in a Latin font, in the first font fontconfig finds that
+has them, since Cairo's text API never falls back by itself. macOS and the
+non-CGO Linux build let the renderer substitute at draw time. **Text measurement** sizes boxes from the text,
 except on the non-CGO Linux build, which has no Cairo and estimates.
 
 ² **Service management** writes a systemd user unit tied to
@@ -87,25 +90,7 @@ wlroots and libei send fractional deltas, Windows sends 120ths of a notch, and
 X11 sends whole notches. Linux notch paths use 30 px per notch, rounded, at
 least one.
 
-⁴ **Native hint-search field.** macOS places an `NSTextView` in an invisible
-key panel over the search box, which the input method types into. On Wayland a
-transparent layer-shell surface over the box takes the keyboard, with
-`zwp_text_input_v3` for input-method text and xkb compose for dead keys. The
-event tap is off for the session, so the evdev proxy forwards keys to the
-compositor as it does when Neru is idle. Windows places a standard `EDIT`
-control in a nearly transparent tool window over the search box, which gets
-input-method text through IMM and dead keys through `TranslateMessage`. The
-keyboard hook is off for the session. Windows lets a background process take
-the foreground only in some cases, so the field joins the foreground window's
-input queue for the request and falls back to the key stream when it is still
-refused. Losing the foreground cancels the search. On X11 a one-pixel
-override-redirect window at the box takes the input focus and reads keys
-through an XIM input context, which brings the input method `XMODIFIERS` names
-and the locale's compose rules for dead keys. The keyboard grab is released for
-the session, and the window that had the focus gets it back. On GNOME, which
-has no layer shell, the query is read from the key stream.
-
-⁵ **Screen capture.** X11, wlroots and Windows capture without a prompt. KWin
+⁴ **Screen capture.** X11, wlroots and Windows capture without a prompt. KWin
 supports neither protocol, so KDE uses the `org.freedesktop.portal.ScreenCast`
 portal over PipeWire, with the grant kept under `$XDG_STATE_HOME/neru/`. A
 region that leaves the screen, spans two Wayland outputs, or lies on an
@@ -133,20 +118,57 @@ what it shows without unmapping, so the overlay keeps the keyboard. Wayland
 commits a cleared spare buffer and waits for the compositor's frame callback.
 X11 copies the window into a server-side pixmap, clears it, syncs, and waits
 120 ms when a compositing manager owns `_NET_WM_CM_S<n>`. After the capture
-the drawn buffer or the copy goes back, untouched. The click indicator is a
-surface of its own and stays in the capture. Windows builds older than 2004
+the drawn buffer or the copy goes back, untouched. The mode and
+sticky-modifier badges are surfaces of their own, a sub-surface of the overlay
+on Wayland and a window beside it on X11, so the hider takes each one inside
+the captured rectangle off with the overlay and puts it back after. The click indicator is a
+surface of its own too and stays in the capture. Windows builds older than 2004
 capture Neru's windows with the rest of the screen. There a hints refresh with
 a screen-reading strategy takes the old labels off before it captures, and
 snap refuses those strategies while a mode is open.
 
-⁶ **Vision.** Linux uses tesseract, which finds language data through
+⁵ **Vision.** Linux uses tesseract, which finds language data through
 `TESSDATA_PREFIX` and then the distribution paths, and a missing
-`eng.traineddata` gets `ERR_NOT_SUPPORTED` naming that file. Windows uses
-`Windows.Media.Ocr`, which reports no per-word confidence. On both, the
+`eng.traineddata` gets `ERR_NOT_SUPPORTED` naming that file. A vim accurate
+read reads the frame a second time in the languages of other scripts the
+locale names, such as Chinese or Russian. With none named, vim keeps the fast
+read and reads nothing a second time. That read runs on an engine with a
+lock of its own, so the fast read a keystroke waits on never queues behind it.
+Its line replaces eng's where it has a wide character or mostly non-Latin
+letters and eng's has neither. A few Cyrillic lookalikes that a Russian read
+puts in an English line do not count. tesseract's boxes for Chinese and Japanese
+characters drift by most of a character, so a run of them becomes one word,
+cut into cells of even pitch at blank columns where it can be. The second read
+scales the frame to two pixels a point, because at one tesseract keeps eng's
+reading of small Chinese.
+Windows uses
+`Windows.Media.Ocr`, which reports no per-word confidence. Its engine reads in
+the first account language with an OCR pack. A vim accurate read also reads
+the frame with an engine for the first Chinese, Japanese or Korean language in
+`GlobalizationPreferences.Languages`, built with `TryCreateFromLanguage`, and
+merges its lines as Linux does. With no such language, or with the first
+engine already reading it, vim keeps the fast read. Each engine runs on a
+worker thread of its own, and the accurate read has its own copy of the first
+engine, so a fast read never queues behind it. On both, the
 contour detector finds rectangles in the same frame, with its shipped
-thresholds. Recognized text is never logged or stored.
+thresholds. macOS places hints with Vision's fast recognizer over the whole
+frame. At that size it misreads small text, and it reads Latin script alone,
+so Chinese, Japanese or Korean comes out as Latin noise. `copy_text` reads a
+screen-found hint again on a capture of only the hint's box. Once vim mode's
+accurate read is prepared, `copy_text` reads that capture with the accurate
+recognizer, in the helper process vim mode uses. The accurate recognizer reads
+every script and spells small text right. Until the preparation is done, when
+the helper fails, and when the accurate read finds no text, `copy_text` uses
+the fast recognizer instead, with language correction off, at three times the
+box's size in points. Any one fast read of that capture can still swap a
+letter, so Neru reads a one-line box at five heights from 80 to 120 pixels and
+keeps the read most of them give. That reads every line of the OCR fixtures
+word for word. One read at the captured size misread about one line in seven.
+A read that takes longer than 500 ms is dropped, and the copy uses the hints
+pass's text. Recognized
+text is never logged or stored.
 
-⁷ **Modifiers on injected input.** On X11, Wayland and Windows, an injected
+⁶ **Modifiers on injected input.** On X11, Wayland and Windows, an injected
 pointer event carries whatever modifiers the keyboard holds, so a chord still
 held when you pick a hint would make a ctrl+click. Neru releases those
 modifiers, presses the requested ones, and restores both afterwards, across an
@@ -154,15 +176,18 @@ animated scroll and until a drag's release. On Wayland the evdev proxy does
 this. Without a forwarding proxy (no `/dev/uinput`, or the wl-keyboard
 fallback) the click stays modified.
 
-⁸ **Tray and notifications.** Linux tray menus have no item tooltips, because
+⁷ **Tray and notifications.** Linux tray menus have no item tooltips, because
 `com.canonical.dbusmenu` defines none. Windows notifications are balloon tips
 on the tray icon, so with no tray they report `ERR_NOT_SUPPORTED`. Windows
 alerts are `MessageBoxW` and need no tray.
 
-⁹ **Hyprland modified scroll** goes out on the uinput wheel, because Hyprland
-drops a virtual-pointer scroll while a modifier is held.
+⁸ **Hyprland scroll** goes out on the uinput wheel, because Chromium and
+Electron there ignore a virtual-pointer scroll, and Hyprland drops one while a
+modifier is held. Everywhere else a scroll avoids the uinput wheel, because
+the compositor would apply the user's mouse settings to it, and natural
+scrolling would reverse it.
 
-¹⁰ **windows/arm64 overlay** is GDI only, because the Direct2D binding is
+⁹ **windows/arm64 overlay** is GDI only, because the Direct2D binding is
 amd64-only.
 
 ### Notes on the limited entries
@@ -244,6 +269,18 @@ with Ctrl, Alt or Cmd fall through, because a bare key is a hint label or grid
 key. On Linux the mode owns the keyboard, so a chord bound in the compositor
 cannot fire while a mode is open.
 
+**Keys Neru types while a mode is open.** Vim mode types into the focused app
+while the mode holds the keyboard. An X11 key event carries no origin, so under
+the grab each typed key would come straight back to Neru. The X11 tap releases
+the grab for each key, sends it through XTest, and grabs again once the server
+has handled it. A key the user presses in that moment goes to the app. The
+Wayland evdev proxy never grabs Neru's own devices, and macOS and Windows tag
+injected keys. The wl-keyboard fallback takes the keyboard through Neru's own
+overlay surface, where typed keys also come back to Neru. A key sent through
+uinput or the compositor gives no sign of when it has gone to the app, so
+nothing can step aside for it. There the tap answers that keys do not reach
+the app, and vim mode refuses each edit before it clicks or types.
+
 **One key, one name.** Every backend names a key by the character it types,
 or by keysym name when it types none, so `Shift+;` has one name everywhere. On
 a non-QWERTY layout, a `[hotkeys]` chord binds the key bearing that character
@@ -314,7 +351,7 @@ measured on niri.
 | Compositor | Source                                                       | Limits                                                                                                                    |
 | ---------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
 | KDE / KWin | KWin script reporting focused-window geometry over D-Bus     | Reports on activation and on the focused window moving, resizing or going away. Neru reinstalls the script when KWin restarts. A drag reports its final rectangle. |
-| niri       | `niri msg -j focused-window` / `focused-output`              | Floating and fullscreen windows only. **Tiled** windows expose no on-screen position ([niri#2381](https://github.com/niri-wm/niri/issues/2381)), so hints are misaligned there. |
+| niri       | `niri msg -j focused-window` / `focused-output`              | The origin is the tile position plus `window_offset_in_tile`, the border. On niri 26.04 and earlier, **tiled** windows expose no on-screen position ([niri#2381](https://github.com/niri-wm/niri/issues/2381)), so hints are misaligned there. Releases after 26.04 report them ([niri#4711](https://github.com/niri-wm/niri/pull/4711)). |
 | Sway       | `swaymsg -t get_tree`                                        | none                                                                                                                       |
 | Hyprland   | `hyprctl -j activewindow`                                    | none                                                                                                                       |
 | GNOME      | GNOME Shell extension reporting the focused window's frame over D-Bus | The daemon installs and enables the extension. The shell loads it at the next login. |
@@ -353,6 +390,21 @@ Mode logic is shared. Only these rows differ, by rendering or element discovery.
 | **Hints**         | Label arrow / tail             | NSBezierPath            | Cairo triangle          | triangle |
 | **Scroll**        | Smooth scroll animation        | continuous              | continuous (X11: whole notches) | 120ths of a notch |
 | **Monitor select**| Whole mode                     | native panels           | Cairo panels            | one layered window per display |
+| **Vim**           | Whole mode                     | Vision line reads with per-character boxes, CALayers on the shared window | tesseract character boxes placed by their ink, Cairo on the shared overlay | Windows.Media.Ocr word boxes split into characters by their ink, the shared overlay window |
+
+On macOS vim mode's accurate read runs in a helper process. It is the same
+binary, started with the hidden `read-text-lines` command for each read, and
+the daemon sends it the captured pixels through a pipe. The first time Vision
+meets a script, it compiles a model for it, which takes seconds, and every
+other read in the process waits for the compile. So the daemon itself runs
+only fast reads. Vision keeps what it compiled in a cache keyed by the app's
+bundle ID, or its executable's name, and the macOS build, so the compile comes
+back after an install, a macOS update or a renamed binary, not after a
+rebuild. The vision adapter has the helper read a sample of Latin, Arabic,
+Devanagari and Chinese text, which compiles all of it. That starts at launch
+when the configuration can open vim mode, and otherwise at the first vim
+session, and vim mode's accurate reads wait for it rather than compile the
+same models in a second process.
 
 Everything else is the same on all three, including label placement, the
 search badge, label sizing, virtual pointer indicators, transition animations,

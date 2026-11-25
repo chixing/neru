@@ -15,13 +15,13 @@ func TestGridManager_RouterIntegration(t *testing.T) {
 
 	testGrid := grid.NewGrid("abcdefghijklmnopqrstuvwxyz", image.Rect(0, 0, 1000, 1000), logger)
 
+	var opened image.Rectangle
+
 	gridManager := grid.NewManager(
 		testGrid,
 		domain.GridDimensions{Rows: 3, Cols: 3}, "asdf",
-		func(redraw bool) {
-		},
-		func(cell *grid.Cell) {
-		},
+		func(bool) {},
+		func(cell *grid.Cell) { opened = cell.Bounds() },
 		logger,
 	)
 
@@ -42,32 +42,20 @@ func TestGridManager_RouterIntegration(t *testing.T) {
 			t.Error("Expected not complete on three characters")
 		}
 
+		if want := testGrid.CellByCoordinate("ASD"); want == nil || opened != want.Bounds() {
+			t.Fatalf("subgrid opened on %v, want the cell labeled ASD", opened)
+		}
+
 		result4 := gridRouter.RouteKey("f")
 
 		if !result4.Complete() {
-			t.Error("Expected complete on fourth character")
+			t.Fatal("Expected complete on fourth character")
 		}
 
-		targetPoint := result4.TargetPoint()
-		if targetPoint.X == 0 || targetPoint.Y == 0 {
-			t.Error("Expected non-zero target point")
-		}
-	})
-
-	t.Run("Grid manager input handling", func(t *testing.T) {
-		gridManager.HandleInput("a")
-
-		pointTab, completeTab := gridManager.HandleInput("\t")
-		if completeTab {
-			t.Logf("Tab completed selection at point: %v", pointTab)
-		}
-
-		gridManager.HandleInput("s")
-		gridManager.HandleInput("d")
-		point4, _ := gridManager.HandleInput("f")
-
-		if point4.X == 0 && point4.Y == 0 {
-			t.Error("Expected non-zero point on coordinate input")
+		// "f" is the fourth subgrid key, so it names the fourth subgrid cell.
+		cell := grid.SubgridCells(opened, domain.GridDimensions{Rows: 3, Cols: 3})[3]
+		if target := result4.TargetPoint(); !target.In(cell) {
+			t.Errorf("target %v is outside the subgrid cell %v that f names", target, cell)
 		}
 	})
 
@@ -100,56 +88,6 @@ func TestGridManager_RouterIntegration(t *testing.T) {
 	})
 }
 
-func TestManager_CurrentInput(t *testing.T) {
-	logger := logger.Get()
-	testGrid := grid.NewGrid("ABCD", image.Rect(0, 0, 100, 100), logger)
-
-	manager := grid.NewManager(
-		testGrid,
-		domain.GridDimensions{Rows: 2, Cols: 2},
-		"12",
-		nil,
-		nil,
-		logger,
-	)
-
-	if input := manager.CurrentInput(); input != "" {
-		t.Errorf("CurrentInput() = %q, want empty", input)
-	}
-
-	manager.HandleInput("A")
-
-	if input := manager.CurrentInput(); input != "A" {
-		t.Errorf("CurrentInput() = %q, want 'A'", input)
-	}
-}
-
-func TestManager_Reset(t *testing.T) {
-	logger := logger.Get()
-	testGrid := grid.NewGrid("ABCD", image.Rect(0, 0, 50, 50), logger)
-
-	manager := grid.NewManager(
-		testGrid,
-		domain.GridDimensions{Rows: 2, Cols: 2},
-		"12",
-		nil,
-		nil,
-		logger,
-	)
-
-	manager.HandleInput("A")
-
-	if input := manager.CurrentInput(); input != "A" {
-		t.Errorf("Before reset, CurrentInput() = %q", input)
-	}
-
-	manager.Reset()
-
-	if input := manager.CurrentInput(); input != "" {
-		t.Errorf("After reset, CurrentInput() = %q, want empty", input)
-	}
-}
-
 func TestManager_IgnoresNonSingleCharKey(t *testing.T) {
 	logger := logger.Get()
 	testGrid := grid.NewGrid("ABC", image.Rect(0, 0, 300, 300), logger)
@@ -169,7 +107,9 @@ func TestManager_IgnoresNonSingleCharKey(t *testing.T) {
 		t.Fatalf("expected input 'A' before reset, got %q", manager.CurrentInput())
 	}
 
-	point, complete := manager.HandleInput("Ctrl+R")
+	// "AB" is made of valid characters and continues a real coordinate, so
+	// only the single-character guard refuses it.
+	point, complete := manager.HandleInput("AB")
 	if complete {
 		t.Fatalf("multi-character key should not complete selection")
 	}
@@ -344,94 +284,6 @@ func TestGridManager_ResetClearsInputAndFiresCallback(t *testing.T) {
 	}
 }
 
-func TestManager_InputValidation(t *testing.T) {
-	logger := logger.Get()
-
-	testGrid := grid.NewGrid("ABC", image.Rect(0, 0, 100, 100), logger)
-	manager := grid.NewManager(
-		testGrid,
-		domain.GridDimensions{Rows: 2, Cols: 2},
-		"ab",
-		nil,
-		nil,
-		logger,
-	)
-
-	_, complete := manager.HandleInput("A")
-	if complete {
-		t.Error("Expected not complete after first character")
-	}
-
-	if input := manager.CurrentInput(); input != "A" {
-		t.Errorf("CurrentInput() = %q, want 'A'", input)
-	}
-
-	_, complete = manager.HandleInput("A") // "AA" is a valid coordinate - enters subgrid
-	if complete {
-		t.Error("Expected not complete after 'AA' (enters subgrid)")
-	}
-
-	if input := manager.CurrentInput(); input != "" {
-		t.Errorf("CurrentInput() = %q, want '' (reset for subgrid)", input)
-	}
-
-	manager.Reset() // Start fresh
-
-	_, _ = manager.HandleInput("A")
-
-	invalidChar := "Z" // Z doesn't appear in any coordinate starting with A
-
-	_, complete = manager.HandleInput(invalidChar)
-	if complete {
-		t.Error("Expected not complete for invalid continuation")
-	}
-	// Input should remain "A" since invalid char was rejected
-	if input := manager.CurrentInput(); input != "A" {
-		t.Errorf("CurrentInput() = %q, want 'A' (invalid char should be rejected)", input)
-	}
-
-	// Backspace still works through the explicit manager API.
-	_, complete = manager.HandleBackspace()
-	if complete {
-		t.Error("Expected not complete after backspace")
-	}
-
-	if input := manager.CurrentInput(); input != "" {
-		t.Errorf("CurrentInput() = %q, want '' after backspace", input)
-	}
-
-	// A character outside the valid characters is rejected.
-	_, complete = manager.HandleInput("9") // 9 is not in valid characters "ABC"
-	if complete {
-		t.Error("Expected not complete for invalid character")
-	}
-
-	if input := manager.CurrentInput(); input != "" {
-		t.Errorf("CurrentInput() = %q, want '' (invalid char should be rejected)", input)
-	}
-
-	// A valid partial input is accepted.
-	manager.Reset()
-
-	_, complete = manager.HandleInput("B")
-	if complete {
-		t.Error("Expected not complete after 'B'")
-	}
-
-	if input := manager.CurrentInput(); input != "B" {
-		t.Errorf("CurrentInput() = %q, want 'B'", input)
-	}
-
-	_, complete = manager.HandleInput("C") // "BC" is valid - enters subgrid
-	if complete {
-		t.Error("Expected not complete after 'BC' (enters subgrid)")
-	}
-	// When entering subgrid, input is reset to ""
-	if input := manager.CurrentInput(); input != "" {
-		t.Errorf("CurrentInput() = %q, want '' (reset for subgrid)", input)
-	}
-}
-
 func TestManager_PrefixValidationRegression(t *testing.T) {
 	// Typing an invalid sequence used to leave the grid empty.
 	logger := logger.Get()
@@ -528,5 +380,68 @@ func TestManager_PrefixValidationRegression(t *testing.T) {
 				)
 			}
 		}
+	}
+}
+
+func TestManager_HandleInput_SubgridDisabled(t *testing.T) {
+	log := logger.Get()
+	testGrid := grid.NewGrid("abcdefghijklmnopqrstuvwxyz", image.Rect(0, 0, 1000, 1000), log)
+	cell := testGrid.Cells()[len(testGrid.Cells())/2]
+	label := cell.Coordinate()
+
+	subgridOpens := 0
+	manager := grid.NewManager(
+		testGrid,
+		domain.GridDimensions{Rows: 3, Cols: 3}, "asdfghjkl",
+		func(bool) {},
+		func(*grid.Cell) { subgridOpens++ },
+		log,
+	)
+	manager.SetSubgridEnabled(false)
+
+	var (
+		point    image.Point
+		complete bool
+	)
+
+	for i, key := range strings.Split(label, "") {
+		point, complete = manager.HandleInput(key)
+		if last := i == len(label)-1; complete != last {
+			t.Fatalf("key %d of %q: complete = %v, want %v", i+1, label, complete, last)
+		}
+	}
+
+	if point != cell.Center() {
+		t.Errorf("point = %v, want the cell center %v", point, cell.Center())
+	}
+
+	if subgridOpens != 0 {
+		t.Errorf("subgrid opened %d times, want 0", subgridOpens)
+	}
+
+	if got, picked := manager.SelectedCell(); !picked || got != cell {
+		t.Errorf("SelectedCell = %v, %v, want the labeled cell", got, picked)
+	}
+
+	if manager.CurrentInput() != label {
+		t.Errorf("input = %q, want the label %q kept for backspace", manager.CurrentInput(), label)
+	}
+
+	if _, moved := manager.MoveDirection(domain.DirectionRight, 1); moved {
+		t.Error("MoveDirection moved a cell with no subgrid open")
+	}
+
+	manager.HandleBackspace()
+
+	if manager.CurrentInput() != label[:len(label)-1] {
+		t.Errorf(
+			"input after backspace = %q, want %q",
+			manager.CurrentInput(),
+			label[:len(label)-1],
+		)
+	}
+
+	if _, picked := manager.SelectedCell(); picked {
+		t.Error("SelectedCell still reports a cell after backspace shortened the label")
 	}
 }

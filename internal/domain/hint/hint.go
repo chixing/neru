@@ -1,20 +1,17 @@
 package hint
 
 import (
+	"cmp"
 	"context"
 	"image"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
-	"unicode"
-
-	"golang.org/x/text/cases"
-	"golang.org/x/text/runes"
-	"golang.org/x/text/transform"
-	"golang.org/x/text/unicode/norm"
 
 	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain/element"
+	"github.com/y3owk1n/neru/internal/domain/screentext"
 )
 
 // Interface is a labeled UI element for keyboard-driven navigation.
@@ -81,25 +78,6 @@ func (h *Interface) Bounds() image.Rectangle {
 	return h.element.Bounds()
 }
 
-// IsVisible checks if the hint is visible within the given screen bounds.
-func (h *Interface) IsVisible(screenBounds image.Rectangle) bool {
-	return h.element.IsVisible(screenBounds)
-}
-
-// MatchesLabel checks if the hint label matches the given input.
-func (h *Interface) MatchesLabel(input string) bool {
-	return h.label == input
-}
-
-// HasPrefix checks if the hint label starts with the given prefix.
-func (h *Interface) HasPrefix(prefix string) bool {
-	if len(prefix) > len(h.label) {
-		return false
-	}
-
-	return h.label[:len(prefix)] == prefix
-}
-
 // Generator generates hint labels for UI elements.
 type Generator interface {
 	// Generate creates hints for the given elements.
@@ -107,9 +85,6 @@ type Generator interface {
 
 	// MaxHints returns the maximum number of hints this generator can create.
 	MaxHints() int
-
-	// Characters returns the character set used for hint generation.
-	Characters() string
 
 	// LabelDirection returns the label enumeration direction the generator
 	// is configured to use. Implementations expose this so the hint service
@@ -232,12 +207,99 @@ type Collection struct {
 	byLabel map[string]*Interface
 	trie    *Trie
 
-	// searchTexts holds each hint's element texts normalized for search. The
+	// searchTexts holds each hint's element texts folded for search. The
 	// first search builds it and later ones reuse it. A search runs on every
-	// keystroke, normalizing is most of its cost, and the hints do not change
+	// keystroke, folding is most of its cost, and the hints do not change
 	// while the user types.
 	searchOnce  sync.Once
-	searchTexts [][]string
+	searchTexts [][]searchText
+}
+
+// searchText is an element text as search matches it: spelled in lowercase
+// ASCII by screentext.Fold, with the character each byte came from and the
+// bytes that start a word.
+type searchText struct {
+	text   string
+	spans  [][2]int
+	starts []bool
+}
+
+func foldForSearch(text string) searchText {
+	folded, spans := screentext.Fold(text)
+
+	return searchText{
+		text:   strings.ToLower(folded),
+		spans:  spans,
+		starts: screentext.WordStarts(folded),
+	}
+}
+
+// matchRank is how well a query matches a text, best first.
+type matchRank int
+
+const (
+	// rankExact is the whole text.
+	rankExact matchRank = iota
+	// rankPrefix is the start of the text.
+	rankPrefix
+	// rankWordStart is the start of a word in it.
+	rankWordStart
+	// rankInitials is the initials of its words (screentext.Initials).
+	rankInitials
+	// rankInWord is inside a word, starting where a character does, so en
+	// finds no 深 (Shen).
+	rankInWord
+	// rankNone is no match.
+	rankNone
+)
+
+// rank is how well query matches t.
+func (t searchText) rank(query string) matchRank {
+	switch {
+	case t.text == query:
+		return rankExact
+	case strings.HasPrefix(t.text, query):
+		return rankPrefix
+	}
+
+	inWord := false
+
+	for scanFrom := 0; ; {
+		found := strings.Index(t.text[scanFrom:], query)
+		if found < 0 {
+			break
+		}
+
+		start := scanFrom + found
+		if t.starts[start] {
+			return rankWordStart
+		}
+
+		inWord = inWord || start == 0 || t.spans[start] != t.spans[start-1]
+		scanFrom = start + 1
+	}
+
+	for at := range len(t.text) {
+		if len(screentext.Initials(t.text, t.starts, query, at)) > 0 {
+			return rankInitials
+		}
+	}
+
+	if inWord {
+		return rankInWord
+	}
+
+	return rankNone
+}
+
+// bestRank is how well query matches the best of texts.
+func bestRank(texts []searchText, query string) matchRank {
+	best := rankNone
+	for _, text := range texts {
+		best = min(best, text.rank(query))
+	}
+
+	return best
 }
 
 // NewCollection creates a new hint collection with indexed lookups.
@@ -277,23 +339,22 @@ func (c *Collection) FilterByPrefix(prefix string) []*Interface {
 	return c.trie.FindByPrefix(prefix)
 }
 
-// FilterBySearch returns the hints whose element text contains query. When
-// query has a space, it also returns the hints whose text contains the words
-// before the last space and whose label starts with the word after it, so
-// "save a" keeps the "save" matches labeled A. A label match never hides a
-// text match. Hints kept by label carry the typed label as their matched
-// prefix.
+// FilterBySearch returns the hints whose element text contains query, or
+// matches it by its words' initials, both as screentext.Fold spells them in
+// lowercase, so cafe finds Café, nihao and nh find 你好, and sas finds Save
+// As. The best matches come first: the whole text, then its start, the start
+// of a word, the initials and a match inside a word. If none of these match,
+// a query of at least three characters can match a fuzzy subsequence. When query has a
+// space, it also returns the hints whose text matches the words before the
+// last space and whose label starts with the word after it, so "save a" keeps
+// the "save" matches labeled A. A label match never hides a text match. Hints
+// kept by label carry the typed label as their matched prefix.
 func (c *Collection) FilterBySearch(query string) *Collection {
 	if query == "" {
 		return c
 	}
 
-	normalizedQuery := normalizeForSearch(query)
-	compactQuery := strings.ReplaceAll(normalizedQuery, " ", "")
-
-	const fuzzyMinQueryLen = 3
-
-	fuzzy := len([]rune(compactQuery)) >= fuzzyMinQueryLen
+	normalizedQuery := foldForSearch(query).text
 
 	space := strings.LastIndex(query, " ")
 	readsLabel := space >= 0
@@ -301,36 +362,73 @@ func (c *Collection) FilterBySearch(query string) *Collection {
 	labelPrefix := ""
 
 	if readsLabel {
-		normalizedHead = normalizeForSearch(strings.TrimRight(query[:space], " "))
+		normalizedHead = foldForSearch(strings.TrimRight(query[:space], " ")).text
 		labelPrefix = strings.ToUpper(query[space+1:])
 	}
 
-	filtered := make([]*Interface, 0, len(c.hints))
+	type rankedHint struct {
+		hint *Interface
+		rank matchRank
+	}
 
-	var subsequence []*Interface
+	ranked := make([]rankedHint, 0, len(c.hints))
 
-	for i, texts := range c.normalizedSearchTexts() {
+	searchTexts := c.normalizedSearchTexts()
+	for i, texts := range searchTexts {
 		hint := c.hints[i]
 
-		if readsLabel && strings.HasPrefix(hint.labelUpper, labelPrefix) &&
-			(normalizedHead == "" || containsAny(texts, normalizedHead)) {
-			if labelPrefix != "" {
-				hint = hint.WithMatchedPrefix(labelPrefix)
+		if readsLabel && strings.HasPrefix(hint.labelUpper, labelPrefix) {
+			rank := rankExact
+			if normalizedHead != "" {
+				rank = bestRank(texts, normalizedHead)
 			}
 
-			filtered = append(filtered, hint)
+			if rank != rankNone {
+				// The whole query can match better than the words before
+				// the label, as save as matches Save As whole.
+				rank = min(rank, bestRank(texts, normalizedQuery))
 
-			continue
+				if labelPrefix != "" {
+					hint = hint.WithMatchedPrefix(labelPrefix)
+				}
+
+				ranked = append(ranked, rankedHint{hint: hint, rank: rank})
+
+				continue
+			}
 		}
 
-		if containsAny(texts, normalizedQuery) {
-			filtered = append(filtered, hint)
-		} else if fuzzy && matchesSubsequence(texts, compactQuery) {
-			subsequence = append(subsequence, hint)
+		if rank := bestRank(texts, normalizedQuery); rank != rankNone {
+			ranked = append(ranked, rankedHint{hint: hint, rank: rank})
 		}
 	}
 
-	return NewCollection(append(filtered, subsequence...))
+	if len(ranked) == 0 {
+		compactQuery := strings.ReplaceAll(normalizedQuery, " ", "")
+
+		const fuzzyMinQueryLen = 3
+
+		var filtered []*Interface
+
+		if len([]rune(compactQuery)) >= fuzzyMinQueryLen {
+			for i, texts := range searchTexts {
+				if matchesSubsequence(texts, compactQuery) {
+					filtered = append(filtered, c.hints[i])
+				}
+			}
+		}
+
+		return NewCollection(filtered)
+	}
+
+	slices.SortStableFunc(ranked, func(a, b rankedHint) int { return cmp.Compare(a.rank, b.rank) })
+
+	filtered := make([]*Interface, len(ranked))
+	for i, entry := range ranked {
+		filtered[i] = entry.hint
+	}
+
+	return NewCollection(filtered)
 }
 
 // WithoutMatchedPrefixes returns the collection with every hint's matched
@@ -354,49 +452,16 @@ func (c *Collection) WithoutMatchedPrefixes() *Collection {
 	return NewCollection(cleared)
 }
 
-func containsAny(texts []string, query string) bool {
-	for _, text := range texts {
-		if strings.Contains(text, query) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func normalizeForSearch(text string) string {
-	if text == "" {
-		return ""
-	}
-
-	searchCaser := cases.Fold()
-	folded := searchCaser.String(text)
-
-	searchTransformer := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
-
-	normalized, _, err := transform.String(searchTransformer, folded)
-	if err != nil {
-		return folded
-	}
-
-	return normalized
-}
-
 // Count returns the number of hints in the collection.
 func (c *Collection) Count() int {
 	return len(c.hints)
 }
 
-// Empty returns true if the collection has no hints.
-func (c *Collection) Empty() bool {
-	return len(c.hints) == 0
-}
-
 // normalizedSearchTexts returns the texts FilterBySearch matches against, one
 // entry per hint, nil for a hint without an element.
-func (c *Collection) normalizedSearchTexts() [][]string {
+func (c *Collection) normalizedSearchTexts() [][]searchText {
 	c.searchOnce.Do(func() {
-		c.searchTexts = make([][]string, len(c.hints))
+		c.searchTexts = make([][]searchText, len(c.hints))
 
 		for index, hint := range c.hints {
 			elem := hint.Element()
@@ -404,11 +469,11 @@ func (c *Collection) normalizedSearchTexts() [][]string {
 				continue
 			}
 
-			c.searchTexts[index] = []string{
-				normalizeForSearch(elem.Title()),
-				normalizeForSearch(elem.Description()),
-				normalizeForSearch(elem.Value()),
-				normalizeForSearch(elem.SearchText()),
+			c.searchTexts[index] = []searchText{
+				foldForSearch(elem.Title()),
+				foldForSearch(elem.Description()),
+				foldForSearch(elem.Value()),
+				foldForSearch(elem.SearchText()),
 			}
 		}
 	})
@@ -416,9 +481,9 @@ func (c *Collection) normalizedSearchTexts() [][]string {
 	return c.searchTexts
 }
 
-func matchesSubsequence(texts []string, query string) bool {
+func matchesSubsequence(texts []searchText, query string) bool {
 	for _, text := range texts {
-		if isSubsequence(query, text) {
+		if isSubsequence(query, text.text) {
 			return true
 		}
 	}

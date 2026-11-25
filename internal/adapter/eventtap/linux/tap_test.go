@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain/action"
 )
 
@@ -136,21 +137,6 @@ func TestEventTap_RememberSyntheticModifier_RegistersOneNamePerKeyEvent(t *testi
 	}
 }
 
-func TestSyntheticModifierSuppressionConsumesOnce(t *testing.T) {
-	t.Parallel()
-
-	eventTap := NewEventTap(nil, nil)
-	eventTap.rememberSyntheticModifierEvent("shift", true)
-
-	if !eventTap.consumeSyntheticModifierEvent("shift", true) {
-		t.Fatal("expected first matching synthetic event to be consumed")
-	}
-
-	if eventTap.consumeSyntheticModifierEvent("shift", true) {
-		t.Fatal("expected synthetic event to be consumed only once")
-	}
-}
-
 func TestShouldPassthroughChord(t *testing.T) {
 	t.Parallel()
 
@@ -163,6 +149,14 @@ func TestShouldPassthroughChord(t *testing.T) {
 		want        bool
 	}{
 		{name: "disabled", enabled: false, chord: chordCtrlC, want: false},
+		{
+			// The enabled flag gates before the blacklist is consulted.
+			name:      "disabled with a blacklist",
+			enabled:   false,
+			blacklist: []string{"Ctrl+x"},
+			chord:     "Ctrl+y",
+			want:      false,
+		},
 		{name: "unbound ctrl passes", enabled: true, chord: chordCtrlC, want: true},
 		{name: "unbound alt passes", enabled: true, chord: "Alt+Left", want: true},
 		{name: "shift only excluded", enabled: true, chord: "Shift+a", want: false},
@@ -217,19 +211,6 @@ func TestShouldPassthroughChord(t *testing.T) {
 	}
 }
 
-func TestSetModifierPassthroughDisabledStillMatchesBlacklist(t *testing.T) {
-	t.Parallel()
-
-	// Even with the blacklist populated, a disabled passthrough never passes
-	// anything through. The enabled flag gates first.
-	eventTap := NewEventTap(nil, nil)
-	eventTap.SetModifierPassthrough(false, []string{"Ctrl+x"})
-
-	if eventTap.shouldPassthroughChord("Ctrl+y") {
-		t.Fatal("expected no passthrough while disabled")
-	}
-}
-
 // TestEventTap_Destroy_WaitsForAnInFlightKeyDispatch pins the Linux half of
 // what makes eventtap.Adapter.Destroy's lock discipline load-bearing.
 //
@@ -278,5 +259,41 @@ func TestEventTap_Destroy_WaitsForAnInFlightKeyDispatch(t *testing.T) {
 	case <-destroyReturned:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Destroy never returned: the dispatcher is parked on a lock Destroy holds")
+	}
+}
+
+// TestEventTap_YieldKeyboard_RefusesWhileTheOverlayHoldsTheKeyboard pins the
+// Wayland fallback's answer. With the keyboard taken through Neru's own
+// overlay, a typed key would come back to Neru, so the tap says keys do not
+// reach the app and never sends one.
+func TestEventTap_YieldKeyboard_RefusesWhileTheOverlayHoldsTheKeyboard(t *testing.T) {
+	eventTap := NewEventTap(func(string) {}, nil)
+	defer eventTap.Destroy()
+
+	err := eventTap.KeysReachApp()
+	if err != nil {
+		t.Fatalf("KeysReachApp with nothing captured = %v, want nil", err)
+	}
+
+	eventTap.overlayCapture.Store(true)
+
+	err = eventTap.KeysReachApp()
+	if !derrors.IsNotSupported(err) {
+		t.Fatalf("KeysReachApp under the overlay's capture = %v, want CodeNotSupported", err)
+	}
+
+	sent := false
+
+	err = eventTap.YieldKeyboard(func() error {
+		sent = true
+
+		return nil
+	})
+	if !derrors.IsNotSupported(err) || sent {
+		t.Fatalf(
+			"YieldKeyboard under the overlay's capture = %v and sent = %v, want CodeNotSupported unsent",
+			err,
+			sent,
+		)
 	}
 }

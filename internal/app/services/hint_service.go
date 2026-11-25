@@ -126,6 +126,9 @@ type SnapScan struct {
 	// refused then when the capture would read Neru's own overlay as part of
 	// the screen.
 	OverlayDrawn bool
+	// BundleID is the focused app the caller already resolved. When it is
+	// empty, SnapCandidates looks it up.
+	BundleID string
 }
 
 // SnapCandidates collects the elements `neru action snap` chooses among, the
@@ -138,6 +141,7 @@ func (s *HintService) SnapCandidates(
 	elements, _, err := s.collect(ctx, collectRequest{
 		filterRoles:        scan.Roles,
 		filterTextContains: scan.Text,
+		bundleID:           scan.BundleID,
 		strategy:           scan.Strategy,
 		strict:             true,
 		region:             scan.Region,
@@ -166,22 +170,6 @@ func (s *HintService) LabelElements(
 	return s.labelElements(ctx, elements, labelDirection)
 }
 
-// RefreshHints updates the hint display (e.g., after screen changes).
-func (s *HintService) RefreshHints(ctx context.Context) error {
-	if !s.overlay.IsVisible() {
-		s.logger.Debug("Overlay not visible, skipping refresh")
-
-		return nil
-	}
-
-	refreshOverlayErr := s.overlay.Refresh(ctx)
-	if refreshOverlayErr != nil {
-		return derrors.WrapOverlayFailed(refreshOverlayErr, "refresh hints")
-	}
-
-	return nil
-}
-
 // UpdateConfig updates the hints configuration.
 // Hint filters can therefore change without a restart.
 func (s *HintService) UpdateConfig(config config.HintsConfig) {
@@ -204,6 +192,17 @@ func (s *HintService) UpdateConfig(config config.HintsConfig) {
 // so nothing is seen.
 func (s *HintService) CaptureShowsOwnWindows() bool {
 	return s.vision != nil && !s.vision.CaptureExcludesOwnWindows()
+}
+
+// ReadText reads one screen region again, for copy_text. It reports
+// CodeNotSupported with no vision port, as platforms whose detection pass
+// already reads text word for word do.
+func (s *HintService) ReadText(ctx context.Context, rect image.Rectangle) (string, error) {
+	if s.vision == nil {
+		return "", derrors.New(derrors.CodeNotSupported, "text reading needs a vision backend")
+	}
+
+	return s.vision.ReadText(ctx, rect)
 }
 
 // Generator returns the registered hint generator for the given label
@@ -636,7 +635,8 @@ func (s *HintService) resolveDetectionBounds(
 }
 
 // scopeBounds is the window or screen capture_scope names, as
-// resolveDetectionBounds describes.
+// resolveDetectionBounds describes. When no screen shows the focused window,
+// hints scan the whole screen, as grid does.
 func (s *HintService) scopeBounds(
 	ctx context.Context,
 	captureScope string,
@@ -649,15 +649,20 @@ func (s *HintService) scopeBounds(
 		windowBounds, found, boundsErr := s.system.FocusedWindowBounds(ctx)
 
 		switch {
-		case boundsErr == nil && found:
-			return windowBounds, true
 		case boundsErr != nil:
 			s.logger.Warn(
 				"Could not read the focused window, scanning the whole screen instead",
 				zap.Error(boundsErr),
 			)
-		default:
+		case !found:
 			s.logger.Debug("No focused window, scanning the whole screen")
+		default:
+			onScreen, visible := s.clipToScreens(ctx, windowBounds)
+			if visible {
+				return onScreen, true
+			}
+
+			s.logger.Debug("Focused window is on no screen, scanning the whole screen")
 		}
 	}
 
@@ -669,6 +674,37 @@ func (s *HintService) scopeBounds(
 	}
 
 	return screenBounds, true
+}
+
+// clipToScreens is the smallest rectangle covering the parts of window that a
+// screen shows. visible is false when no screen shows any of it.
+//
+// The Linux capture backends refuse a region that runs past a screen's edge,
+// even by a window manager's 1px frame, rather than clip it. The clip is per
+// screen rather than to the box around all screens. wlroots and the portal
+// capture one output at a time, and on monitors of different sizes that box
+// includes strips no output covers. The detectors offset what they find by the
+// region's top-left, so hints from a clipped region keep their screen
+// coordinates. When the screens cannot be listed, clipToScreens returns the
+// window unchanged.
+func (s *HintService) clipToScreens(
+	ctx context.Context,
+	window image.Rectangle,
+) (image.Rectangle, bool) {
+	screens, err := s.system.Screens(ctx)
+	if err != nil || len(screens) == 0 {
+		s.logger.Debug("Could not list the screens, scanning the focused window uncut",
+			zap.Error(err))
+
+		return window, true
+	}
+
+	var onScreen image.Rectangle
+	for _, screen := range screens {
+		onScreen = onScreen.Union(window.Intersect(screen.Bounds))
+	}
+
+	return onScreen, !onScreen.Empty()
 }
 
 // notifyVisionUnavailable tells the user, once, that the vision strategy

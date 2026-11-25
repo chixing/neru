@@ -27,7 +27,7 @@ Available subcommands:
                     go_top, go_bottom, page_up, page_down
   Mouse movement:   move_mouse, move_mouse_relative, move_monitor, snap
   Mode control:     reset, backspace, move_cell, bisect, wait_for_mode_exit, cycle_hint,
-                    refresh_hints
+                    refresh_hints, session_action, copy_text
   Cursor saving:    save_cursor_pos, restore_cursor_pos
   Cursor visibility: hide_cursor, show_cursor
   Key injection:    feed
@@ -480,6 +480,43 @@ since there is nothing to rescan. If the rescan finds nothing, hints mode exits.
 	false,
 )
 
+// ActionSessionActionCmd runs the open hints session's --action at the cursor.
+var ActionSessionActionCmd = BuildActionCommand(
+	"session_action",
+	"Run the hints session's --action at the cursor",
+	`Run the action the open hints session was activated with, holding its
+--modifier and any sticky modifiers, at the cursor. The mode stays open.
+
+Use it as a step in a [hints.select_with] entry. The entry runs after the
+cursor moves to the selected hint, so it can run the session's own action and
+then decide what follows, such as "idle" to exit.
+
+Requires hints mode to be active. A session opened without --action has
+nothing to run, so this does nothing there.`,
+	[]string{"session_action"},
+	false,
+)
+
+// ActionCopyTextCmd copies the text of the selected hint to the clipboard.
+var ActionCopyTextCmd = BuildActionCommand(
+	"copy_text",
+	"Copy the selected hint's text to the clipboard",
+	`Copy the text of the hint most recently selected to the clipboard. That is
+its value, such as a field's contents, else its title, such as a button's name,
+else its description.
+
+Use it as a step in a [hints.select_with] entry, or as the hints mode's
+--action, as in neru hints --action copy_text, which copies the hint you type
+without clicking it.
+
+It fails when no hint has been selected since a mode last opened, and when the
+hint has no text, as with contour and segment hints. It never copies a
+password field's text. On Linux it needs wl-copy on Wayland, or xclip or xsel
+on X11.`,
+	[]string{"copy_text"},
+	false,
+)
+
 // ActionSnapCmd moves the cursor onto the nearest clickable element.
 var ActionSnapCmd = BuildSnapCommand()
 
@@ -519,6 +556,8 @@ func init() {
 	ActionCmd.AddCommand(ActionPageDownCmd)
 	ActionCmd.AddCommand(ActionCycleHintCmd)
 	ActionCmd.AddCommand(ActionRefreshHintsCmd)
+	ActionCmd.AddCommand(ActionSessionActionCmd)
+	ActionCmd.AddCommand(ActionCopyTextCmd)
 	ActionCmd.AddCommand(ActionSnapCmd)
 	ActionCmd.AddCommand(ActionMoveCellCmd)
 	ActionCmd.AddCommand(ActionBisectCmd)

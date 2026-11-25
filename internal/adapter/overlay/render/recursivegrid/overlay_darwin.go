@@ -63,32 +63,13 @@ type Overlay struct {
 
 	callbackManager     *overlayutil.CallbackManager
 	styleCache          *overlayutil.StyleCache
-	labelCacheMu        sync.RWMutex
-	cachedLabels        map[string]*C.char
+	labels              overlayutil.LabelCache
 	virtualPointerCfg   config.VirtualPointerUI
 	virtualPointerColor string
 
 	// drawMu serializes draw operations against cache invalidation.
 	// Draw paths hold RLock, and freeAllCaches holds Lock.
 	drawMu sync.RWMutex
-}
-
-// NewOverlay creates a new recursive_grid overlay instance.
-func NewOverlay(cfg config.RecursiveGridConfig, logger *zap.Logger) (*Overlay, error) {
-	base, err := overlayutil.NewBaseOverlay(logger)
-	if err != nil {
-		return nil, err
-	}
-	base.CallbackManager.SetComponent("recursivegrid")
-
-	return &Overlay{
-		window:          C.OverlayWindow(base.Window),
-		config:          cfg,
-		logger:          logger,
-		callbackManager: base.CallbackManager,
-		styleCache:      base.StyleCache,
-		cachedLabels:    make(map[string]*C.char),
-	}, nil
 }
 
 // NewOverlayWithWindow creates a recursive_grid overlay instance using a shared window.
@@ -106,7 +87,6 @@ func NewOverlayWithWindow(
 		logger:          logger,
 		callbackManager: base.CallbackManager,
 		styleCache:      base.StyleCache,
-		cachedLabels:    make(map[string]*C.char),
 	}
 }
 
@@ -172,33 +152,12 @@ func (o *Overlay) ShowVirtualPointer(
 	fillColor string,
 ) {
 	o.configMu.RLock()
-	cfg := o.virtualPointerCfg
-	color := o.virtualPointerColor
+	appearance := o.virtualPointerCfg
+	textColor := o.virtualPointerColor
 	o.configMu.RUnlock()
 
-	cFillColor := C.CString(fillColor)
-	defer C.free(unsafe.Pointer(cFillColor))
-
-	cLabelChar := C.CString(cfg.Char)
-	cFontFamily := C.CString(cfg.FontFamily)
-	cTextColor := C.CString(color)
-	defer C.free(unsafe.Pointer(cLabelChar))
-	defer C.free(unsafe.Pointer(cFontFamily))
-	defer C.free(unsafe.Pointer(cTextColor))
-
-	indicatorStyle := C.CursorIndicatorStyle{
-		radius:     C.double(size),
-		fillColor:  cFillColor,
-		labelChar:  cLabelChar,
-		fontFamily: cFontFamily,
-		fontSize:   C.int(cfg.FontSize),
-		textColor:  cTextColor,
-	}
-
-	C.NeruShowCursorIndicator(
-		o.window,
-		C.CGPoint{x: C.double(point.X), y: C.double(point.Y)},
-		indicatorStyle,
+	overlayutil.ShowCursorIndicator(
+		unsafe.Pointer(o.window), point, size, fillColor, appearance, textColor,
 	)
 }
 
@@ -207,7 +166,7 @@ func (o *Overlay) HideVirtualPointer() {
 	C.NeruHideCursorIndicator(o.window)
 }
 
-// Cleanup frees Go-side resources (callbackManager, styleCache, labelCache)
+// Cleanup frees Go-side resources (callbackManager, styleCache, labels)
 // without destroying the native window. Use this for overlays that share a
 // window managed by the overlay Manager.
 func (o *Overlay) Cleanup() {
@@ -317,7 +276,7 @@ func (o *Overlay) DrawRecursiveGrid(
 	}
 
 	// Hold drawMu.RLock for the entire span from label lookup through the C
-	// draw call so that freeLabelCache cannot free labels mid-draw.
+	// draw call so that freeAllCaches cannot free labels mid-draw.
 	o.drawMu.RLock()
 
 	cellRects := recursivegrid.ComputeGridCells(bounds, dims)
@@ -334,7 +293,7 @@ func (o *Overlay) DrawRecursiveGrid(
 			label = strings.ToUpper(labelStr)
 		}
 		cells[idx] = C.GridCell{
-			label:               o.getOrCacheLabel(label),
+			label:               (*C.char)(o.labels.Get(label)),
 			bounds:              o.rectToCRect(cellRect),
 			isMatched:           C.int(0),
 			isSubgrid:           C.int(0),
@@ -403,7 +362,7 @@ func (o *Overlay) DrawRecursiveGrid(
 		transitionHideSubKeyPreview: C.int(boolToInt(!held.ShowPreview)),
 		subKeyFontFamily:            (*C.char)(cachedStyle.SubKeyFontFamily),
 		subKeyTextColor:             (*C.char)(cachedStyle.SubKeyTextColor),
-		subKeyKeys:                  o.getOrCacheLabel(subKeyLabel),
+		subKeyKeys:                  (*C.char)(o.labels.Get(subKeyLabel)),
 	}
 
 	transitionDurationSeconds := float64(o.Config().Animation.DurationMS) / millisecondsPerSecond
@@ -469,45 +428,7 @@ func (o *Overlay) freeAllCaches() {
 	defer o.drawMu.Unlock()
 
 	o.styleCache.Free()
-	o.freeLabelCacheLocked()
-}
-
-// freeLabelCacheLocked frees all cached label C strings.
-// Caller must hold drawMu.Lock.
-func (o *Overlay) freeLabelCacheLocked() {
-	o.labelCacheMu.Lock()
-	defer o.labelCacheMu.Unlock()
-
-	for _, cStr := range o.cachedLabels {
-		if cStr != nil {
-			C.free(unsafe.Pointer(cStr))
-		}
-	}
-	o.cachedLabels = make(map[string]*C.char)
-}
-
-// getOrCacheLabel returns a cached C string for the label.
-func (o *Overlay) getOrCacheLabel(label string) *C.char {
-	o.labelCacheMu.RLock()
-	if cStr, ok := o.cachedLabels[label]; ok {
-		o.labelCacheMu.RUnlock()
-
-		return cStr
-	}
-	o.labelCacheMu.RUnlock()
-
-	o.labelCacheMu.Lock()
-	defer o.labelCacheMu.Unlock()
-
-	// Double-check
-	if cStr, ok := o.cachedLabels[label]; ok {
-		return cStr
-	}
-
-	cStr := C.CString(label)
-	o.cachedLabels[label] = cStr
-
-	return cStr
+	o.labels.Free()
 }
 
 func boolToInt(v bool) int {

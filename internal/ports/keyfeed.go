@@ -15,7 +15,7 @@ type KeyFeedPort interface {
 	// Feed posts a single key or chord to the focused application.
 	//
 	// key uses the canonical form produced by
-	// config.CanonicalHotkeyForPlatform: "a", "B", "Return", "F1",
+	// keyvocab.CanonicalHotkeyForPlatform: "a", "B", "Return", "F1",
 	// "Ctrl+c", "Ctrl+Shift+Space". A single uppercase letter without an
 	// explicit modifier has Shift injected so it produces the uppercase
 	// character.
@@ -23,4 +23,14 @@ type KeyFeedPort interface {
 	// Returns CodeInvalidInput for an unparseable or empty key, and
 	// CodeNotSupported on platforms with no injection path.
 	Feed(ctx context.Context, key string) error
+}
+
+// KeyFeedGate is the optional extension a KeyFeedPort offers when the keys it
+// types can fail to reach the app for a while, as on a Linux Wayland session
+// where Neru holds the keyboard through its own overlay and every key it typed
+// would come back to it.
+type KeyFeedGate interface {
+	// ReachesApp answers without typing anything. It returns nil when a key
+	// fed now reaches the focused app, and otherwise says why not.
+	ReachesApp() error
 }

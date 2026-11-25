@@ -8,10 +8,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/y3owk1n/neru/internal/adapter/ipc"
-	"github.com/y3owk1n/neru/internal/config"
 	"github.com/y3owk1n/neru/internal/derrors"
 	"github.com/y3owk1n/neru/internal/domain"
 	"github.com/y3owk1n/neru/internal/domain/bisect"
+	"github.com/y3owk1n/neru/internal/domain/keyvocab"
 )
 
 func (h *ActionsHandler) handleFeedAction(
@@ -109,7 +109,7 @@ func (h *ActionsHandler) handleFeedToModeAction(args []string) ipc.Response {
 	h.logger.Debug("Feeding keys to mode system", zap.Int("key_count", len(keys)))
 
 	for _, key := range keys {
-		normalized := config.CanonicalHotkeyForPlatform(key)
+		normalized := keyvocab.CanonicalHotkeyForPlatform(key)
 		if normalized == "" {
 			return ipc.Response{
 				Success: false,
@@ -285,6 +285,100 @@ func (h *ActionsHandler) handleRefreshHintsAction() ipc.Response {
 	return ipc.Response{
 		Success: true,
 		Message: "refresh_hints performed",
+		Code:    ipc.CodeOK,
+	}
+}
+
+// handleSessionAction runs the open hints session's --action at the cursor. In
+// a copy_text session the mode handler returns the hint's text instead, and
+// this writes it to the clipboard the way copy_text does.
+func (h *ActionsHandler) handleSessionAction(ctx context.Context) ipc.Response {
+	if h.modesHandler == nil {
+		return ipc.Response{
+			Success: false,
+			Message: msgModesHandlerNotAvailable,
+			Code:    ipc.CodeActionFailed,
+		}
+	}
+
+	text, copyText, err := h.modesHandler.SessionAction(ctx)
+	if copyText {
+		return h.copyTextResponse(ctx, text, err)
+	}
+
+	if err != nil {
+		h.logger.Debug("Failed to run the session action", zap.Error(err))
+
+		return ipc.Response{
+			Success: false,
+			Message: "failed to run the session action: " + err.Error(),
+			Code:    ipc.CodeActionFailed,
+		}
+	}
+
+	return ipc.Response{
+		Success: true,
+		Message: "session_action performed",
+		Code:    ipc.CodeOK,
+	}
+}
+
+// handleCopyTextAction copies the text of the hint most recently selected to
+// the clipboard. The text is read under the mode handler's lock and written
+// after it is released, so a slow clipboard tool never holds up key handling.
+func (h *ActionsHandler) handleCopyTextAction(ctx context.Context) ipc.Response {
+	if h.modesHandler == nil {
+		return ipc.Response{
+			Success: false,
+			Message: msgModesHandlerNotAvailable,
+			Code:    ipc.CodeActionFailed,
+		}
+	}
+
+	text, err := h.modesHandler.HintTextToCopy(ctx)
+
+	return h.copyTextResponse(ctx, text, err)
+}
+
+// copyTextResponse writes text to the clipboard, or reports err from reading
+// it, for copy_text and for session_action in a copy_text session.
+func (h *ActionsHandler) copyTextResponse(
+	ctx context.Context,
+	text string,
+	err error,
+) ipc.Response {
+	if err != nil {
+		code := ipc.CodeActionFailed
+		if derrors.IsCode(err, derrors.CodeInvalidInput) {
+			code = ipc.CodeInvalidInput
+		}
+
+		return ipc.Response{
+			Success: false,
+			Message: "failed to copy text: " + derrors.Message(err),
+			Code:    code,
+		}
+	}
+
+	err = h.clipboard.WriteText(ctx, text)
+	if err != nil {
+		h.logger.Debug("Failed to write the clipboard", zap.Error(err))
+
+		code := ipc.CodeActionFailed
+		if derrors.IsNotSupported(err) {
+			code = ipc.CodeNotSupported
+		}
+
+		return ipc.Response{
+			Success: false,
+			Message: "failed to copy text: " + derrors.Message(err),
+			Code:    code,
+		}
+	}
+
+	return ipc.Response{
+		Success: true,
+		Message: "copy_text performed",
 		Code:    ipc.CodeOK,
 	}
 }

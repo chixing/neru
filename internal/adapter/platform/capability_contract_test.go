@@ -8,6 +8,8 @@ import (
 
 	"github.com/y3owk1n/neru/internal/adapter/platform"
 	"github.com/y3owk1n/neru/internal/derrors"
+	"github.com/y3owk1n/neru/internal/domain/action"
+	"github.com/y3owk1n/neru/internal/domain/parity"
 	"github.com/y3owk1n/neru/internal/ports"
 )
 
@@ -262,6 +264,7 @@ func TestCapabilities_ProbeCoverageIsDocumented(t *testing.T) {
 	// subsystem's own tests instead of here.
 	uncovered := map[ports.CapabilityKey]string{
 		ports.CapabilityScroll:        "injects a real scroll into the focused app",
+		ports.CapabilityMouseButtons:  "injects a real click into the focused app",
 		ports.CapabilityAccessibility: "needs an AX client fixture; covered by internal/adapter/accessibility",
 		ports.CapabilityOverlay:       "needs a live overlay manager; covered by internal/adapter/overlay",
 		ports.CapabilityNotifications: "only entry point displays UI to the user",
@@ -270,10 +273,10 @@ func TestCapabilities_ProbeCoverageIsDocumented(t *testing.T) {
 			"covered by internal/adapter/eventtap",
 		ports.CapabilityAppWatcher:        "requires a focus change to observe",
 		ports.CapabilityDarkModeDetection: "IsDarkMode returns no error, so NotSupported is unobservable",
-		ports.CapabilityTextInput:         "needs a live overlay window",
 		ports.CapabilityVision:            "a probe would trigger a screen-capture permission prompt",
 		ports.CapabilityKeyFeed:           "injects real keystrokes into the focused app",
 		ports.CapabilitySystray:           "needs a live run loop and adds a tray icon",
+		ports.CapabilityClipboard:         "a probe would overwrite the user's clipboard",
 	}
 
 	covered := make(map[ports.CapabilityKey]bool)
@@ -315,5 +318,30 @@ func TestCapabilities_ProbeCoverageIsDocumented(t *testing.T) {
 		if !known[key] {
 			t.Errorf("exclusion list names %q, which is not a registered capability", key)
 		}
+	}
+}
+
+// TestNewSystemPort_HidesTheCursorWhereHideCursorIsDeclared checks that the
+// platform's system port can hide the cursor exactly where the hide_cursor
+// action is declared to work. The modes handler finds that ability by type
+// assertion, so a Linux or Windows adapter that gained no-op versions of the
+// methods would turn hide_cursor into a success that does nothing.
+func TestNewSystemPort_HidesTheCursorWhereHideCursorIsDeclared(t *testing.T) {
+	current, declared := parity.Current()
+	if !declared {
+		t.Skipf("no platform column for %s", runtime.GOOS)
+	}
+
+	word, found := action.PlatformSupport().
+		Lookup(parity.KindAction, string(action.NameHideCursor), "")
+	if !found {
+		t.Fatal("hide_cursor has no platform declaration")
+	}
+
+	_, hides := newSystemPort(t).(ports.SystemCursorHider)
+
+	if want := word.Platforms.Supports(current); hides != want {
+		t.Fatalf("system port on %s implements ports.SystemCursorHider = %t, want %t "+
+			"to match the hide_cursor platform column", current, hides, want)
 	}
 }

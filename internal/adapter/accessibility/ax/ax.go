@@ -3,8 +3,6 @@ package ax
 import (
 	"context"
 	"image"
-
-	"github.com/y3owk1n/neru/internal/domain/action"
 )
 
 // Element is a generic accessibility element.
@@ -22,7 +20,6 @@ type Window interface {
 type Client interface {
 	// Window and App operations
 	FrontmostWindow(ctx context.Context) (Window, error)
-	AllWindows(ctx context.Context) ([]Window, error)
 	FrontmostAndPopoverWindows(ctx context.Context) ([]Window, error)
 	FocusedApplication(ctx context.Context) (App, error)
 	ApplicationByBundleID(ctx context.Context, bundleID string) (App, error)
@@ -47,18 +44,6 @@ type Client interface {
 		roles []string,
 		maxDepth int,
 	) ([]Node, error)
-	ActiveScreenBounds() image.Rectangle
-
-	// Actions
-	PerformAction(
-		actionType action.Type,
-		p image.Point,
-		restoreCursor bool,
-		modifiers action.Modifiers,
-	) error
-	Scroll(deltaX, deltaY int, modifiers action.Modifiers) error
-	MoveMouse(p image.Point, bypassSmooth bool)
-	CursorPosition() image.Point
 
 	// System
 	CheckPermissions() bool

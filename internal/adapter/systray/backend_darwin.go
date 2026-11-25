@@ -12,7 +12,6 @@ type menuItem = darwin.MenuItem
 // single native tray, so these are functions rather than methods.
 var (
 	setTitle        = darwin.SetTitle
-	setTooltip      = darwin.SetTooltip
 	setTemplateIcon = darwin.SetTemplateIcon
 	addMenuItem     = darwin.AddMenuItem
 	addSeparator    = darwin.AddSeparator
@@ -26,12 +25,6 @@ func RunHeadless(onReady, onExit func()) { darwin.RunHeadless(onReady, onExit) }
 
 // Quit stops the tray event loop.
 func Quit() { darwin.Quit() }
-
-// AddMenuItem appends a top-level item and returns the backend's item.
-//
-// It is exported because systray_test.go exercises the live backend's menu
-// tree. One test covers all three backends, whichever one this build selected.
-func AddMenuItem(title string) *menuItem { return addMenuItem(title) }
 
 // ResetForTesting clears the tray's process-wide state between tests.
 func ResetForTesting() { darwin.ResetForTesting() }

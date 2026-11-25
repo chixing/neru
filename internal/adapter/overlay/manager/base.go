@@ -91,7 +91,7 @@ func (b *Base) SwitchTo(next Mode) {
 		)
 	}
 
-	b.publish(NewStateChange(prev, next))
+	b.publish(newStateChange(prev, next))
 }
 
 // Subscribe registers a callback for overlay mode changes.
@@ -264,7 +264,7 @@ func (b *Base) gridPointerSurfaceFor(mode Mode) gridPointerSurface {
 		}
 
 		return b.bisectOverlay
-	case ModeIdle, ModeHints, ModeScroll, ModeMonitorSelect:
+	case ModeIdle, ModeHints, ModeScroll, ModeMonitorSelect, ModeVim:
 		// No other mode draws a pointer of its own.
 		return nil
 	default:

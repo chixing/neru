@@ -16,7 +16,7 @@
       ];
 
       # Update this to your latest release version
-      latestVersion = "1.61.0";
+      latestVersion = "1.63.0";
 
       # Function to build package with specific version
       makeNeruPackage =
@@ -24,6 +24,8 @@
         pkgs.callPackage ./nix/package.nix {
           inherit version useZip commitHash;
           apple-sdk_15 = pkgs.apple-sdk_15 or null;
+          # go.mod needs Go 1.27. nixpkgs has it, but its default go can be older.
+          buildGoModule = pkgs.buildGo127Module or pkgs.buildGoModule;
         };
     in
     {

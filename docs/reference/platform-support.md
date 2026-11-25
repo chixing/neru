@@ -22,7 +22,7 @@ On Linux, Neru supports X11 and the Wayland desktops listed in
 - **Alpha**: core navigation works, but hint coverage is incomplete and per-app
   config does not re-apply on focus change.
 
-Windows has no known gaps, and Linux has one, under [Known gaps](#known-gaps).
+Windows has one known gap and Linux has two, under [Known gaps](#known-gaps).
 Both stay Beta because CI proves them rather than daily use. A Beta platform
 becomes Stable after six releases in a row with no bug filed against it alone.
 
@@ -38,16 +38,18 @@ becomes Stable after six releases in a row with no bug filed against it alone.
 | Hints from OCR (`vision`)      | ✅    | ⚠️ ²      | ⚠️ ²              | ⚠️ ²          | ⚠️ ²    |
 | Hints from shapes (`contour`)  | ✅    | ✅        | ✅                | ✅            | ✅      |
 | Hints from layout (`segment`)  | ✅    | ✅        | ✅                | ✅            | ✅      |
-| Hint search                    | ✅    | ✅        | ✅                | ⚠️ ³          | ⚠️ ³    |
+| Hint search                    | ⚠️ ³  | ⚠️ ³      | ⚠️ ³              | ⚠️ ³          | ⚠️ ³    |
 | Menu bar, Dock and other system surfaces in hints | ✅ | ➖ | ➖          | ➖            | ➖      |
 | Scroll mode                    | ✅    | ✅        | ✅                | ✅            | ✅      |
 | Monitor select                 | ✅    | ✅        | ✅                | ✅            | ✅      |
+| Vim mode                       | ✅    | ⚠️ ¹⁶     | ⚠️ ¹⁶             | ⚠️ ¹⁶         | ⚠️ ¹⁷   |
 | Clicks, drag, modified clicks  | ✅    | ✅        | ✅ ⁴              | ✅ ⁴          | ✅      |
 | Smooth cursor and held-key glide | ✅  | ✅        | ✅                | ✅            | ✅      |
 | Smooth scroll                  | ✅    | ⚠️ ⁵      | ✅ ⁵              | ⚠️ ⁵          | ✅      |
 | Global hotkeys                 | ✅    | ✅        | ⚠️ ⁶              | ⚠️ ⁶          | ✅      |
 | Modifier passthrough           | ✅    | ❌        | ⚠️ ⁶              | ⚠️ ⁶          | ✅      |
 | Sticky modifiers, `action feed` | ✅   | ✅        | ✅                | ✅            | ✅      |
+| Copy a hint's text (`copy_text`) | ✅ ¹⁵ | ⚠️ ¹⁴ ¹⁵ | ⚠️ ¹⁴ ¹⁵         | ⚠️ ¹⁴ ¹⁵     | ✅ ¹⁵   |
 | Per-app config                 | ✅    | ✅        | ⚠️ ⁷              | ⚠️ ⁷          | ✅      |
 | Screen capture for hints       | ✅    | ⚠️ ¹²     | ⚠️ ¹²             | ⚠️ ⁸ ¹²       | ✅      |
 | Tray icon                      | ✅    | ✅        | ✅                | ✅            | ✅      |
@@ -86,18 +88,13 @@ never drop a shape. Windows also needs an OCR language pack, and ignores the
 `*_confidence` options for words too. Neru never logs or stores recognized
 text.
 
-³ **Hint search opens a text field that takes the keyboard**, as on macOS, on
-X11 and on Wayland compositors with a layer shell. An input method reaches it
-through XIM on X11, so `XMODIFIERS` has to name one, as it does for any X
-application. KDE has the protocols the field needs, but it has not been tested
-there. On Windows, search opens a text field too when Windows lets Neru take
-the foreground, and reads raw keys when it does not. GNOME has no layer shell,
-so search reads raw keys there. Dead keys and input-method composition do not
-work, and shifted symbols such as `!` are dropped, because the raw key does
-not say which symbol the layout puts there. `neru doctor` reports the native
-search field as a stub on GNOME and on Linux builds without cgo. It does not
-report a field that failed to open on one search, such as when Windows refused
-the foreground.
+³ **Hint search reads the keys Neru captures** on Linux and Windows and when
+the [fork's native macOS field](../guide/using-neru.md#personal-fork-hint-search)
+cannot open. You can find text in another script by typing its romanization,
+so `shenzhen` finds 深圳 and `boris` finds Борис.
+Japanese kanji match by their Chinese reading. A shifted key types what a US
+layout puts on that key. A layout with other characters there, such as the
+digits on AZERTY, cannot type them.
 
 ⁴ **Modified clicks on Wayland** need a writable `/dev/uinput`, see
 [Linux setup](../guide/linux.md#setup-steps).
@@ -144,6 +141,59 @@ recordings as well as screen shares, while it stays on the monitor. It takes
 Windows 10 version 2004 or later, and an earlier build leaves the overlay in
 the share.
 
+¹⁴ **Linux copies through a command-line tool**, since setting the clipboard
+needs a process that keeps serving it. [Linux setup](../guide/linux.md#runtime-libraries)
+names the tools to install. Without one, `neru action copy_text` fails with
+`ERR_NOT_SUPPORTED`, and a copy from hints mode copies nothing and logs a
+warning. Neru looks for the tool on every copy, so one installed while it runs
+works right away.
+
+¹⁵ **How `copy_text` reads a hint found on screen differs by platform.**
+On macOS, hints mode places those hints from one read of the whole screen,
+and that read gets small text wrong and reads Latin script alone. While hints
+mode is open, `copy_text` reads the hint's own box again and copies that. Once
+text recognition is prepared, that second read also reads Chinese, Japanese,
+Korean and other scripts. Neru prepares it at launch when a binding, hook or
+macro in the config opens vim mode. Otherwise the first `copy_text` starts the preparation, and `copy_text`
+reads Latin script alone until it is done. It also gives
+`contour` and `segment` hints, which carry no text of their own, something to
+copy. Once hints mode has closed, as for an `--on-exit` copy after a click, it
+copies what the hints pass read. Linux and Windows always copy what the hints
+pass read, since their OCR reads small UI text word for word from the whole
+screen. `contour` and `segment` hints there have nothing to copy.
+
+¹⁶ **Linux vim mode reads Latin script, plus the languages in other scripts
+the daemon's locale names** in `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` or `LANG`,
+such as Chinese or Russian, when their tesseract data is installed beside
+`eng.traineddata`. The accurate read reads them, so until that finishes a line
+in one shows as noise. Vim mode reads a line that mixes English with a word of
+Russian or Arabic as English.
+tesseract reads Korean less reliably than Chinese and Japanese, so a Korean
+line can come back in pieces. It reads 「 and 」 as Latin letters, and its
+`tessdata_fast` models misread more than the standard ones distributions ship. On niri, as on the other wlroots
+compositors under [wlroots compositors](../guide/linux-desktops.md#wlroots-compositors),
+a tiled window gives no bounds on niri 26.04 and earlier, and vim mode reads
+the whole screen. Floating the window reads just the window. Later niri
+releases report tiled windows too. On Wayland, edits and typing need the
+keyboard proxy, which needs a readable `/dev/input` and a writable
+`/dev/uinput`. Without it Neru holds the keyboard through its own overlay
+while a mode is open, where a key it typed would come back to it. So there,
+while a mode is open, vim mode refuses each edit and says why in its status
+line, and `action feed` is refused too.
+
+¹⁷ **Windows vim mode reads two languages at most.** The fast read uses the
+first language in the account's list that has an OCR pack, since
+Windows.Media.Ocr builds its engine from that list. The accurate read also
+reads with the first Chinese, Japanese or Korean language in the list when
+its OCR pack is installed. That language can stay below English, so apps keep
+their English menus. Until the accurate read finishes, a line in that
+language shows as noise or is missing. The Chinese engine reads small text
+less reliably at 100% scaling than at 200%. Other packs further down, such as
+Russian below English, go unused. The engine
+gives a box for each word only, so vim mode places each character by its own
+ink. In a word whose letters touch, the cursor can sit a little off a
+character.
+
 **Windows on ARM** draws overlays with GDI, the CPU fallback, instead of
 Direct2D.
 
@@ -189,8 +239,10 @@ Linux and Windows have no exclusives.
 A gap is anything you can write that means less on a platform than on macOS.
 A boundary is a requirement the platform imposes, not something Neru lacks.
 
-**Linux**: one gap.
+**Linux**: two gaps.
 
+- **Vim mode reads Latin script and the languages the locale names**, with
+  their tesseract language data installed. macOS reads every script it knows.
 - **A Wayland monitor's resolution or scale change** needs a
   [daemon restart](../guide/troubleshooting.md#restart-the-daemon) before
   overlays fit it again. Plugging in or removing a monitor is tracked live.
@@ -213,7 +265,13 @@ These are boundaries, not gaps:
   `general.hide_overlay_in_screen_share` and `neru toggle-screen-share` do
   nothing there.
 
-**Windows**: none. These are boundaries, not gaps:
+**Windows**: one gap.
+
+- **Vim mode reads two languages at most**, the first in the account's
+  language list that has an OCR pack and the first Chinese, Japanese or Korean
+  one. macOS reads every script it knows.
+
+These are boundaries, not gaps:
 
 - **Windows running as administrator.** While an elevated app has focus,
   hotkeys fire and the cursor moves, but the mode sees no keys and every

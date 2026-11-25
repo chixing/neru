@@ -53,19 +53,19 @@ if useZip then
       {
         "aarch64-darwin" = {
           url = "https://github.com/y3owk1n/neru/releases/download/v${version}/neru-darwin-arm64.zip";
-          sha256 = "sha256-5+YGj3qsoFcZaw0GAasvx16FLsn7kLbL0su/4BINQzY=";
+          sha256 = "sha256-r3hI1PM6UAo9TWBB+YwnxloSnTNZFQHtW0tyXlzlIBY=";
         };
         "x86_64-darwin" = {
           url = "https://github.com/y3owk1n/neru/releases/download/v${version}/neru-darwin-amd64.zip";
-          sha256 = "sha256-UrWBYdnQKFFBPtdlP98AWP+Mr9ojZFA3YvT00lBQVj8=";
+          sha256 = "sha256-L354lNFSdxNWhyJt3UGNB1sjQAR07t5oJeTvp41pQv8=";
         };
         "aarch64-linux" = {
           url = "https://github.com/y3owk1n/neru/releases/download/v${version}/neru-linux-arm64.zip";
-          sha256 = "sha256-zYzQsX2alFi18N0mzRrx2gxRe2pgv4C23/jb3zskTo8=";
+          sha256 = "sha256-P8x9hMdA8Wi+M4+94KaYeR6VZAcL7PORBSbfRzktaLA=";
         };
         "x86_64-linux" = {
           url = "https://github.com/y3owk1n/neru/releases/download/v${version}/neru-linux-amd64.zip";
-          sha256 = "sha256-y47DCgpc7rlwKx51CE1LgOo9MFbbm3W7W+r+CY6ZKwo=";
+          sha256 = "sha256-T7tCOm6097sKnAWVi1fgq2DD6ej5at98Pv/0eF65D1E=";
         };
       }
       .${stdenv.hostPlatform.system} or (throw "Unsupported system: ${stdenv.hostPlatform.system}");
@@ -143,6 +143,12 @@ if useZip then
       runHook postInstall
     '';
 
+    # The release binary is already stripped (go build -s -w), so strip has
+    # nothing to remove. It still rewrites the program headers. On x86_64 with
+    # patchelf 0.15.2 that leaves the patched .dynstr outside every LOAD
+    # segment, and the loader segfaults before neru runs.
+    dontStrip = stdenv.hostPlatform.isLinux;
+
     # only install completions on macOS
     # unable to make it work on Linux (do it manually please, sorry)
     postInstall = ''
@@ -197,7 +203,7 @@ else
 
     # scripts/update-nix-hashes.sh writes this, and the four zip hashes above.
     # The nix-hashes workflow runs it after every push to main.
-    vendorHash = "sha256-CFnt1bKENI9iEGHlIfPsbNpX4Jbnb2UJcEYQPlEEIO0=";
+    vendorHash = "sha256-rDwwVI0V3XLeGiAxDfORPKYwBQB6AxlJKpOR1wUsuio=";
 
     ldflags = [
       "-s"

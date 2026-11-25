@@ -19,7 +19,7 @@ When a feature doesn't clearly fit, park it in a GitHub Discussion instead of im
 
 ## Domain Concepts
 
-- **Mode**: navigation context (hints, grid, recursive_grid, scroll, monitor_select, or idle when none is active)
+- **Mode**: navigation context (hints, grid, recursive_grid, bisect, scroll, monitor_select, vim, or idle when none is active)
 - **Port / Adapter**: interface in `internal/ports` / its implementation in `internal/adapter`
 - **Semantic role**: platform-neutral role name in `hints.clickable_roles` (`button`, `text_field`), resolved to native vocabulary (AX / AT-SPI / UIA) at config load. Native roles use prefixes (`ax:`, `atspi:`, `uia:`). See `internal/domain/element/vocabulary.go`
 
@@ -37,6 +37,7 @@ just fmt                # golangci-lint fmt, then clang-format on .h/.m/.c
 just genman             # man pages via ./cmd/genman
 just genflagref         # mode-flag reference in docs/reference/cli.md via ./cmd/genflagref
 just gensupportref      # platform-support table in docs/reference/platform-support.md via ./cmd/gensupportref
+just genhookref         # hooks tables in docs/reference/configuration.md via ./cmd/genhookref
 ```
 
 Pre-commit gate: `just fmt && just lint && just test && just build`. Before pushing, run `just ci`. It runs the same recipes CI gates on, on your host only, and adds `vet`, `test-foundation`, `check-cross`, `vuln`, and a **unit-only** `-race` pass. Integration under `-race` is `just test-all`, and CI itself runs the whole set on macOS, Linux and Windows. `check-cross` is the only step that looks at the other two targets. `docs/contributing/development.md` states what it covers and what it does not.
@@ -57,6 +58,8 @@ internal/ports      interface contracts + `mocks/`
 internal/derrors    the shared error vocabulary
 internal/flagref    renders the mode-flag reference in docs/reference/cli.md from the modecmd descriptor table
 internal/supportref renders the platform-support table in docs/reference/platform-support.md from the declarations
+internal/hookref    renders the [hooks] tables in docs/reference/configuration.md from the event catalog
+internal/describe   joins the vocabularies into the manifest `neru describe` and the describe IPC command return
 internal/adapter    adapters: accessibility, eventtap, hotkeys, overlay, ipc, vision, systray, platform/*
 internal/config     TOML schema, defaults, validators, theme (+ loader)
 internal/architecture   guardrail tests for package boundaries

@@ -5,10 +5,8 @@ package linux
 import "github.com/y3owk1n/neru/internal/derrors"
 
 // errUinputScrollNoCGO reports that uinput scroll injection is compiled out.
-//
-// It carries CodeNotSupported rather than a bare error so callers can tell
-// "this build cannot do it" from "the device failed", and degrade with
-// derrors.IsNotSupported instead of matching on message text.
+// It carries CodeNotSupported so callers can degrade with
+// derrors.IsNotSupported instead of matching message text.
 func errUinputScrollNoCGO(what string) error {
 	return derrors.Newf(
 		derrors.CodeNotSupported,
@@ -33,23 +31,18 @@ func getUinputScrollFd() (int, error) {
 	return 0, errUinputScrollNoCGO("uinput scroll device")
 }
 
-// ScrollDeviceScroll reports that uinput scroll injection is compiled out.
-func ScrollDeviceScroll(_, _ int) error {
-	return errUinputScrollNoCGO("uinput scroll")
-}
-
 // ScrollDeviceScrollBatch reports that uinput scroll injection is compiled out.
 func ScrollDeviceScrollBatch(_ int, _ []int) error {
 	return errUinputScrollNoCGO("uinput scroll batch")
 }
 
-// IsUinputScrollAvailable reports false, because uinput needs cgo.
-func IsUinputScrollAvailable() bool {
-	return false
+// WarmScrollDevice reports that uinput scroll injection is compiled out.
+func WarmScrollDevice() error {
+	return errUinputScrollNoCGO("uinput scroll device")
 }
 
-// IsWaylandEvdevKeyboardActive reports false, because evdev capture needs cgo.
-func IsWaylandEvdevKeyboardActive() bool {
+// IsUinputScrollAvailable reports false, because uinput needs cgo.
+func IsUinputScrollAvailable() bool {
 	return false
 }
 

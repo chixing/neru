@@ -54,6 +54,7 @@ func TestToggleCursorFollowSelection_UpdatesOnlySupportedModes(t *testing.T) {
 		logger:   zap.NewNop(),
 		actionService: services.NewActionService(
 			&portmocks.MockAccessibilityPort{},
+			&portmocks.MockMousePort{},
 			&portmocks.MockOverlayPort{},
 			&portmocks.MockSystemPort{},
 			zap.NewNop(),
@@ -87,6 +88,14 @@ func TestToggleCursorFollowSelection_UpdatesOnlySupportedModes(t *testing.T) {
 			"ToggleCursorFollowSelection() expected cursor_follow_selection to become enabled in hints mode",
 		)
 	}
+
+	appState.SetMode(domain.ModeScroll)
+
+	if _, supported = handler.ToggleCursorFollowSelection(); supported {
+		t.Fatal(
+			"ToggleCursorFollowSelection() reported support in scroll mode, which has no selection",
+		)
+	}
 }
 
 func TestToggleCursorFollowSelection_MovesCursorToStoredGridSelectionWhenEnabling(t *testing.T) {
@@ -100,6 +109,7 @@ func TestToggleCursorFollowSelection_MovesCursorToStoredGridSelectionWhenEnablin
 		logger:   zap.NewNop(),
 		actionService: services.NewActionService(
 			&portmocks.MockAccessibilityPort{},
+			&portmocks.MockMousePort{},
 			&portmocks.MockOverlayPort{},
 			&portmocks.MockSystemPort{
 				MoveCursorToPointFunc: func(_ context.Context, point image.Point, _ bool) error {
@@ -142,6 +152,7 @@ func TestToggleCursorFollowSelection_DoesNotMoveCursorWhenDisabling(t *testing.T
 		logger:   zap.NewNop(),
 		actionService: services.NewActionService(
 			&portmocks.MockAccessibilityPort{},
+			&portmocks.MockMousePort{},
 			&portmocks.MockOverlayPort{},
 			&portmocks.MockSystemPort{
 				MoveCursorToPointFunc: func(_ context.Context, _ image.Point, _ bool) error {
@@ -186,6 +197,7 @@ func TestToggleCursorFollowSelection_MovesCursorToStoredRecursiveGridSelectionWh
 		logger:   zap.NewNop(),
 		actionService: services.NewActionService(
 			&portmocks.MockAccessibilityPort{},
+			&portmocks.MockMousePort{},
 			&portmocks.MockOverlayPort{},
 			&portmocks.MockSystemPort{
 				MoveCursorToPointFunc: func(_ context.Context, point image.Point, _ bool) error {

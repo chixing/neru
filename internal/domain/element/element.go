@@ -217,6 +217,21 @@ func (e *Element) Value() string {
 	return e.value
 }
 
+// Text returns the element's text as copy_text copies it: its value, else its
+// title, else its description. A field's value is what it holds and static
+// text keeps its words there, so the value comes first, and a button or link
+// is named by its title. It is empty for an element with none, such as a hint
+// found by contour or segment.
+func (e *Element) Text() string {
+	for _, text := range []string{e.value, e.title, e.description} {
+		if text != "" {
+			return text
+		}
+	}
+
+	return ""
+}
+
 // SearchText returns additional searchable text associated with the element.
 func (e *Element) SearchText() string {
 	return e.searchText
@@ -250,19 +265,4 @@ func (e *Element) Center() image.Point {
 		X: e.bounds.Min.X + e.bounds.Dx()/2,
 		Y: e.bounds.Min.Y + e.bounds.Dy()/2,
 	}
-}
-
-// Contains checks if a point is within the element bounds.
-func (e *Element) Contains(pt image.Point) bool {
-	return pt.In(e.bounds)
-}
-
-// Overlaps checks if this element overlaps with another.
-func (e *Element) Overlaps(other *Element) bool {
-	return e.bounds.Overlaps(other.bounds)
-}
-
-// IsVisible checks if the element is visible within the given screen bounds.
-func (e *Element) IsVisible(screenBounds image.Rectangle) bool {
-	return e.bounds.Overlaps(screenBounds) && !e.bounds.Empty()
 }

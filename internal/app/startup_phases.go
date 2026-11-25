@@ -6,12 +6,15 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/y3owk1n/neru/internal/adapter/clipboard"
 	eventtapadapter "github.com/y3owk1n/neru/internal/adapter/eventtap"
 	ipcadapter "github.com/y3owk1n/neru/internal/adapter/ipc"
 	"github.com/y3owk1n/neru/internal/adapter/keyfeed"
+	"github.com/y3owk1n/neru/internal/adapter/mouse"
 	"github.com/y3owk1n/neru/internal/adapter/platform"
 	infrasystray "github.com/y3owk1n/neru/internal/adapter/systray"
 	textinputadapter "github.com/y3owk1n/neru/internal/adapter/textinput"
+	visionAdapter "github.com/y3owk1n/neru/internal/adapter/vision"
 	"github.com/y3owk1n/neru/internal/app/components"
 	"github.com/y3owk1n/neru/internal/app/components/systray"
 	"github.com/y3owk1n/neru/internal/app/heldmotion"
@@ -31,7 +34,6 @@ import (
 // initializeInfrastructure sets up the core infrastructure components
 // that are needed by other parts of the application.
 func initializeInfrastructure(app *App) error {
-	cfg := app.config
 	logger := app.logger
 
 	if app.systemPort == nil {
@@ -51,12 +53,6 @@ func initializeInfrastructure(app *App) error {
 		app.overlayManager = initializeOverlayManager(logger)
 	}
 
-	// Initialize accessibility infrastructure early as it's required by adapters
-	err := initializeAccessibility(cfg, logger)
-	if err != nil {
-		return err
-	}
-
 	if app.appWatcher == nil {
 		app.appWatcher = initializeAppWatcher(logger)
 	}
@@ -71,6 +67,14 @@ func initializeInfrastructure(app *App) error {
 
 	if app.keyFeed == nil {
 		app.keyFeed = keyfeed.NewAdapter(logger)
+	}
+
+	if app.mouse == nil {
+		app.mouse = mouse.NewAdapter(logger)
+	}
+
+	if app.clipboard == nil {
+		app.clipboard = clipboard.NewAdapter(logger)
 	}
 
 	// Install the platform font resolver. SetFontResolver makes the
@@ -111,10 +115,21 @@ func initializeServicesAndAdapters(app *App) error {
 	)
 	app.accessibility = accAdapter
 	app.overlayPort = overlayAdapter
+	app.applyClickableRoles(cfg)
+
+	// Vim mode reads the screen through the same port, so it is built here
+	// rather than inside the hint service's wiring.
+	if app.vision == nil {
+		app.vision = visionAdapter.NewAdapter(
+			logger,
+			visionAdapter.WithLinesHelper(app.linesHelper),
+		)
+	}
 
 	hintService, gridService, actionService, scrollService, indicators, err := initializeServices(
 		cfg,
 		accAdapter,
+		app.mouse,
 		overlayAdapter,
 		app.systemPort,
 		app.vision,
@@ -162,10 +177,7 @@ func registerOppositeLabelDirectionGenerator(
 		return
 	}
 
-	oppositeGen, oppositeGenErr := domainHint.NewAlphabetGenerator(
-		cfg.Hints.HintCharacters,
-		oppositeDirection,
-	)
+	oppositeGen, oppositeGenErr := newHintGenerator(cfg, oppositeDirection)
 	if oppositeGenErr != nil {
 		app.logger.Warn(
 			"Failed to build opposite-direction hint generator",
@@ -177,6 +189,24 @@ func registerOppositeLabelDirectionGenerator(
 	}
 
 	hintService.UpdateGenerator(app.ctx, oppositeGen)
+}
+
+// newHintGenerator builds the hint label generator for one label direction
+// from the hints config.
+func newHintGenerator(
+	cfg *config.Config,
+	direction domainHint.LabelDirection,
+) (*domainHint.AlphabetGenerator, error) {
+	generator, err := domainHint.NewAlphabetGenerator(cfg.Hints.HintCharacters, direction)
+	if err != nil {
+		return nil, err
+	}
+
+	generator.UpdateLabelAlternation(
+		domainHint.LabelAlternationFromString(cfg.Hints.LabelAlternation),
+	)
+
+	return generator, nil
 }
 
 // initializeApplicationState sets up the core application state objects.
@@ -354,6 +384,9 @@ func initializeModeHandler(app *App) {
 		Shutdown:               app.Quit,
 		TextInput:              app.textInput,
 		System:                 app.systemPort,
+		Clipboard:              app.clipboard,
+		Vision:                 app.vision,
+		KeyFeed:                app.keyFeed,
 		Motion:                 app.motion.Group("modes"),
 		Events:                 app.events,
 	})
@@ -379,6 +412,7 @@ func initializeIPCController(app *App) {
 		// EventTap and IPCServer stay zero here. Phase 8 fills them in
 		// through SetInfrastructure.
 		KeyFeed:         app.keyFeed,
+		Clipboard:       app.clipboard,
 		ReloadConfig:    app.ReloadConfig,
 		ExecuteSequence: app.executeActionSequenceWithPolicy,
 		ExecuteMacro:    app.executeMacro,
@@ -487,6 +521,7 @@ func initializeEventTapAndIPC(app *App) error {
 			// user pressing that modifier. Which backends need it is a
 			// per-platform answer, and the concrete tap is only in reach here.
 			registerSyntheticModifierSink(tap, logger)
+			registerKeyboardYielder(tap, logger)
 		}
 	}
 
@@ -610,6 +645,7 @@ func cleanupEventTapAndIPC(app *App) {
 		// The injection backend holds the tap in a slot of its own, which
 		// outlives this App unless it is let go of here.
 		registerSyntheticModifierSink(nil, app.logger)
+		registerKeyboardYielder(nil, app.logger)
 	}
 
 	app.ipcController = nil
